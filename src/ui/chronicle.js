@@ -160,8 +160,24 @@ export function presence({ online = 1, hunters = [], watching = 0, echoes = 0 })
   const othersWatching = Math.max(0, W - (meIn ? 0 : 1));
   const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
   const header = [H ? `${plural(H, "hunter", "hunters")} in the hunt` : "No one is hunting this minute", W ? `${W} watching` : null, echoes ? plural(echoes, "echo", "echoes") : null].filter(Boolean).join(" · ");
-  const join = others > 0 ? `${plural(others, "other hunter is", "other hunters are")} in the hunt now${othersWatching ? ` · ${othersWatching} watching` : ""}` : "You are the first hunter here right now — your echo will fly for the next hunter to arrive";
+  // (the Join button's one-line subtitle)
+  const join = others > 0 ? `${plural(others, "other hunter is", "other hunters are")} in the hunt now` : "Your echo will fly for the next hunter";
   const cover = H > 0 ? `${H} hunting right now${othersWatching ? ` · ${othersWatching} reading the codex` : ""}` : othersWatching > 0 ? `${plural(othersWatching, "other", "others")} reading the codex · no one hunting this minute` : "A living bestiary";
   const topbar = H > 0 ? `${H} hunting` : Math.max(1, online) > 1 ? `${W} watching` : "only you here";
   return { header, join, cover, topbar, others, othersWatching, alone: others === 0 };
+}
+
+/**
+ * True lines from the titan itself, for a live chronicle that has written fewer than three: when it woke (unless
+ * the feed already says), its Canticle, and how much of it is struck. Nothing about hunters who were not there.
+ * `have`: the real lines already shown; `note`: the Canticle's root as a name ("F", "C♯").
+ */
+export function titanLines({ spec, hp = 0, hpMax = 0, wokeAgo = "", note = "", have = 0 }) {
+  if (!spec) return [];
+  const out = [];
+  if (have === 0 && wokeAgo) out.push(`<b>${esc(spec.name)}</b>, the ${ORD(spec.number)} titan, woke ${esc(wokeAgo)}.`);
+  out.push(`Its Canticle: ${spec.bpm} beats a minute, in ${esc(note)} ${esc(spec.mode)}.`);
+  const struck = Math.max(0, Math.round(hpMax - hp));
+  out.push(struck > 0 ? `It has taken <span class="gold">${fmt(struck)}</span> blows; ${fmt(hp)} are left.` : "No hunter has struck it yet: be the first wound.");
+  return out.slice(0, Math.max(0, 3 - have));
 }

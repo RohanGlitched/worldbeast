@@ -29,9 +29,11 @@ export function shareWords({ spec, summary, kind = "live" }) {
     return {
       folio: "A rehearsal titan",
       line: summary.felled ? "blows struck, and my rehearsal titan fell" : "blows struck in a rehearsal",
+      // (the link opens a rehearsal of the reader's own, not a ghost of this one: a ghost would replay a titan
+      // that never falls, since a rehearsal titan wakes near death on this page only)
       text: summary.felled
-        ? `I felled ${spec.name} with ${blows} blows: a rehearsal against a titan of my own. The live titan is fought by everyone online at the same moment. Watch my run:`
-        : `I struck ${blows} blows against ${spec.name}: a rehearsal against a titan of my own. The live titan is fought by everyone online at the same moment. Watch my run:`,
+        ? `I felled ${spec.name} with ${blows} blows: a rehearsal against a titan of my own. See one fall yourself in 30 seconds, then join the live titan that everyone online fights at once:`
+        : `I struck ${blows} blows against ${spec.name}: a rehearsal against a titan of my own. Try a 30-second rehearsal yourself, then join the live titan that everyone online fights at once:`,
     };
   if (kind === "own")
     return {

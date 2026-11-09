@@ -17,6 +17,9 @@ describe("share words are honest about which titan", () => {
     expect(w.text).not.toContain("1st titan");
     expect(w.text).not.toMatch(/Everyone online fights it/);
     expect(w.folio).toBe("A rehearsal titan");
+    // its link opens a rehearsal (Hunt.jsx), not a ghost: the words never promise a replay of this run
+    expect(w.text).not.toMatch(/Watch my run/);
+    expect(w.text).toContain("See one fall yourself in 30 seconds");
   });
   it("a titan on your own page says so", () => {
     const w = shareWords({ spec, summary: { damage: 90 }, kind: "own" });

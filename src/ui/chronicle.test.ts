@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { makeTitan } from "@/core/titan";
 // @ts-ignore plain js module
-import { fmtAgo, historyItems, liveItems, loadHistory, mergeChronicle, presence } from "./chronicle.js";
+import { fmtAgo, historyItems, liveItems, loadHistory, mergeChronicle, presence, titanLines } from "./chronicle.js";
 
 const NOW = Date.UTC(2026, 10, 9, 18);
 const MIN = 60_000;
@@ -61,9 +61,9 @@ describe("chronicle on arrival", () => {
 });
 
 describe("honest head-counts", () => {
-  it("alone: you are the first hunter here", () => {
+  it("alone: your echo flies for the next hunter (one line under Join)", () => {
     const p = presence({ online: 1, hunters: [], watching: 1 });
-    expect(p.join).toBe("You are the first hunter here right now — your echo will fly for the next hunter to arrive");
+    expect(p.join).toBe("Your echo will fly for the next hunter");
     expect(p.header).toBe("No one is hunting this minute · 1 watching");
     expect(p.cover).toBe("A living bestiary");
     expect(p.topbar).toBe("only you here");
@@ -73,15 +73,30 @@ describe("honest head-counts", () => {
     const p = presence({ online: 5, hunters: [], watching: 5 });
     expect(p.header).toBe("No one is hunting this minute · 5 watching");
     expect(p.cover).toBe("4 others reading the codex · no one hunting this minute");
-    expect(p.join).toMatch(/^You are the first hunter here/);
+    expect(p.join).toBe("Your echo will fly for the next hunter");
     expect(p.topbar).toBe("5 watching");
   });
   it("counts real hunters, you among them once you join", () => {
     const hunters = [{ me: false }, { me: true }];
     const p = presence({ online: 4, hunters, watching: 2, echoes: 3 });
     expect(p.header).toBe("2 hunters in the hunt · 2 watching · 3 echoes");
-    expect(p.join).toBe("1 other hunter is in the hunt now · 2 watching");
+    expect(p.join).toBe("1 other hunter is in the hunt now");
     expect(p.topbar).toBe("2 hunting");
     expect(presence({ online: 3, hunters: [{ me: false }], watching: 2 }).cover).toBe("1 hunting right now · 1 reading the codex");
+  });
+});
+
+describe("the titan's own lines for a thin live chronicle", () => {
+  const spec = { name: "Orthargek", number: 1, bpm: 128, mode: "aeolian" };
+  it("fills up to three lines, honestly", () => {
+    expect(titanLines({ spec, hp: 10000, hpMax: 10000, wokeAgo: "6 h 12 min ago", note: "F", have: 0 })).toEqual([
+      "<b>Orthargek</b>, the 1st titan, woke 6 h 12 min ago.",
+      "Its Canticle: 128 beats a minute, in F aeolian.",
+      "No hunter has struck it yet: be the first wound.",
+    ]);
+  });
+  it("skips the waking when the feed already tells it, and counts real wounds", () => {
+    expect(titanLines({ spec, hp: 9000, hpMax: 10000, wokeAgo: "1 h ago", note: "F", have: 1 })).toEqual(["Its Canticle: 128 beats a minute, in F aeolian.", 'It has taken <span class="gold">1,000</span> blows; 9,000 are left.']);
+    expect(titanLines({ spec, hp: 1, hpMax: 2, have: 3 })).toEqual([]);
   });
 });

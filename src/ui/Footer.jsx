@@ -1,6 +1,8 @@
 import { Link } from "./router";
 
 export const CHANGELOG = [
+  ["Nov 9", "Ghost links: share a run and anyone can watch it against the very attacks you faced. Hounds, epitaphs, seals."],
+  ["Nov 9", "Selvun, the first titan, is felled. The Hall of Titans opens."],
   ["Nov 9", "The first titans wake: five anatomies, twelve attack forms, the Canticle, echoes, the open codex."],
 ];
 

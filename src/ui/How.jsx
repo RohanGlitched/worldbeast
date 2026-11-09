@@ -146,6 +146,10 @@ export default function How() {
         <div>
           <h2>Echoes</h2>
           <p>When your light goes out, your path is kept as an echo. Because the Canticle repeats, an echo can fly again exactly where it flew before, dodging the same attacks on the same beats. The pale dotted stars beside you are the real routes of hunters who came before.</p>
+          <h2>Ghost links</h2>
+          <p>Share a run and the link carries only the titan's seed, the moment you began and your path: a few hundred characters. Whoever opens it watches your light weave through the very attacks you faced, recomputed in their own browser. The Hall links each felled titan's best ghost runs.</p>
+          <h2>Epitaphs</h2>
+          <p>When a titan falls or escapes, Base44's built-in language model writes three lines for the Hall from its real record: how long it sang, how many hunters fought it, and whose blow ended it.</p>
           <h2>Never empty, never a login</h2>
           <p>If the world can't be reached, the titan of the current three-hour bell wakes in your browser alone, and the game keeps trying to rejoin. There is no sign-in, no paywall and no download.</p>
           <Link className="join" to="/">

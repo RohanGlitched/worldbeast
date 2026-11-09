@@ -28,7 +28,7 @@ export default function Footer() {
           <div className="rubric">Changes</div>
           <ul className="changelog">
             {CHANGELOG.map(([d, t]) => (
-              <li key={d}>
+              <li key={d + t.slice(0, 12)}>
                 <b>{d}</b> {t}
               </li>
             ))}

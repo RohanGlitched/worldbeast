@@ -45,6 +45,8 @@ export class Input {
     this.dashQueued = true;
   }
   private kd = (e: KeyboardEvent) => {
+    const tg = e.target as HTMLElement | null;
+    if (tg && (tg.tagName === "INPUT" || tg.tagName === "TEXTAREA" || tg.isContentEditable)) return;
     const k = e.key.toLowerCase();
     if (["arrowup", "arrowdown", "arrowleft", "arrowright", " "].includes(k)) e.preventDefault();
     if ((k === " " || k === "shift" || k === "k" || k === "x") && !this.keys.has(k)) this.dashQueued = true;

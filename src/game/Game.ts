@@ -153,6 +153,10 @@ export class Game {
     this.revealT = 0;
     this.fallT = -1;
     this.view.scene.add(this.titan.group);
+    // warm every program off the main thread where the browser allows it (KHR_parallel_shader_compile)
+    try {
+      void this.view.renderer.compileAsync(this.view.scene, this.view.camera);
+    } catch {}
     this.resize();
     const p = this.spec.plate;
     this.page.setPlate(p);
@@ -277,11 +281,14 @@ export class Game {
     if (this.frameTimes.length < 90) return;
     const avg = this.frameTimes.reduce((a, b) => a + b, 0) / this.frameTimes.length;
     this.frameTimes.length = 0;
-    if (avg > 1 / 45 && this.quality > 0.5) {
-      this.quality = 0.5;
+    // step down (1 → 0.75 → 0.5) when frames run long; step back up when there is headroom.
+    // The first seconds (shader warm-up, the reveal) never count.
+    if (this.revealT < 6) return;
+    if (avg > 1 / 48 && this.quality > 0.5) {
+      this.quality = this.quality > 0.75 ? 0.75 : 0.5;
       this.resize();
     } else if (avg < 1 / 58 && this.quality < 1) {
-      this.quality = 1;
+      this.quality = this.quality < 0.75 ? 0.75 : 1;
       this.resize();
     }
   }

@@ -36,7 +36,7 @@ export function createView(canvas: HTMLCanvasElement): View {
 
 /** Fit the page (or the open spread) into the canvas. */
 export function resizeView(v: View, cssW: number, cssH: number, quality: number) {
-  const dpr = Math.min(window.devicePixelRatio || 1, quality >= 1 ? 2 : 1.25);
+  const dpr = quality >= 1 ? Math.min(window.devicePixelRatio || 1, 2) : quality >= 0.75 ? Math.min(window.devicePixelRatio || 1, 1.25) : 0.8;
   v.dpr = dpr;
   v.renderer.setPixelRatio(dpr);
   v.renderer.setSize(cssW, cssH, false);

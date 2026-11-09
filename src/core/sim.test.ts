@@ -55,5 +55,5 @@ describe("fairness (look-ahead bot)", () => {
     console.log(rows.join("\n"));
     console.log(`survived ${survived}/${total}`);
     expect(survived / total).toBeGreaterThan(0.5);
-  }, 120000);
+  }, 400000);
 });

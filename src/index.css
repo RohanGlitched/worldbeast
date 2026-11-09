@@ -1354,3 +1354,14 @@ button {
   font-style: normal;
   color: var(--vermilion);
 }
+
+.epitaph {
+  white-space: pre-line;
+  font-family: var(--fell);
+  font-style: italic;
+  font-size: 15px;
+  color: var(--ink-2);
+  border-left: 2px solid var(--vermilion);
+  padding-left: 10px;
+  margin: 10px 0 0;
+}

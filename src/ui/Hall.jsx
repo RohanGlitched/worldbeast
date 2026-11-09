@@ -64,6 +64,7 @@ function Plate({ t, live }) {
             </>
           )}
         </dl>
+        {t.epitaph && <p className="epitaph">{t.epitaph}</p>}
         {t.topHunters?.length > 0 && (
           <ol className="top-hunters">
             {t.topHunters.slice(0, 3).map((h, i) => (

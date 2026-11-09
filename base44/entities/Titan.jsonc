@@ -21,7 +21,8 @@
       }
     },
     "hunterCount": { "type": "number" },
-    "damageTotal": { "type": "number" }
+    "damageTotal": { "type": "number" },
+    "epitaph": { "type": "string", "maxLength": 400, "description": "three lines for the Hall, written when the titan ends" }
   },
   "required": ["number", "seed", "wokeAt", "hpMax", "status"],
   "rls": { "create": false, "read": true, "update": false, "delete": false }

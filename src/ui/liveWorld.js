@@ -81,6 +81,11 @@ export function createLiveWorld(game, audio, hooks = {}) {
           pendingTitan = apply;
           clearTimeout(pendingTimer);
           pendingTimer = setTimeout(() => pendingTitan?.(), 3800);
+        } else if (game.phase === "playing" && game.spec && game.spec.number === t.number && game.spec.seed !== t.seed) {
+          // the connection flickered (world ↔ local titan): finish this run first
+          pendingTitan = apply;
+        } else if (game.phase === "playing" && game.spec && game.spec.seed !== t.seed && t.number === 0) {
+          pendingTitan = apply;
         } else apply();
       };
       world.events.onFelled = (end, next) => {
@@ -112,6 +117,7 @@ export function createLiveWorld(game, audio, hooks = {}) {
       game.events.onPos = (x, y, alive, flags) => world.sendPos(x, y, alive, flags);
       world.connect();
       w.tick = setInterval(() => {
+        if (pendingTitan && !game.falling && game.phase !== "playing") pendingTitan();
         const t = world.titanTime();
         game.hpFrac = world.hpFrac;
         st.hp = world.hp;

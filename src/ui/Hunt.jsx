@@ -72,6 +72,15 @@ export default function Hunt() {
 
   const audioRef = useRef(null);
   const runTimer = useRef(null);
+  const pendingRun = useRef(null);
+  const flushRun = () => {
+    if (!runTimer.current) return;
+    clearTimeout(runTimer.current);
+    runTimer.current = null;
+    const r = pendingRun.current;
+    pendingRun.current = null;
+    if (r) worldRef.current?.sendRun(r);
+  };
   const [felled, setFelled] = useState(null);
   const [revived, setRevived] = useState(null);
   const [labels, setLabels] = useState([]);
@@ -102,6 +111,8 @@ export default function Hunt() {
           },
           onRevived: (by) => {
             clearTimeout(runTimer.current);
+            runTimer.current = null;
+            pendingRun.current = null;
             setSummary(null);
             setRevived(by || "a hunter");
             setTimeout(() => setRevived(null), 3000);
@@ -120,7 +131,12 @@ export default function Hunt() {
       if (!s.felled && h && w.down) w.down(h.x, h.y);
       // a passing hunter may still rekindle this light: report the run once the spark has gone out
       clearTimeout(runTimer.current);
-      runTimer.current = setTimeout(() => w.sendRun(s), s.felled ? 0 : 8600);
+      pendingRun.current = s;
+      runTimer.current = setTimeout(() => {
+        runTimer.current = null;
+        pendingRun.current = null;
+        w.sendRun(s);
+      }, s.felled ? 0 : 8600);
       setProfile((p) => {
         const freshSeals = judgeSeals(p, s);
         setSummary({ ...s, worldShare: w.shareOf(s.damage), freshSeals });
@@ -160,10 +176,7 @@ export default function Hunt() {
       if (document.visibilityState !== "hidden") return;
       const cur = g.currentSummary();
       if (cur && cur.time > 3) w.sendRun(cur);
-      else if (runTimer.current) {
-        clearTimeout(runTimer.current);
-        runTimer.current = null;
-      }
+      else flushRun();
     };
     document.addEventListener("visibilitychange", onHide);
     // any first gesture wakes the sound
@@ -185,10 +198,7 @@ export default function Hunt() {
     if (g.falling || (world && world.interlude > 0)) return;
     audioRef.current?.unlock().catch(() => {});
     // the previous run's report goes now if its spark was still waiting
-    if (runTimer.current) {
-      clearTimeout(runTimer.current);
-      runTimer.current = null;
-    }
+    flushRun();
     worldRef.current?.identify?.(profile);
     setSummary(null);
     // a first hunt starts half-charged, so the first Surge comes early
@@ -324,7 +334,7 @@ export default function Hunt() {
         <button className="sigil-pick" onClick={() => setPickSigil((v) => !v)} aria-label={"Your sigil: " + SIGIL_NAMES[profile.sigil]}>
           <Sigil id={profile.sigil} size={u * 0.75} className="filled" />
         </button>
-        <input aria-label="Your hunter's name" value={profile.name} maxLength={18} onChange={(e) => update({ name: cleanName(e.target.value) || "" })} onBlur={(e) => !cleanName(e.target.value) && update({ name: "Nameless" })} />
+        <input aria-label="Your hunter's name" value={profile.name} maxLength={18} onChange={(e) => update({ name: e.target.value.replace(/[<>{}[\]\\]/g, "").slice(0, 18) })} onBlur={(e) => update({ name: cleanName(e.target.value) || "Nameless" })} />
       </div>
       {pickSigil && (
         <div className="sigil-grid" role="group" aria-label="Choose a sigil">

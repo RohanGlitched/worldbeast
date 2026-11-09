@@ -1,11 +1,14 @@
+import { lazy, Suspense } from "react";
 import Hunt from "@/ui/Hunt";
-import Hall from "@/ui/Hall";
-import How from "@/ui/How";
 import { usePath } from "@/ui/router";
+import NotFound from "@/ui/NotFound";
+
+// the hunt loads first; the other leaves of the codex load when they are turned to
+const Hall = lazy(() => import("@/ui/Hall"));
+const How = lazy(() => import("@/ui/How"));
 
 export default function App() {
   const path = usePath();
-  if (path.startsWith("/hall")) return <Hall />;
-  if (path.startsWith("/how")) return <How />;
-  return <Hunt />;
+  const page = path === "/" || path === "" ? <Hunt /> : path.startsWith("/hall") ? <Hall /> : path.startsWith("/how") ? <How /> : <NotFound />;
+  return <Suspense fallback={<div className="doc" aria-busy="true" />}>{page}</Suspense>;
 }

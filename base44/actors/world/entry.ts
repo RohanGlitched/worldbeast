@@ -262,7 +262,10 @@ export default class World extends Actor<ToServer, ToClient> {
   private onHello(h: Hunter, m: Extract<ToServer, { t: "hello" }>, now: number) {
     if (!validKey(m.key)) return;
     const first = !h.key;
-    h.key = hashKey(m.key, this.salt);
+    const key = hashKey(m.key, this.salt);
+    // one identity per connection: a second key cannot reset this connection's damage budget
+    if (h.key && h.key !== key) return;
+    h.key = key;
     h.name = sanitizeName(m.name);
     h.sigil = sanitizeSigil(m.sigil);
     h.aspect = sanitizeAspect(m.aspect);
@@ -337,8 +340,10 @@ export default class World extends Actor<ToServer, ToClient> {
     }
     const key = h.key!;
     if (this.rates.size > 4000) this.rates.clear();
+    // the budget follows the identity (across reconnects) and is never looser than the aspect allows
     let rate = this.rates.get(key);
-    if (!rate || rate.aspect !== h.aspect) rate = new AspectRate(h.aspect);
+    if (!rate) rate = new AspectRate(h.aspect);
+    // (an existing window is never replaced: switching light cannot reset it)
     this.rates.set(key, rate);
     const stage = this.stage();
     const ctx = { spec: this.spec, stage, nowMs: now, wokeAt: this.titan.wokeAt };
@@ -484,9 +489,14 @@ export default class World extends Actor<ToServer, ToClient> {
       status, hp: Math.max(0, Math.round(t.hp)), felledAt: now, topHunters: top, hunterCount: end.hunterCount, damageTotal: end.damageTotal,
       ...(blow ? { finalBlowName: blow.name, finalBlowSigil: blow.sigil } : {}),
     };
+    const spec = this.spec;
     this.write("titan", async () => {
       const id = recordId ?? (await this.db.Titan.filter({ number }, "-created_date", 1))[0]?.id;
-      if (id) await this.db.Titan.update(id, rec);
+      if (!id) return;
+      await this.db.Titan.update(id, rec);
+      // an epitaph for the Hall: Base44's own LLM, a few times a day at most; a template otherwise
+      const epitaph = await this.epitaph(spec, end, now);
+      if (epitaph) await this.db.Titan.update(id, { epitaph });
     });
     if (blow?.key) {
       const key = blow.key;
@@ -500,6 +510,43 @@ export default class World extends Actor<ToServer, ToClient> {
     await this.wakeTitan(number + 1, now + INTERLUDE_MS);
     this.broadcast({ t: "felled", n: now, end, next: this.info() });
     this.dirty = true;
+  }
+
+  private async epitaph(spec: { name: string; epithet: string; archetype: string; plate: { name: string } }, end: TitanEnd, now: number): Promise<string> {
+    const lived = Math.max(1, Math.round((end.endedAt - end.wokeAt) / 60000));
+    const top = end.top[0];
+    const fallback =
+      end.status === "felled"
+        ? `Here lies ${spec.name}, ${spec.epithet}. It sang for ${lived} minutes against ${end.hunterCount} hunters${end.blow ? `, and fell to ${end.blow.name}` : ""}.`
+        : `${spec.name}, ${spec.epithet}, slipped away after ${lived} minutes, its wounds unhealed.`;
+    try {
+      const day = new Date(now).toISOString().slice(0, 10);
+      const used = ((await this.storage.get<{ day: string; n: number }>("epitaphs")) ?? { day, n: 0 });
+      const count = used.day === day ? used.n : 0;
+      if (count >= 3) return fallback;
+      await this.storage.put("epitaphs", { day, n: count + 1 });
+      const integrations = (this.client as unknown as { asServiceRole: { integrations?: { Core?: { InvokeLLM?: (p: object) => Promise<unknown> } } } }).asServiceRole.integrations;
+      const llm = integrations?.Core?.InvokeLLM;
+      if (!llm) return fallback;
+      const facts = [
+        `name: ${spec.name}`,
+        `epithet: ${spec.epithet}`,
+        `anatomy: ${spec.archetype}`,
+        `inks: ${spec.plate.name}`,
+        `outcome: ${end.status}`,
+        `lived: ${lived} minutes`,
+        `hunters: ${end.hunterCount}`,
+        end.blow ? `final blow: ${end.blow.name}` : "",
+        top ? `greatest hunter: ${top.name} (${top.damage} blows)` : "",
+      ].filter(Boolean).join("; ");
+      const out = await llm({
+        prompt: `You are the scribe of a medieval bestiary. Write an epitaph of exactly three short lines (under 140 characters in total per line) for a titan the whole world hunted together. Plain, grave, a little strange; no rhyme, no hashtags, no modern words, no invented facts beyond these: ${facts}. Use only the names given. Return only the three lines.`,
+      });
+      const text = String(typeof out === "string" ? out : (out as { response?: string })?.response ?? "").replace(/[<>]/g, "").trim();
+      return text && text.length < 400 ? text : fallback;
+    } catch {
+      return fallback;
+    }
   }
 
   // ---------------------------------------------------------------- runs, hunters, echoes

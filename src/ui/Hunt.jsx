@@ -70,40 +70,77 @@ function createHudStore() {
     },
   };
 }
-const useHud = (store) => useSyncExternalStore(store.sub, store.get);
+/** a value derived from the HUD: the component re-renders only when that value changes */
+const useHudValue = (store, sel) => useSyncExternalStore(store.sub, () => sel(store.get()));
+/**
+ * numbers that change every tick are written straight into their text nodes (only when they change): no
+ * React render, no reconciliation, just the one text change. `write(h, set)` calls set(key, text).
+ */
+function useHudText(store, write) {
+  const refs = useRef({});
+  const last = useRef({});
+  const writer = useRef(write);
+  writer.current = write;
+  const at = (k) => (el) => (refs.current[k] = el);
+  useEffect(() => {
+    const set = (k, v) => {
+      if (last.current[k] === v) return;
+      last.current[k] = v;
+      const el = refs.current[k];
+      if (!el) return;
+      if (k.endsWith("%")) el.style.width = v;
+      else el.textContent = v;
+    };
+    const f = () => {
+      const h = store.get();
+      if (h) writer.current(h, set);
+    };
+    f();
+    return store.sub(f);
+  }, [store]);
+  return at;
+}
 
 const Phrase = memo(function Phrase({ store, prefix = "" }) {
-  const h = useHud(store);
+  const p = useHudValue(store, (h) => h?.phrase ?? 0);
   return (
     <span style={{ color: "var(--ink-3)", fontStyle: "italic" }}>
       {prefix}
-      {(h?.phrase ?? 0) + 1} of 8
+      {p + 1} of 8
     </span>
   );
 });
 
 const Ledger = memo(function Ledger({ store, aspectName, hpMax }) {
-  const h = useHud(store);
-  if (!h) return null;
+  const at = useHudText(store, (h, set) => {
+    set("dmg", fmt(h.damage));
+    set("pct", hpMax > 1 ? ` · ${((h.damage / hpMax) * 100).toFixed(2)}% of its life` : "");
+    set("time", h.time.toFixed(0));
+    set("grazes", String(h.grazes));
+    set("chain", String(h.bestCombo));
+    set("surges", String(h.surges));
+  });
   return (
     <section className="ledger" aria-label="Your hunt">
       <div className="rubric">Your hunt, in {aspectName}</div>
       <div className="ledger-big">
-        {fmt(h.damage)}
-        <small>blows struck{hpMax > 1 ? ` · ${((h.damage / hpMax) * 100).toFixed(2)}% of its life` : ""}</small>
+        <span ref={at("dmg")}>0</span>
+        <small>
+          blows struck<span ref={at("pct")} />
+        </small>
       </div>
       <div className="ledger-row">
         <span>
-          <b>{h.time.toFixed(0)}</b> s alight
+          <b ref={at("time")}>0</b> s alight
         </span>
         <span>
-          <b>{h.grazes}</b> grazes
+          <b ref={at("grazes")}>0</b> grazes
         </span>
         <span>
-          <b>{h.bestCombo}</b> best chain
+          <b ref={at("chain")}>0</b> best chain
         </span>
         <span>
-          <b>{h.surges}</b> surges
+          <b ref={at("surges")}>0</b> surges
         </span>
       </div>
     </section>
@@ -112,28 +149,35 @@ const Ledger = memo(function Ledger({ store, aspectName, hpMax }) {
 
 // your lights and Resonance: kept outside the arena, where nothing is ever thrown
 const Gauges = memo(function Gauges({ store }) {
-  const h = useHud(store);
-  if (!h) return null;
+  // (lights change a few times a run: those re-render; Resonance moves every tick: written in place)
+  const left = useHudValue(store, (h) => (h ? h.maxHits - h.hits : 0));
+  const max = useHudValue(store, (h) => h?.maxHits ?? 0);
+  const full = useHudValue(store, (h) => !!h && (h.resonance >= 99 || h.surging));
+  const at = useHudText(store, (h, set) => {
+    set("reso%", (h.surging ? 100 : Math.round(h.resonance)) + "%");
+    set("label", h.surging ? "Surge!" : h.combo > 1 ? `×${h.combo}` : "Resonance");
+  });
+  if (!max) return null;
   return (
     <div className="gauges">
-      <div className="lives" aria-label={`${h.maxHits - h.hits} of ${h.maxHits} lights left`}>
-        {Array.from({ length: h.maxHits }, (_, i) => (
-          <span key={i} className={"life" + (i < h.maxHits - h.hits ? "" : " lost")} />
+      <div className="lives" aria-label={`${left} of ${max} lights left`}>
+        {Array.from({ length: max }, (_, i) => (
+          <span key={i} className={"life" + (i < left ? "" : " lost")} />
         ))}
       </div>
-      <span className={"reso" + (h.resonance >= 99 || h.surging ? " full" : "")} aria-label="Resonance">
-        <i style={{ width: (h.surging ? 100 : h.resonance) + "%" }} />
-        <em>{h.surging ? "Surge!" : h.combo > 1 ? `×${h.combo}` : "Resonance"}</em>
+      <span className={"reso" + (full ? " full" : "")} aria-label="Resonance">
+        <i ref={at("reso%")} style={{ width: "0%" }} />
+        <em ref={at("label")}>Resonance</em>
       </span>
     </div>
   );
 });
 
 const Blows = memo(function Blows({ store }) {
-  const h = useHud(store);
+  const at = useHudText(store, (h, set) => set("dmg", fmt(h.damage)));
   return (
     <div className="dmg">
-      {fmt(h?.damage ?? 0)}
+      <span ref={at("dmg")}>0</span>
       <small> blows</small>
     </div>
   );
@@ -250,12 +294,14 @@ export default function Hunt() {
     worldRef.current = w;
     // a rehearsal's felled titan stays on the page until you hunt again (Game.holdFelled)
     g.holdFelled = q.has("rehearse");
-    // the world's state reaches the codex at most five times a second (a busy live world emits far more)
+    // the world's state reaches the codex at most five times a second (a busy live world emits far more),
+    // and once a second while you fly: the strip's numbers need no more, and each pass re-renders the book
     let worldTimer = 0,
-      worldAt = 0;
+      worldAt = 0,
+      phaseNow = "lobby";
     w.onChange = (s) => {
       if (worldTimer) return;
-      const wait = Math.max(0, 200 - (performance.now() - worldAt));
+      const wait = Math.max(0, (phaseNow === "playing" ? 1000 : 200) - (performance.now() - worldAt));
       worldTimer = setTimeout(() => {
         worldTimer = 0;
         worldAt = performance.now();
@@ -272,7 +318,7 @@ export default function Hunt() {
     };
     g.events.onHud = (h) => {
       hudStore.set(h);
-      setPhase(h.phase);
+      if (h.phase !== phaseNow) setPhase((phaseNow = h.phase));
       if (h.phase === "playing") tipsFor.current(h);
     };
     g.events.onHits = (dmg, core, beat, surge) => w.addHit(core, dmg, beat, surge);

@@ -750,6 +750,11 @@ button {
 .doc > * + * {
   border-top: 1px solid rgba(35, 28, 23, 0.15);
 }
+/* sections below the fold of /how and /hall are laid out only when scrolled near (phones: shorter long tasks) */
+.doc > section {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 900px;
+}
 .doc-head h1 {
   font-family: var(--display);
   font-size: clamp(42px, 7vw, 84px);

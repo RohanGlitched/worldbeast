@@ -248,7 +248,7 @@
    ruled, until the titan awake now is drawn (by the game's renderer, once its programs are linked); then that
    titan inks in over it. Never another titan's art first: the caption beside it names the one awake. */
 .medallion {
-  background: repeating-linear-gradient(-35deg, rgba(35, 28, 23, 0.06) 0 1px, transparent 1px 6px), radial-gradient(circle, #f3e9d3 56%, #e2d2ae);
+  background: url(/art/medallion-blank.svg) center / cover no-repeat, repeating-linear-gradient(-35deg, rgba(35, 28, 23, 0.06) 0 1px, transparent 1px 6px), radial-gradient(circle, #f3e9d3 56%, #e2d2ae);
 }
 .medallion img {
   background: transparent;
@@ -366,6 +366,14 @@
 }
 .margin-note.side-note b {
   color: var(--gold-2);
+}
+
+/* the rising numbers' layer (written straight into the DOM, see Overlays.jsx Floats) */
+.floats {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
 }
 
 /* the tall screen's band: the count of blows on one line, clear of the host's badge below it */

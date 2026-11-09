@@ -250,15 +250,25 @@ export class Game {
 
   setTitan(seed: number, number: number) {
     if (this.spec?.seed === seed) return;
+    // the old titan leaves the page now but is disposed only once the new one's programs are compiled: the
+    // titans share their programs (the engraving's settings are uniforms), and disposing first would throw them
+    // away for the new titan to build again
+    let retired: Titan | null = null;
     if (this.titan) {
       if (this.holdFelled && this.fallT >= 0 && !this.kept) {
         // a rehearsal keeps its felled engraving on the page until you hunt again; the next is built behind it
         this.kept = this.titan;
       } else {
         this.view.scene.remove(this.titan.group);
-        this.titan.dispose();
+        retired = this.titan;
       }
     }
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      retired?.dispose();
+    };
     this.spec = makeTitan(seed, number);
     this.field = new Field(this.spec);
     this.titan = new Titan(this.spec);
@@ -271,6 +281,7 @@ export class Game {
     // Nothing but the paper is drawn until they are linked, so the first use never blocks.
     const token = (this.compileToken = {});
     const done = () => {
+      settle();
       if (this.compileToken !== token || this.compiled || this.primeQueue) return;
       // read the linked programs' tables a few per frame (see primeStep), then draw the titan
       this.primeQueue = this.programList();

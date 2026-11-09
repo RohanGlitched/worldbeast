@@ -9,6 +9,15 @@ export const PAGE = { W: ARENA.W + 1.2, Y0: -0.9, Y1: ARENA.TOP + 14.4 };
 export const GUTTER = 0.9;
 /** during a run the bestiary leaf folds to a strip this wide (world units) beside the spine */
 export const STRIP = 8.6;
+/** ...and on very wide screens, where there is room, a wider strip */
+export const STRIP_WIDE = 12.6;
+/** the run's view in the open book: from just under the arena to the titan's face (heads sit near y 28-30) */
+export const PLAY_Y0 = PAGE.Y0 + 0.15;
+export const PLAY_TOP = ARENA.TOP + 9.8;
+/** a throne titan sits taller: its face is higher on the page */
+export const PLAY_TOP_TALL = ARENA.TOP + 11.2;
+/** a phone on its side: a shorter screen, so the view stops at the titan's chin and mouth */
+export const SIDE_TOP = ARENA.TOP + 7.2;
 
 export interface Rect {
   x0: number;
@@ -98,15 +107,17 @@ export function sizeView(v: View, cssW: number, cssH: number, quality: number) {
  * Work out the layout for this screen: the mode, the leaves, and both cameras (the whole book, and
  * leaning in on the fight). `reserve` is the CSS height kept clear at the bottom on tall screens.
  */
-export function layoutView(v: View, cssW: number, cssH: number, reserve = 0) {
+export function layoutView(v: View, cssW: number, cssH: number, reserve = 0, tall = false) {
   const aspect = cssW / cssH;
   v.mode = aspect >= 1.12 ? (cssH < 520 ? "side" : "spread") : "single";
   v.spread = v.mode === "spread";
   v.portrait = aspect < 0.8;
   v.reserve = v.mode === "single" ? reserve : 0;
   const leafX1 = -PAGE.W / 2 - GUTTER;
+  // a very wide screen keeps more of the leaf open beside the fight (the desk is otherwise most of the screen)
+  const stripW = aspect > 2.05 ? STRIP_WIDE : STRIP;
   v.leftLeaf = v.spread ? { x0: leafX1 - PAGE.W, x1: leafX1, y0: PAGE.Y0, y1: PAGE.Y1 } : null;
-  v.strip = v.spread ? { x0: leafX1 - STRIP, x1: leafX1, y0: PAGE.Y0, y1: PAGE.Y1 } : null;
+  v.strip = v.spread ? { x0: leafX1 - stripW, x1: leafX1, y0: PAGE.Y0, y1: PAGE.Y1 } : null;
 
   if (v.mode === "spread") {
     // the open book: both leaves with room above for crowns and halos; tighter margins on very wide screens
@@ -114,10 +125,11 @@ export function layoutView(v: View, cssW: number, cssH: number, reserve = 0) {
     const margin = aspect > 2 ? 1.015 : 1.04;
     const top = PAGE.Y1 + (aspect > 2 ? 1.1 : 1.6);
     const cam0 = fit(aspect, -(PAGE.W + GUTTER) / 2, contentW * margin, PAGE.Y0, top, margin);
-    // the run: the strip and the hunt page, as tall as the screen allows (the titan's shoulders are cropped)
-    const x0 = leafX1 - STRIP - 0.5,
+    // the run: the strip and the hunt page, as tall as the screen allows, with the titan's face and the foot
+    // of its crown in frame (cropping at its shoulders took away the creature you are fighting)
+    const x0 = leafX1 - stripW - 0.5,
       x1 = PAGE.W / 2 + 0.5;
-    const cam1 = fit(aspect, (x0 + x1) / 2, x1 - x0, PAGE.Y0 - 0.3, ARENA.TOP + 7.4, 1);
+    const cam1 = fit(aspect, (x0 + x1) / 2, x1 - x0, PLAY_Y0, tall ? PLAY_TOP_TALL : PLAY_TOP, 1);
     v.cams = [cam0, cam1];
   } else if (v.mode === "side") {
     // a phone on its side: the whole page down the left in the lobby (the side panel takes the right) …
@@ -126,8 +138,8 @@ export function layoutView(v: View, cssW: number, cssH: number, reserve = 0) {
     const halfH = (top - bottom) / 2,
       halfW = halfH * aspect;
     const cam0 = { cx: -PAGE.W / 2 - 0.6 + halfW, cy: (top + bottom) / 2, halfW, halfH };
-    // … and, during a run, the arena as tall as the screen with the titan's wounds and mouth above it
-    const cam1 = fit(aspect, 0, PAGE.W + 1, -0.55, ARENA.TOP + 3.6, 1);
+    // … and, during a run, the arena as tall as the screen with the titan's wounds, mouth and face above it
+    const cam1 = fit(aspect, 0, PAGE.W + 1, -0.55, SIDE_TOP + (tall ? 1.4 : 0), 1);
     v.cams = [cam0, cam1];
   } else {
     // tall screens: the page fills the width, lifted clear of the bottom band

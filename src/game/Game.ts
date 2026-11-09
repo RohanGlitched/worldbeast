@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { ARENA, coreOpen, makeTitan, PHRASE_BEATS, LOOP_PHRASES, Stage, stageFor, TitanSpec } from "@/core/titan";
-import { Field, newFrame } from "@/core/field";
+import { Field, FieldFrame, newFrame, STRIDE } from "@/core/field";
 import { AspectId, Hunt, MAX_HITS } from "@/core/hunt";
 import { applyCam, camRect, createView, lerpCam, layoutView, Mode, PAGE, Rect, sizeView, toScreen, View } from "./render/stage";
 import { PageLayer } from "./render/page";
@@ -200,9 +200,13 @@ export class Game {
     setPortraitHost({ renderer: r, ready: () => this.untilReady(), titanFor: (seed) => (this.spec?.seed === seed && this.titan ? this.titan : null) });
     this.resize();
     window.addEventListener("resize", this.resize);
+    document.addEventListener("visibilitychange", this.onVisibility);
     this.ro = new ResizeObserver(() => this.resize());
     this.ro.observe(canvas);
   }
+  private onVisibility = () => {
+    this.quietUntil = performance.now() + 1500;
+  };
 
   /** the titan's programs are warm: Join can be pressed (the engraving may still be finishing) */
   get ready() {
@@ -247,8 +251,13 @@ export class Game {
   setTitan(seed: number, number: number) {
     if (this.spec?.seed === seed) return;
     if (this.titan) {
-      this.view.scene.remove(this.titan.group);
-      this.titan.dispose();
+      if (this.holdFelled && this.fallT >= 0 && !this.kept) {
+        // a rehearsal keeps its felled engraving on the page until you hunt again; the next is built behind it
+        this.kept = this.titan;
+      } else {
+        this.view.scene.remove(this.titan.group);
+        this.titan.dispose();
+      }
     }
     this.spec = makeTitan(seed, number);
     this.field = new Field(this.spec);
@@ -269,7 +278,15 @@ export class Game {
     this.compiled = false;
     this.primeQueue = null;
     try {
-      this.view.renderer.compileAsync(this.view.scene, this.view.camera).then(done, done);
+      const r = this.view.renderer;
+      if (this.kept) {
+        // (compile only collects visible objects: show the hidden titan for the moment it is collected)
+        const g = this.titan.group;
+        g.visible = true;
+        const p = r.compileAsync(g, this.view.camera, this.view.scene);
+        g.visible = false;
+        p.then(done, done);
+      } else r.compileAsync(this.view.scene, this.view.camera).then(done, done);
     } catch {
       done();
     }
@@ -286,12 +303,44 @@ export class Game {
     this.events.onTitan?.(this.spec, this.field);
   }
 
+  /**
+   * A rehearsal keeps its felled titan on the page (drained to bare lines) until you hunt again, so the page
+   * and the run's summary tell of the same titan. The next titan is built and compiled behind it meanwhile.
+   */
+  holdFelled = false;
+  private kept: Titan | null = null;
+  /** a felled titan is being kept on the page */
+  get keeping() {
+    return !!this.kept;
+  }
+  /** let the felled titan go: the next one is engraved in */
+  releaseFelled() {
+    const k = this.kept;
+    if (!k) return;
+    this.kept = null;
+    this.view.scene.remove(k.group);
+    k.dispose();
+    if (this.titan) {
+      this.titan.group.visible = true;
+      this.titan.u.uReveal.value = 0;
+    }
+    this.revealT = 0;
+  }
+
   /** the world felled the titan: it shudders, its seams flood with gold, then the engraving lifts away */
   fell() {
     if (this.fallT >= 0) return;
     this.fallT = 0;
     this.shake = 1.2;
     this.events.onSfx?.("felled");
+    // the ink still in flight dissolves into flecks: the stamp never lands over falling drops
+    const f = this.hunt && this.phase === "playing" ? this.hunt.frame : this.lobbyFrame;
+    const n = Math.min(f.bulletCount, 180);
+    for (let i = 0; i < n; i++) {
+      const o = i * STRIDE.B;
+      this.fx.burst(f.bullets[o], f.bullets[o + 1], 1, { type: P.Fleck, size: 0.1, speed: 2.5, life: 0.7, g: -1.5 });
+    }
+    clearFrame(this.lobbyFrame);
     const h = this.hunt;
     if (h && this.phase === "playing" && h.alive) {
       // your run ends with the titan: a victory, not a death
@@ -397,11 +446,13 @@ export class Game {
     this.last = performance.now();
     const loop = (now: number) => {
       this.raf = requestAnimationFrame(loop);
-      const dt = Math.min(0.05, (now - this.last) / 1000);
+      // (the quality judge sees the real frame time: a 1.9 s stall must count as one, not as 50 ms)
+      const raw = Math.max(0, (now - this.last) / 1000);
+      const dt = Math.min(0.05, raw);
       this.last = now;
       this.primeStep();
       this.frame(dt);
-      this.adaptQuality(dt);
+      this.adaptQuality(raw);
     };
     this.raf = requestAnimationFrame(loop);
   }
@@ -409,6 +460,7 @@ export class Game {
   stop() {
     cancelAnimationFrame(this.raf);
     window.removeEventListener("resize", this.resize);
+    document.removeEventListener("visibilitychange", this.onVisibility);
     this.ro.disconnect();
     this.input.dispose();
     setPortraitHost(null);
@@ -429,7 +481,7 @@ export class Game {
     if (sized && w / h < 1.12) this.safeBottom = readSafeBottom();
     const wasMode = v.mode;
     // tall screens keep a band clear along the bottom: the host's badge and the run's gauges live there
-    layoutView(v, w, h, 92 + this.safeBottom);
+    layoutView(v, w, h, 92 + this.safeBottom, this.spec?.archetype === "throne");
     if (v.mode !== wasMode && this.fz.t < 1) this.fz.t = 1;
     if (this.fz.t < 1) {
       // mid-glide: finish it now rather than chase a moving target
@@ -507,21 +559,30 @@ export class Game {
   private adaptQuality(dt: number) {
     const now = performance.now();
     // the first seconds (shader warm-up, the engraving), camera glides and resizes never count
-    if (!this.compiled || this.revealT < 6 || this.fz.t < 1 || now < this.quietUntil) {
+    // (a hidden tab's pause is not a stall)
+    if (!this.compiled || this.revealT < 6 || this.fz.t < 1 || now < this.quietUntil || dt > 3) {
       this.frameTimes.length = 0;
       return;
     }
     this.frameTimes.push(dt);
     if (this.frameTimes.length < 90) return;
-    const avg = this.frameTimes.reduce((a, b) => a + b, 0) / this.frameTimes.length;
-    this.frameTimes.length = 0;
+    const ft = this.frameTimes;
+    const avg = ft.reduce((a, b) => a + b, 0) / ft.length;
+    // the tail matters as much as the middle: a run of 33 ms frames, or stalls of 100 ms and more, is a
+    // stutter the median never shows (Ruin at 1920 once stalled for 1.9 s while its median looked healthy)
+    const sorted = ft.slice().sort((a, b) => a - b);
+    const p95 = sorted[Math.floor(sorted.length * 0.95)];
+    const stalls = ft.filter((x) => x > 0.1).length;
+    ft.length = 0;
     if (now - this.qualityAt < 6000) return; // give each step time to settle
+    const slow = avg > 1 / 48 || p95 > 1 / 26 || stalls >= 2;
     // step down (1 → 0.75 → 0.5) when frames run long; step back up when there is headroom
-    if (avg > 1 / 48 && this.quality > 0.5) {
-      // a desktop at native density 1 keeps it unless it is truly slow (under 45 fps for three windows running)
+    if (slow && this.quality > 0.5) {
+      // a desktop at native density 1 keeps it unless it is truly slow: under 45 fps, a long tail or repeated
+      // stalls, for two windows running
       if (this.quality >= 1 && (window.devicePixelRatio || 1) <= 1) {
-        this.slowWindows = avg > 1 / 45 ? this.slowWindows + 1 : 0;
-        if (this.slowWindows < 3) return;
+        this.slowWindows = avg > 1 / 45 || p95 > 1 / 24 || stalls >= 2 ? this.slowWindows + 1 : 0;
+        if (this.slowWindows < 2) return;
       }
       this.slowWindows = 0;
       this.qualityAt = now;
@@ -529,7 +590,7 @@ export class Game {
       this.resize();
     } else {
       this.slowWindows = 0;
-      if (avg < 1 / 58 && this.quality < 1) {
+      if (avg < 1 / 58 && p95 < 1 / 40 && stalls === 0 && this.quality < 1) {
         this.qualityAt = now;
         this.quality = this.quality < 0.75 ? 0.75 : 1;
         this.resize();
@@ -656,6 +717,9 @@ export class Game {
         if (navigator.vibrate) navigator.vibrate([80, 60, 140]);
         this.events.onDown?.(this.summaryOf(h, stage, false));
       }
+    } else if (this.fallT >= 0 || this.kept) {
+      // a felled titan throws nothing more
+      clearFrame(this.lobbyFrame);
     } else {
       this.field.sample(t, stage, this.lobbyFrame);
     }
@@ -700,10 +764,11 @@ export class Game {
         this.shake = 1.4;
       }
       // the engraving lifts away from the page, bottom to top
-      if (f > 1.6) this.titan.u.uReveal.value = Math.max(0, 1 - (f - 1.6) / 1.8);
+      // (a felled titan kept on the page stops at bare lines: its colour drained, its form still there)
+      if (f > 1.6) this.titan.u.uReveal.value = Math.max(this.holdFelled ? 1 : 0, 1 - (f - 1.6) / 1.8);
     }
     this.titan.update(ctx, dt);
-    if (this.revealT < 6 && this.fallT < 0) {
+    if (this.revealT < 6 && this.fallT < 0 && !this.kept) {
       // (reduced motion: the plate is simply there, fully engraved)
       if (!this.holdReveal && this.compiled) this.revealT = this.reducedMotion ? 6 : this.revealT + dt * (this.rushReveal ? 6 : 1);
       const r = this.revealT;
@@ -737,7 +802,7 @@ export class Game {
     if (this.pageReady) {
       const r = this.view.renderer;
       if (this.paperSpec) this.page.bake(r, this.paperSpec);
-      if (this.compiled) r.render(v.scene, v.camera);
+      if (this.compiled) this.renderScene();
       else {
         const hidden: THREE.Object3D[] = [];
         for (const o of v.scene.children) if (o !== this.page.mesh && o.visible) (o.visible = false), hidden.push(o);
@@ -771,6 +836,48 @@ export class Game {
     }
   }
 
+  /**
+   * Draw the scene. In the open book the titan is held to its own page: the paper first, then the titan with
+   * a scissor at the page's edges (its towers never rise over the page top, its legs never step onto the
+   * desk), then the ink, the hunters and the sparks over it, as before.
+   */
+  private renderScene() {
+    const v = this.view;
+    const r = v.renderer;
+    const tg = this.titan?.group;
+    if (!v.spread || !tg) {
+      r.render(v.scene, v.camera);
+      return;
+    }
+    const a = this.screenOf(-PAGE.W / 2, PAGE.Y1),
+      b = this.screenOf(PAGE.W / 2, PAGE.Y0);
+    const x0 = Math.max(0, Math.floor(a.x)),
+      x1 = Math.min(this.cssW, Math.ceil(b.x));
+    const top = Math.max(0, Math.floor(a.y));
+    const kids = v.scene.children;
+    const vis = kids.map((o) => o.visible);
+    const kept = this.kept?.group;
+    const isTitan = (o: THREE.Object3D) => o === tg || o === kept;
+    const show = (f: (o: THREE.Object3D) => boolean) => kids.forEach((o, i) => (o.visible = vis[i] && f(o)));
+    const auto = r.autoClear;
+    try {
+      show((o) => o === this.page.mesh);
+      r.render(v.scene, v.camera);
+      r.autoClear = false;
+      show(isTitan);
+      r.setScissor(x0, 0, Math.max(0, x1 - x0), Math.max(0, this.cssH - top));
+      r.setScissorTest(true);
+      r.render(v.scene, v.camera);
+      r.setScissorTest(false);
+      show((o) => o !== this.page.mesh && !isTitan(o));
+      r.render(v.scene, v.camera);
+    } finally {
+      r.setScissorTest(false);
+      r.autoClear = auto;
+      kids.forEach((o, i) => (o.visible = vis[i]));
+    }
+  }
+
   /** separate frame buffer for when no run is active */
   private lobbyFrame = newFrame();
 
@@ -790,6 +897,11 @@ export class Game {
     }
     return out;
   }
+}
+
+/** no ink in flight */
+function clearFrame(f: FieldFrame) {
+  f.bulletCount = f.beamCount = f.ringCount = f.zoneCount = f.markCount = 0;
 }
 
 /** the height of the screen's bottom safe area (the iPhone home bar), in CSS px */

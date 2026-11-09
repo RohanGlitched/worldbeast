@@ -16,8 +16,9 @@ Everything you hear is synthesised in the browser with Web Audio: oscillators, n
 ## API
 
 ```ts
-const audio = new AudioEngine({ lite?: boolean, quiet?: boolean, autoCores?: boolean, lookahead?: number, syncTrim?: number });
-await audio.unlock();                 // from a user gesture; creates/resumes the AudioContext
+const audio = new AudioEngine({ lite?: boolean, quiet?: boolean, autoCores?: boolean, lookahead?: number, syncTrim?: number, prepare?: boolean });
+audio.prepare();                      // called by the constructor (prepare: false to opt out): see "Startup"
+await audio.unlock();                 // from a user gesture; resumes the prepared AudioContext
 audio.setTitan(spec, field);          // per titan; may be called before unlock
 audio.update(t, stage, hpFrac, { playing, nearDanger }); // every frame, t = synced titan time
 audio.sfx(name, x?, strength?);       // x = arena x in [-8, 8] (panning)
@@ -30,6 +31,17 @@ AudioEngine.renderExcerpt(spec, field, { t0, seconds, stage }); // offline rende
 ```
 
 Sfx names: `start`, `dash`, `graze` (strength = number of grazes), `hurt`, `surge`, `strike` (strength 0..1), `down`, `core-open`, `felled`, `wake`, `revive`, `relight`, `ui`, `ui-hover`. `beat` is accepted and ignored, because the Canticle already keeps the beat.
+
+## Startup
+
+The first gesture must not stall the page (opening the book used to freeze it for 0.5-0.8 s on a laptop and 2 s on a phone). So the engine gets ready while the cover is up, in idle slices (`requestIdleCallback`, a timeout in Safari), after the page's own startup:
+
+1. Open the AudioContext. It is held suspended until `unlock()`, even where the browser would let it run, so nothing sounds before a gesture. Opening the audio device is the one step that cannot be split (tens to hundreds of ms).
+2. Build the mix graph, then the titan's drone.
+3. Generate the cathedral's impulse response a slice at a time (`cathedralIRSteps`, sample-identical to `cathedralIR`) and hand it to the convolver.
+4. Render the instrument bank: the shared instruments five at a time, then the titan's drums.
+
+`unlock()` then only resumes the context (and starts the silent buffer iOS needs). If the gesture comes first, it opens the context and builds the graph itself (a few ms), the drone follows in the next task, and the cathedral and the bank follow in idle slices; until the cathedral arrives the mix is dry, and until the bank arrives the live voices play. Offline engines (`renderExcerpt`) build everything at once, as before.
 
 ## Timing
 

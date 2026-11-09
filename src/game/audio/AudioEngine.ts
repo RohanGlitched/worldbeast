@@ -13,7 +13,7 @@ import { LOOP_PHRASES, Stage, TitanSpec } from "../../core/titan";
 import { AEv, BLOCK_STEPS, buildSong, degToMidi, Lead, PERC_VOICES, PHRASE_STEPS, Song, STEPS_PER_BEAT, volleyEvents } from "./score";
 import { commonItems, renderBank, titanItems } from "./bank";
 import { Lane } from "./lane";
-import { cathedralIR, ceilingCurve, mtof, Synth, SynthStats } from "./synth";
+import { cathedralIR, cathedralIRSteps, ceilingCurve, mtof, Synth, SynthStats } from "./synth";
 
 export interface AudioEngineOptions {
   /** Use this context instead of creating one on unlock (e.g. an OfflineAudioContext). */
@@ -30,6 +30,11 @@ export interface AudioEngineOptions {
   debug?: boolean;
   /** Lighter on CPU for weak phones: shorter cathedral, tighter polyphony, fewer doublings. */
   lite?: boolean;
+  /**
+   * Build the context (held suspended), the mix graph, the cathedral and the instrument bank in idle slices
+   * ahead of the first gesture, so unlock() only has to resume. Default true for a realtime engine in a page.
+   */
+  prepare?: boolean;
 }
 
 export interface UpdateOpts {
@@ -58,6 +63,14 @@ const STAGE_TRIM = [1.08, 1, 0.88];
 const SMOOTH = 0.04; // per-update offset smoothing
 
 const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
+/** the next idle slot (a timeout where requestIdleCallback is missing, as in Safari), with its time budget in ms */
+const idle = (timeout = 600) =>
+  new Promise<number>((res) => {
+    type Deadline = { timeRemaining(): number; didTimeout: boolean };
+    const ric = (globalThis as { requestIdleCallback?: (cb: (d: Deadline) => void, o?: { timeout: number }) => number }).requestIdleCallback;
+    if (ric) ric((d) => res(d.didTimeout ? 8 : Math.max(6, Math.min(40, d.timeRemaining()))), { timeout });
+    else setTimeout(() => res(8), 24);
+  });
 const panOf = (x = 0) => clamp(x / 8, -1, 1) * 0.85;
 
 interface Channels {
@@ -164,6 +177,12 @@ export class AudioEngine {
   private chainLatency = 0; // the two compressors look ahead 256 frames each
   private commonBank: Promise<Map<string, AudioBuffer>> | null = null;
   private bankPromise: Promise<void> = Promise.resolve();
+  private bankFor: TitanSpec | null = null;
+  /** a user gesture has unlocked the realtime context (until then it is held suspended and nothing sounds) */
+  private armed = false;
+  private disposed = false;
+  private prepping: Promise<void> | null = null;
+  private irLoading = false;
 
   /** [step, titanTime, contextTime, rawOffset] for the last scheduled beats (debug only) */
   trace: Array<[number, number, number, number]> = [];
@@ -180,21 +199,111 @@ export class AudioEngine {
     if (opts.context) {
       this.ctx = opts.context;
       this.realtime = typeof OfflineAudioContext === "undefined" || !(opts.context instanceof OfflineAudioContext);
+      this.armed = true; // a context handed in is the caller's to run
       this.build();
+    } else if (opts.prepare !== false && typeof window !== "undefined") {
+      void this.prepare();
     }
   }
 
   // =========================================================================== public API
 
-  /** Call from a user gesture. Creates or resumes the AudioContext. Safe to call repeatedly. */
+  /**
+   * Get everything ready for the first gesture without blocking the page: in idle slices, open the
+   * AudioContext (held suspended: nothing sounds before unlock), build the mix graph and the drone,
+   * generate the cathedral's impulse response a slice at a time, and render the instrument bank.
+   * Called by the constructor; safe to call again (it returns the same promise).
+   */
+  prepare(): Promise<void> {
+    if (!this.prepping) this.prepping = this.prepareSteps().catch(() => {});
+    return this.prepping;
+  }
+
+  private async prepareSteps() {
+    // after the page's own startup (the game links its programs and builds its titan first)
+    await idle(2500);
+    if (this.disposed) return;
+    if (!this.ctx) this.openContext(); // the audio device opens here: tens to hundreds of ms, once
+    await idle();
+    if (this.disposed || !this.ctx) return;
+    if (!this.g) this.build(true);
+    await idle();
+    if (this.disposed || !this.g) return;
+    if (this.spec && !this.drone) this.buildDrone();
+    await this.loadIR();
+    await idle();
+    if (this.disposed || !this.g || !this.ctx) return;
+    // the instrument bank renders on the audio thread; scheduling its notes is split over idle slots:
+    // the shared instruments a few at a time, then the titan's own drums
+    if (!this.commonBank && typeof OfflineAudioContext !== "undefined") this.commonBank = this.commonBankSliced(this.ctx.sampleRate);
+    await this.commonBank?.catch(() => null);
+    await idle();
+    if (this.disposed || !this.g) return;
+    if (this.spec && this.bankFor !== this.spec) this.loadBank();
+  }
+
+  private async commonBankSliced(sr: number): Promise<Map<string, AudioBuffer>> {
+    const items = commonItems();
+    const parts: Array<Promise<Map<string, AudioBuffer>>> = [];
+    for (let i = 0; i < items.length; i += 5) {
+      if (i > 0) await idle(300);
+      parts.push(renderBank(sr, items.slice(i, i + 5)));
+    }
+    const maps = await Promise.all(parts);
+    return new Map(maps.flatMap((m) => [...m]));
+  }
+
+  private openContext() {
+    const AC: typeof AudioContext | undefined = (globalThis as any).AudioContext ?? (globalThis as any).webkitAudioContext;
+    if (!AC) return;
+    const ctx = new AC({ latencyHint: "interactive" });
+    this.ctx = ctx;
+    this.realtime = true;
+    // nothing may sound before a gesture, even where the browser would let the context run
+    if (!this.armed && ctx.state === "running") void ctx.suspend();
+    this.watchVisibility();
+  }
+
+  /** The cathedral's impulse response, generated over idle slices and then handed to the convolver. */
+  private async loadIR() {
+    const ctx = this.ctx;
+    const conv = this.conv;
+    if (!ctx || !conv || conv.buffer || this.irLoading) return;
+    this.irLoading = true;
+    try {
+      const steps = cathedralIRSteps(ctx, this.lite ? 2 : 3.2, undefined, 8192);
+      let r = steps.next();
+      while (!r.done) {
+        // as much as the idle slot allows (8 ms when the page is busy), then yield to frames and input
+        const until = performance.now() + (await idle(150));
+        if (this.disposed || this.conv !== conv) return;
+        do r = steps.next();
+        while (!r.done && performance.now() < until);
+      }
+      await idle(300);
+      if (this.disposed || this.conv !== conv) return;
+      conv.buffer = r.value;
+    } finally {
+      this.irLoading = false;
+    }
+  }
+
+  /**
+   * Call from a user gesture. Resumes the AudioContext that prepare() has opened (creating it, and the
+   * graph, only if the gesture came first). Safe to call repeatedly.
+   */
   async unlock(): Promise<void> {
-    if (!this.ctx) {
-      const AC: typeof AudioContext | undefined = (globalThis as any).AudioContext ?? (globalThis as any).webkitAudioContext;
-      if (!AC) return;
-      this.ctx = new AC({ latencyHint: "interactive" });
-      this.realtime = true;
-      this.build();
-      this.watchVisibility();
+    this.armed = true;
+    if (!this.ctx) this.openContext();
+    if (!this.ctx) return;
+    if (!this.g) this.build(true);
+    if (this.realtime) {
+      // if the gesture beat the preparation: the drone in the next task, the cathedral and the bank in idle slices
+      if (this.spec && !this.drone)
+        setTimeout(() => {
+          if (!this.disposed && this.g && this.spec && !this.drone) this.buildDrone();
+        }, 0);
+      void this.prepare();
     }
     const ctx = this.ctx as AudioContext;
     if (this.realtime && ctx.state !== "running") {
@@ -213,7 +322,7 @@ export class AudioEngine {
   }
 
   get unlocked(): boolean {
-    return !!this.ctx && (!this.realtime || (this.ctx as AudioContext).state === "running");
+    return !!this.ctx && (!this.realtime || (this.armed && (this.ctx as AudioContext).state === "running"));
   }
 
   /** Build the titan's instruments, score and attack sounds. Can be called before unlock. */
@@ -243,7 +352,7 @@ export class AudioEngine {
   update(t: number, stage: Stage, hpFrac: number, opts: UpdateOpts = { playing: true }) {
     const ctx = this.ctx;
     if (!ctx || !this.g || !this.song || !this.spec) return;
-    if (this.realtime && ctx.state !== "running") {
+    if (this.realtime && (!this.armed || ctx.state !== "running")) {
       this.synced = false;
       this.lastT = t;
       return;
@@ -287,7 +396,7 @@ export class AudioEngine {
     const sy = this.synth;
     const g = this.g;
     if (!ctx || !sy || !g) return;
-    if (this.realtime && (ctx as AudioContext).state !== "running") return;
+    if (this.realtime && (!this.armed || (ctx as AudioContext).state !== "running")) return;
     const now = at ?? ctx.currentTime + 0.004;
     const out = g.ch.sfx;
     const pan = panOf(x);
@@ -434,6 +543,7 @@ export class AudioEngine {
   }
 
   dispose() {
+    this.disposed = true;
     if (this.visHandler) document.removeEventListener("visibilitychange", this.visHandler);
     this.visHandler = null;
     if (this.realtime && this.ctx) void (this.ctx as AudioContext).close();
@@ -508,7 +618,11 @@ export class AudioEngine {
 
   // =========================================================================== graph
 
-  private build() {
+  /**
+   * The mix graph. `deferred` (realtime): leave the cathedral's impulse, the drone and the bank to
+   * prepare()'s idle slices; offline, everything is built at once.
+   */
+  private build(deferred = false) {
     const ctx = this.ctx!;
     const nodes: AudioNode[] = [];
     const G = (v = 1) => {
@@ -553,7 +667,7 @@ export class AudioEngine {
     // reverb: one cathedral shared by music and sfx
     const conv = (this.conv = ctx.createConvolver());
     conv.normalize = false;
-    conv.buffer = cathedralIR(ctx, this.lite ? 2 : 3.2);
+    if (!deferred) conv.buffer = cathedralIR(ctx, this.lite ? 2 : 3.2);
     nodes.push(conv);
     const verbIn = G(1);
     const verbOut = G(0.55);
@@ -635,7 +749,7 @@ export class AudioEngine {
     this.synth.quiet = this.quiet;
     this.synth.capScale = this.lite ? 0.6 : 1;
     this.applyVolumes();
-    if (this.spec) {
+    if (this.spec && !deferred) {
       this.buildDrone();
       this.loadBank();
     }
@@ -647,6 +761,7 @@ export class AudioEngine {
     const spec = this.spec;
     const song = this.song;
     if (!ctx || !synth || !spec || !song || typeof OfflineAudioContext === "undefined") return;
+    this.bankFor = spec;
     const sr = ctx.sampleRate;
     if (!this.commonBank) this.commonBank = renderBank(sr, commonItems());
     const tm = song.timbre;
@@ -1309,7 +1424,9 @@ export class AudioEngine {
         }, 250);
       } else {
         this.synced = false;
-        void ctx.resume().then(() => this.applyVolumes());
+        // (a context still waiting for its first gesture stays asleep)
+        if (this.armed) void ctx.resume().then(() => this.applyVolumes());
+        else this.applyVolumes();
       }
     };
     document.addEventListener("visibilitychange", this.visHandler);

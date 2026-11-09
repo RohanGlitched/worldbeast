@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { makeTitan, ARCHETYPE_INFO } from "@/core/titan";
 import { hash32 } from "@/core/rng";
-import { portrait } from "@/game/portrait";
+import { plateImg } from "./plates";
+import { portraitOffThread } from "@/game/portraitClient";
 import { listTitans, listHunters, titanEchoes } from "./data";
 import { decodePath } from "@/net/pathcodec";
 import { replayUrl } from "./replay";
@@ -23,9 +24,36 @@ const dur = (ms) => {
   return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
 };
 
+/**
+ * A titan's engraving, drawn live after the page's first paint on a worker thread (portraitClient.ts), or
+ * where a worker cannot draw, one step per idle slot on the page: the Hall reads and scrolls while the
+ * plates come in. Until then the plate shows its hatched placeholder.
+ */
+function useLivePortrait(seed, number, crack) {
+  const [img, setImg] = useState(null);
+  useEffect(() => {
+    if (seed == null) return;
+    let live = true;
+    setImg(null);
+    const id = setTimeout(() => {
+      portraitOffThread(seed, number, { crack })
+        .then((url) => live && setImg(url))
+        .catch(() => {});
+    }, 60);
+    return () => {
+      live = false;
+      clearTimeout(id);
+    };
+  }, [seed, number, crack]);
+  return img;
+}
+
 function Plate({ t, live }) {
   const spec = useMemo(() => makeTitan(t.seed, t.number), [t.seed, t.number]);
-  const [img, setImg] = useState(null);
+  // a felled titan's plate shows its gold seams; a living one as wounded as the world has left it
+  const left = (t.hp ?? t.hpMax) / (t.hpMax || 1);
+  const crack = t.status === "felled" ? 0.9 : Number.isFinite(left) ? Math.round(Math.min(1, Math.max(0, 1 - left)) * 100) / 100 : 0;
+  const img = useLivePortrait(t.seed, t.number, crack);
   const [ghosts, setGhosts] = useState([]);
   useEffect(() => {
     if (!t.number) return;
@@ -43,16 +71,10 @@ function Plate({ t, live }) {
       ),
     );
   }, [t.number, t.seed, spec.beat]);
-  useEffect(() => {
-    const ric = window.requestIdleCallback;
-    const cic = window.cancelIdleCallback;
-    const id = ric ? ric(() => setImg(portrait(t.seed, t.number, { crack: t.status === "felled" ? 0.9 : 1 - (t.hp ?? t.hpMax) / (t.hpMax || 1) }))) : setTimeout(() => setImg(portrait(t.seed, t.number)), 30);
-    return () => (cic ? cic(id) : clearTimeout(id));
-  }, [t.seed, t.number, t.status, t.hp, t.hpMax]);
   const status = live ? "awake" : t.status;
   return (
     <article className={"plate status-" + status} style={{ "--plate-body": spec.plate.body, "--plate-accent": spec.plate.accent }}>
-      <div className="plate-art">{img ? <img src={img} alt={`An engraving of ${spec.name}`} /> : <div className="plate-ph" />}</div>
+      <div className="plate-art">{img ? <img src={img} alt={`An engraving of ${spec.name}`} /> : <div className="plate-ph" role="img" aria-label={`The engraving of ${spec.name} is being drawn`} />}</div>
       <div className="plate-text">
         <div className="folio">
           <span>The {ORD(t.number)} Titan</span>
@@ -113,14 +135,12 @@ function Plate({ t, live }) {
 }
 
 function GhostPlate({ seed, label }) {
-  const [img, setImg] = useState(null);
-  useEffect(() => {
-    const id = setTimeout(() => setImg(portrait(seed, 1)), 120);
-    return () => clearTimeout(id);
-  }, [seed]);
+  // the empty plates' specimens are fixed seeds, engraved ahead of time (plates.js)
+  const pre = plateImg(seed);
+  const img = useLivePortrait(pre ? null : seed, 1, 0);
   return (
     <article className="plate ghost" aria-label={`A plate yet to be filled: a ${label} may wake one day`}>
-      <div className="plate-art">{img ? <img src={img} alt="" /> : <div className="plate-ph" />}</div>
+      <div className="plate-art">{pre ? <img {...pre} alt="" decoding="async" /> : img ? <img src={img} alt="" /> : <div className="plate-ph" />}</div>
       <div className="plate-text">
         <div className="folio">
           <span>A plate yet to be filled</span>
@@ -211,7 +231,7 @@ export default function Hall() {
     return { seed: hash32("local", block), number: (block % 900) + 1, status: "awake" };
   })() : null;
   return (
-    <div className="doc">
+    <main className="doc">
       <Bookmarks />
       <header className="doc-head">
         <div className="folio">
@@ -267,6 +287,6 @@ export default function Hall() {
       </section>
       <RecentRuns runs={runs} titans={list} />
       <Footer />
-    </div>
+    </main>
   );
 }

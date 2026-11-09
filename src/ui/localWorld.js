@@ -3,7 +3,7 @@
 // it and nothing is sent to the live world. When its wounds run out it falls with the same ceremony as the
 // live world's titans (FELLED, the final blow, the top hunters: here only you), and the next one wakes.
 
-import { makeTitan } from "@/core/titan";
+import { makeTitan, seedUnlike, stageFor } from "@/core/titan";
 import { hash32 } from "@/core/rng";
 
 const BLOCK = 3 * 3600 * 1000;
@@ -11,11 +11,21 @@ const BLOCK = 3 * 3600 * 1000;
 export const INTERLUDE_MS = 20_000;
 /** the fallen engraving lifts off the page (Game.fell) before the next titan is engraved in */
 export const LIFT_MS = 3_800;
-/** a rehearsal titan is sized like the live world's quietest titan (logic.ts HP_FLOOR)... */
-export const REHEARSAL_HP = 10_000;
-/** ...and wakes near death: a few seconds of good blows bring it down */
-export const REHEARSAL_LEFT = 0.04;
-const LOCAL_HP = 400_000;
+/** every titan of your own (pinned, replayed, rehearsed) is sized like the live world's quietest (logic.ts HP_FLOOR) */
+export const LOCAL_HP = 10_000;
+export const REHEARSAL_HP = LOCAL_HP;
+/**
+ * A rehearsal titan wakes near death, ~180 blows from falling (a few seconds of any light), and fights it out
+ * in Wrath, not Ruin: R4's rehearsal woke in Ruin at 400 and a novice died before it fell.
+ */
+export const REHEARSAL_LEFT = 0.018;
+export const REHEARSAL_STAGE = 1;
+
+/** the seed of the titan after `seed`: never the same body as the one just felled (as in the live world) */
+export function nextLocalSeed(seed) {
+  const spec = makeTitan(seed, 1);
+  return seedUnlike((k) => (k === 0 ? hash32(seed, "next") : hash32(seed, "next", k)), spec.archetype);
+}
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const fmt = (n) => Math.round(n || 0).toLocaleString("en-US");
@@ -48,6 +58,17 @@ export function createLocalWorld(game, opts = {}, hooks = {}) {
     replay: replay ? { name: replay.name, sigil: replay.sigil, damage: replay.damage, duration: replay.duration } : null,
     /** a titan pinned to this page with ?seed= (tests, tools, film) */
     pinned: !rehearsal && !replay,
+    /**
+     * Hunt options for runs here: in a rehearsal a hit costs Resonance, not a light (core/hunt.ts forgiving),
+     * so the light cannot go out before the titan falls. Wiring: Game.start(aspect, { ...opts, ...state.huntOpts }).
+     */
+    huntOpts: rehearsal ? { forgiving: true } : {},
+    /**
+     * Whether runs here count toward the profile (seals, personal best, the day's omen). A world of your own
+     * (pinned, rehearsal, ghost replay) never does: Hunt.jsx onDown should skip judgeSeals/judgeOmen/best/total
+     * when this is false.
+     */
+    counts: false,
     interlude: 0,
     last: null,
   };
@@ -65,6 +86,11 @@ export function createLocalWorld(game, opts = {}, hooks = {}) {
       game.clock = () => (Date.now() - wokeAt) / 1000;
       game.hpFrac = st.hp / st.hpMax;
       st.spec = game.spec;
+      // the rehearsal titan fights in Wrath to its fall (its wounds alone would say Ruin); the next one follows its wounds
+      if (rehearsal && !q.has("hp")) {
+        const first = seed;
+        game.stageFn = () => (seed === first ? REHEARSAL_STAGE : stageFor(game.hpFrac));
+      }
       if (replay) w.push(`A recorded run: <b>${esc(replay.name || "A hunter")}</b>'s light against <b>${esc(st.spec.name)}</b>, replayed from the titan's seed. Nothing here is live.`);
       else if (rehearsal)
         w.push(`A rehearsal: <b>${esc(st.spec.name)}</b>, a titan of your own, woke near death. Only your blows wound it, and nothing here is written in the Hall.`);
@@ -87,6 +113,7 @@ export function createLocalWorld(game, opts = {}, hooks = {}) {
     stop() {
       clearInterval(w.tick);
       clearTimeout(liftTimer);
+      if (rehearsal && !replay) game.stageFn = null;
     },
     push(html) {
       st.feed.push({ id: ++feedId, html, n: Date.now() });
@@ -123,7 +150,7 @@ export function createLocalWorld(game, opts = {}, hooks = {}) {
         local: true,
         rehearsal,
       };
-      const next = { number: number + 1, seed: hash32(seed, "next"), wokeAt: t + INTERLUDE_MS, hpMax: st.hpMax, status: "awake" };
+      const next = { number: number + 1, seed: nextLocalSeed(seed), wokeAt: t + INTERLUDE_MS, hpMax: st.hpMax, status: "awake" };
       st.last = end;
       w.push(`<b class="gold">${esc(spec.name)} was felled</b>${me ? `; the final blow was <b>${esc(me.name)}</b>'s` : ""}.${rehearsal ? " A rehearsal: it is not written in the Hall." : ""}`);
       // ends your run as a victory (Hunt shows "The titan is felled!") and lifts the engraving away

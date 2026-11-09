@@ -1,11 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { ARCHETYPE_INFO, ARCHETYPES, makeTitan } from "@/core/titan";
-import { portrait } from "@/game/portrait";
+import { plateImg } from "./plates";
 import Footer from "./Footer";
 import Bookmarks from "./Bookmarks";
 import { Link } from "./router";
 
-const fmtN = (n) => n.toLocaleString("en-US");
+// (thousands by hand: the first toLocaleString on a page loads the locale data, ~35 ms, ~140 ms on a phone)
+const fmtN = (n) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
 // Seeds known to wake each anatomy, for the specimen plates.
 const SPECIMENS = { throne: 1, coil: 2, strider: 7, bloom: 10, swarmheart: 5 };
@@ -25,17 +26,14 @@ const KINDS = [
   ["Cross", "Diagonal lines entering from the margins, crossing the page."],
 ];
 
+// The specimen plates are engraved ahead of time by the game's own portrait code (scripts/render-art.mjs):
+// this page draws no WebGL and never loads three.js.
 function Specimen({ arch }) {
   const seed = SPECIMENS[arch];
   const spec = makeTitan(seed, 1);
-  const [img, setImg] = useState(null);
-  useEffect(() => {
-    const id = setTimeout(() => setImg(portrait(seed, 1, { w: 300, h: 250 })), 40);
-    return () => clearTimeout(id);
-  }, [seed]);
   return (
     <figure className="specimen">
-      {img ? <img src={img} alt={`A ${ARCHETYPE_INFO[arch].label}: ${spec.name}`} /> : <div className="plate-ph" />}
+      <img {...plateImg(seed)} loading="lazy" decoding="async" alt={`A ${ARCHETYPE_INFO[arch].label}: ${spec.name}`} />
       <figcaption>
         <b>{ARCHETYPE_INFO[arch].label}</b> {ARCHETYPE_INFO[arch].blurb}
       </figcaption>
@@ -48,7 +46,7 @@ export default function How() {
     document.title = "How it works · WORLDBEAST";
   }, []);
   return (
-    <div className="doc">
+    <main className="doc">
       <Bookmarks />
       <header className="doc-head">
         <div className="folio">
@@ -67,8 +65,10 @@ export default function How() {
           </p>
           <p>So every browser that knows the seed and the time draws the identical fight. Someone who joins late lands in exactly the same moment as everyone else. The server only has to agree on the clock.</p>
         </div>
-        <figure className="diagram" aria-label="How the shared fight is computed">
-          <svg viewBox="0 0 420 300" role="img">
+        <figure className="diagram">
+          <svg viewBox="0 0 420 300" role="img" aria-labelledby="dg-title dg-desc">
+            <title id="dg-title">How the shared fight is computed</title>
+            <desc id="dg-desc">The Base44 actor's clock, the titan's seed and the seconds since it woke feed one pure function, fight of seed, t and stage, which every browser computes identically: yours, a hunter's in Lima and one in Osaka.</desc>
             <defs>
               <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
                 <path d="M0 0L10 5L0 10z" fill="currentColor" />
@@ -132,10 +132,17 @@ export default function How() {
         </dl>
       </section>
 
+      <section className="doc-section">
+        <h2>Keeping your light</h2>
+        <p>
+          You carry three lights; only the bright pip at your star's heart can be struck. Brushing past ink fills Resonance, and a full Resonance Surges your light. A lost light returns after fifteen seconds unstruck, or on each Surge. Blows struck from the outer margins land at seven tenths: the titan's wounds open toward the middle of the page, so the bold hunt there. Each day brings an omen, one feat that is the same for every hunter on Earth; keep it on consecutive days and the streak grows.
+        </p>
+      </section>
+
       <section className="doc-section wb-fall-section" id="fall">
         <h2>How a titan falls</h2>
         <p>
-          A titan falls when the world has struck all its wounds. Its size is set when it wakes, from the world actor's own record of recent hunting: enough to last about two hours at the last few hours' pace, more for every hunter who came at once, and never less than {fmtN(10_000)} blows. So in a quiet world a handful of runs brings one down, and when many hunt it lasts. If nobody fells it within eight hours it escapes. The final blow, the greatest hunters and an epitaph go into the Hall, and twenty seconds later the next titan wakes.
+          A titan falls when the world has struck all its wounds. Its size is set when it wakes, from the world actor's own record of recent hunting: enough to last about two hours at the last few hours' pace, more for every hunter who came at once, and never less than {fmtN(10_000)} blows. So in a quiet world a handful of hunters brings one down in a session, and when many hunt it lasts. It is meant to be felled together: one hunter's blows count in full up to two fifths of a titan's life, after which it shrugs off a lone hunter and their blows wound it at a quarter. If the world wounds it but can't fell it within eight hours, it escapes; a titan nobody has struck sleeps on. The final blow, the greatest hunters and an epitaph go into the Hall, and twenty seconds later the next titan wakes.
         </p>
         <p>
           To see a fall now, rehearse one: a titan of your own, woken near death in your browser alone. Only your blows wound it, it falls with the same ceremony, and nothing of it is written in the Hall.
@@ -174,6 +181,6 @@ export default function How() {
         </div>
       </section>
       <Footer />
-    </div>
+    </main>
   );
 }

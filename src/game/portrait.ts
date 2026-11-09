@@ -2,15 +2,16 @@ import * as THREE from "three";
 import { makeTitan } from "@/core/titan";
 import { Titan } from "./render/titan/titan";
 
-// Engraved portraits (the cover medallion, the Hall of Titans, share cards), cached as data URLs.
+// Engraved portraits (the cover medallion, the Hall of Titans, share cards), cached as image URLs.
 //
 // While the hunt is open, portraits are drawn by the game's own renderer: its titan programs are already
 // linked, and the titan awake now is already built, so the medallion costs a render and a read-back
 // instead of a second WebGL context compiling every program again (that froze the cover for ~0.8 s).
-// Pages without the game (the Hall, How it works) fall back to one shared offscreen renderer.
-
-let renderer: THREE.WebGLRenderer | null = null;
-const cache = new Map<string, string>();
+// Pages without the game (the Hall) queue their portraits on one shared offscreen renderer: one portrait
+// per idle slot, programs linked off the main thread (compileAsync), the PNG encoded off it (toBlob).
+// Every titan shares the same few engraving programs (material.ts), so only the first portrait links any.
+// Portraits of fixed seeds (the How-it-works specimens, the Hall's empty plates) are static images in
+// public/art/plates, drawn by scripts/render-art.mjs with this same code.
 
 export interface PortraitHost {
   renderer: THREE.WebGLRenderer;
@@ -24,15 +25,19 @@ export function setPortraitHost(h: PortraitHost | null) {
   host = h;
 }
 
-type Opts = { crack?: number; w?: number; h?: number };
-const keyOf = (seed: number, number: number, o: Opts) => `${seed}:${number}:${o.crack ?? 0}:${o.w ?? 360}x${o.h ?? 300}`;
+/** `view`: the framing in world units (key art); by default the titan's standard plate */
+type Opts = { crack?: number; w?: number; h?: number; dpr?: number; view?: { cx?: number; cy?: number; halfH?: number } };
+const dprOf = (o: Opts) => o.dpr ?? Math.min(2, (typeof window !== "undefined" && window.devicePixelRatio) || 1);
+const keyOf = (seed: number, number: number, o: Opts) => `${seed}:${number}:${o.crack ?? 0}:${o.w ?? 360}x${o.h ?? 300}@${dprOf(o)}`;
+const cache = new Map<string, Promise<string>>();
 
-function frame(w: number, h: number) {
+function frame(w: number, h: number, view: Opts["view"] = {}) {
   const aspect = w / h;
-  const halfH = 9.2,
+  const halfH = view.halfH ?? 9.2,
     halfW = halfH * aspect;
-  const cy = 26.2;
-  const cam = new THREE.OrthographicCamera(-halfW, halfW, cy + halfH, cy - halfH, -200, 200);
+  const cx = view.cx ?? 0,
+    cy = view.cy ?? 26.2;
+  const cam = new THREE.OrthographicCamera(cx - halfW, cx + halfW, cy + halfH, cy - halfH, -200, 200);
   cam.position.set(0, 0, 50);
   return { cam, px: (halfW * 2) / w };
 }
@@ -55,50 +60,114 @@ function pose(titan: Titan, seed: number, crack: number) {
   );
 }
 
-/** A portrait, synchronously (its own offscreen renderer). */
-export function portrait(seed: number, number: number, opts: Opts = {}): string {
-  const w = opts.w ?? 360,
-    h = opts.h ?? 300;
-  const key = keyOf(seed, number, opts);
-  const hit = cache.get(key);
-  if (hit) return hit;
+// ---------------------------------------------------------------- the shared offscreen renderer
+
+let renderer: THREE.WebGLRenderer | null = null;
+/** the last titan drawn stays alive until the next is drawn: its programs stay linked for the next one */
+let kept: Titan | null = null;
+
+function offscreen() {
   if (!renderer) {
-    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true, powerPreference: "low-power" });
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.setClearColor(0x000000, 0);
+    // three would otherwise read every shader's log right after linking: a stall per program
+    renderer.debug.checkShaderErrors = !!(import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV;
   }
-  renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
-  renderer.setSize(w, h, false);
+  return renderer;
+}
+
+function prepared(seed: number, number: number, o: Opts) {
+  const w = o.w ?? 360,
+    h = o.h ?? 300;
+  const r = offscreen();
+  r.setPixelRatio(dprOf(o));
+  r.setSize(w, h, false);
   const scene = new THREE.Scene();
-  const spec = makeTitan(seed, number);
-  const titan = new Titan(spec);
+  const titan = new Titan(makeTitan(seed, number));
   scene.add(titan.group);
-  const { cam, px } = frame(w, h);
+  const { cam, px } = frame(w, h, o.view);
   titan.u.uPx.value = px;
-  pose(titan, seed, opts.crack ?? 0);
-  renderer.render(scene, cam);
-  const url = renderer.domElement.toDataURL("image/png");
-  titan.dispose();
-  cache.set(key, url);
+  pose(titan, seed, o.crack ?? 0);
+  return { r, scene, cam, titan };
+}
+
+function retire(titan: Titan) {
+  if (kept && kept !== titan) kept.dispose();
+  kept = titan;
+}
+
+/** A portrait, synchronously, as a PNG data URL (tools and tests; pages use `portraitAsync`). */
+export function portraitSync(seed: number, number: number, opts: Opts = {}): string {
+  const { r, scene, cam, titan } = prepared(seed, number, opts);
+  r.render(scene, cam);
+  const url = r.domElement.toDataURL("image/png");
+  retire(titan);
   return url;
 }
 
+const idle = (timeout = 600) =>
+  new Promise<void>((res) => {
+    const ric = (globalThis as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback;
+    if (ric) ric(() => res(), { timeout });
+    else setTimeout(res, 16);
+  });
+
+const encode = (cv: HTMLCanvasElement) =>
+  new Promise<string>((res) => {
+    // toBlob encodes off the main thread; the data URL is the fallback
+    if (cv.toBlob)
+      cv.toBlob((b) => res(b ? URL.createObjectURL(b) : cv.toDataURL("image/png")), "image/png");
+    else res(cv.toDataURL("image/png"));
+  });
+
+// one portrait at a time, each in its own idle slots: build, link off-thread, draw, encode
+let queue: Promise<unknown> = Promise.resolve();
+function queued(seed: number, number: number, o: Opts): Promise<string> {
+  const job = queue.then(async () => {
+    await idle();
+    const { r, scene, cam, titan } = prepared(seed, number, o);
+    try {
+      await r.compileAsync(scene, cam);
+    } catch {
+      /* drawn anyway: render links what is missing */
+    }
+    await idle();
+    r.render(scene, cam);
+    // the canvas keeps its drawing (preserveDrawingBuffer) until the next portrait clears it: encode it now
+    const url = await encode(r.domElement);
+    retire(titan);
+    return url;
+  });
+  queue = job.catch(() => {});
+  return job;
+}
+
 /**
- * A portrait drawn by the game's renderer once its programs are linked (falls back to `portrait`).
- * The titan awake now is drawn as it stands; any other is built, compiled off the main thread, then drawn.
+ * A portrait: drawn by the game's renderer once its programs are linked, or queued on the shared offscreen
+ * renderer when no game is running. The titan awake now is drawn as it stands; any other is built,
+ * compiled off the main thread, then drawn.
  */
-export async function portraitAsync(seed: number, number: number, opts: Opts = {}): Promise<string> {
+export function portraitAsync(seed: number, number: number, opts: Opts = {}): Promise<string> {
   const key = keyOf(seed, number, opts);
-  const hit = cache.get(key);
-  if (hit) return hit;
-  const hst = host;
-  if (!hst) return portrait(seed, number, opts);
+  let p = cache.get(key);
+  if (!p) {
+    p = (host ? viaHost(host, seed, number, opts) : queued(seed, number, opts)).catch((e) => {
+      cache.delete(key);
+      throw e;
+    });
+    cache.set(key, p);
+  }
+  return p;
+}
+
+async function viaHost(hst: PortraitHost, seed: number, number: number, opts: Opts): Promise<string> {
   await hst.ready();
-  if (host !== hst) return portrait(seed, number, opts);
+  if (host !== hst) return queued(seed, number, opts);
   const r = hst.renderer;
   const w = opts.w ?? 360,
     h = opts.h ?? 300;
-  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const dpr = dprOf(opts);
   // drawn at up to twice the size and scaled down (smooth edges without a multisampled target)
   const ss = Math.max(1, Math.min(2, 1400 / (Math.max(w, h) * dpr)));
   const W = Math.round(w * dpr * ss),
@@ -156,25 +225,24 @@ export async function portraitAsync(seed: number, number: number, opts: Opts = {
     rt.dispose();
     if (own) titan.dispose();
   }
-  // rows come bottom-up and premultiplied: flip and un-premultiply into a 2D canvas
+  // rows come bottom-up and premultiplied: flip them with whole-row copies, then un-premultiply only the
+  // few pixels that are partly transparent (edges, the cores' glow); opaque and empty pixels are already right
   const cv = document.createElement("canvas");
   cv.width = W;
   cv.height = H;
   const ctx = cv.getContext("2d");
-  if (!ctx) return portrait(seed, number, opts);
+  if (!ctx) return queued(seed, number, opts);
   const img = ctx.createImageData(W, H);
   const d = img.data;
-  for (let y = 0; y < H; y++) {
-    const src = (H - 1 - y) * W * 4,
-      dst = y * W * 4;
-    for (let x = 0; x < W * 4; x += 4) {
-      const a = buf[src + x + 3];
-      const k = a > 0 && a < 255 ? 255 / a : 1;
-      d[dst + x] = Math.min(255, buf[src + x] * k);
-      d[dst + x + 1] = Math.min(255, buf[src + x + 1] * k);
-      d[dst + x + 2] = Math.min(255, buf[src + x + 2] * k);
-      d[dst + x + 3] = a;
-    }
+  const row = W * 4;
+  for (let y = 0; y < H; y++) d.set(buf.subarray((H - 1 - y) * row, (H - y) * row), y * row);
+  for (let i = 3; i < d.length; i += 4) {
+    const a = d[i];
+    if (a === 0 || a === 255) continue;
+    const k = 255 / a;
+    d[i - 3] = Math.min(255, d[i - 3] * k);
+    d[i - 2] = Math.min(255, d[i - 2] * k);
+    d[i - 1] = Math.min(255, d[i - 1] * k);
   }
   ctx.putImageData(img, 0, 0);
   let out = cv;
@@ -189,7 +257,5 @@ export async function portraitAsync(seed: number, number: number, opts: Opts = {
       o.drawImage(cv, 0, 0, out.width, out.height);
     } else out = cv;
   }
-  const url = out.toDataURL("image/png");
-  cache.set(key, url);
-  return url;
+  return encode(out);
 }

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeTitan } from "@/core/titan";
 // @ts-ignore plain js module
-import { createLocalWorld, INTERLUDE_MS, LIFT_MS, LOCAL_HP, nextLocalSeed, REHEARSAL_HP, REHEARSAL_LEFT } from "./localWorld.js";
+import { createLocalWorld, INTERLUDE_MS, LIFT_MS, LOCAL_HP, nextLocalSeed, REHEARSAL_HP, REHEARSAL_LEFT, REHEARSAL_RESONANCE } from "./localWorld.js";
 
 // A stand-in for Game: just what the local world drives.
 function fakeGame() {
@@ -99,8 +99,12 @@ describe("a local titan falls", () => {
     r.stop();
   });
 
-  it("the next titan is never the same archetype as the one just felled, for any seed", () => {
-    for (let s = 1; s < 400; s++) expect(makeTitan(nextLocalSeed(s), 2).archetype).not.toBe(makeTitan(s, 1).archetype);
+  it("the next titan is never the same archetype, nor the same epithet, as the one just felled, for any seed", () => {
+    for (let s = 1; s < 400; s++) {
+      const [a, b] = [makeTitan(s, 1), makeTitan(nextLocalSeed(s), 2)];
+      expect(b.archetype).not.toBe(a.archetype);
+      expect(b.epithet).not.toBe(a.epithet);
+    }
     expect(nextLocalSeed(77)).toBe(nextLocalSeed(77)); // deterministic
   });
 
@@ -108,10 +112,11 @@ describe("a local titan falls", () => {
     const g = fakeGame();
     const w = createLocalWorld(g, { rehearsal: true, search: "?rehearse=1" });
     w.start();
-    expect(w.state).toMatchObject({ rehearsal: true, local: true, hpMax: REHEARSAL_HP, hp: Math.round(REHEARSAL_HP * REHEARSAL_LEFT), counts: false, huntOpts: { forgiving: true } });
-    // ~180 blows from falling, and it fights in Wrath (its wounds alone would say Ruin)
-    expect(w.state.hp).toBeGreaterThanOrEqual(150);
-    expect(w.state.hp).toBeLessThanOrEqual(200);
+    expect(w.state).toMatchObject({ rehearsal: true, nearDeath: true, local: true, hpMax: REHEARSAL_HP, hp: Math.round(REHEARSAL_HP * REHEARSAL_LEFT), counts: false, huntOpts: { forgiving: true, resonance: REHEARSAL_RESONANCE } });
+    // 600-800 blows from falling (a 10-15 s fight with one Surge), and it fights in Wrath (its wounds alone would say Ruin)
+    expect(w.state.hp).toBeGreaterThanOrEqual(600);
+    expect(w.state.hp).toBeLessThanOrEqual(800);
+    expect(REHEARSAL_RESONANCE).toBeGreaterThanOrEqual(65);
     expect(g.stageFn()).toBe(1);
     w.stop();
     expect(g.stageFn).toBeNull();
@@ -124,6 +129,10 @@ describe("a local titan falls", () => {
     w2.addHit(0, 10_000, 0); // no name given: the fall still happens, credited to no one
     vi.advanceTimersByTime(1);
     expect(felled[0]).toMatchObject({ rehearsal: true, blow: null, top: [] });
+    // the titan after a rehearsal's fall is a whole one: not "woken near death", and its light starts plain
+    vi.advanceTimersByTime(LIFT_MS + 10);
+    expect(w2.state).toMatchObject({ rehearsal: true, nearDeath: false, hp: REHEARSAL_HP, huntOpts: { forgiving: true } });
+    expect(w2.state.huntOpts.resonance).toBeUndefined();
     w.stop();
     w2.stop();
   });

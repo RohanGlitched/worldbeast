@@ -519,7 +519,8 @@ export default class World extends Actor<ToServer, ToClient> {
   private async checkTimers(now: number) {
     const t = this.titan;
     if (!t) return;
-    if (t.status === "awake" && now >= t.wokeAt + ESCAPE_MS) await this.endTitan("escaped", now, null);
+    // a titan escapes only if the world wounded it and could not finish it; one nobody has struck sleeps on
+    if (t.status === "awake" && now >= t.wokeAt + ESCAPE_MS && t.hp < t.hpMax - 0.5) await this.endTitan("escaped", now, null);
     if (now >= this.titan.wokeAt && this.announcedWake !== this.titan.number) {
       this.announcedWake = this.titan.number;
       this.broadcast({ t: "wake", n: now, titan: this.info(), hp: Math.round(this.titan.hp) });

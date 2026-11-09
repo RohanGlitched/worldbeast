@@ -177,7 +177,17 @@ describe("world actor (in-process)", () => {
     expect(A.last("wake")).toMatchObject({ titan: { number: 2 }, hp: felled.next.hpMax });
   });
 
-  it("lets an unfought titan escape after 8 hours", async () => {
+  it("keeps an unwounded titan awake past 8 hours: nobody struck it, so it cannot escape", async () => {
+    const n = w.titan.number;
+    vi.setSystemTime(w.titan.wokeAt + 9 * 3600_000);
+    await w.handleWake("escape");
+    await settle(w);
+    expect(w.titan.number).toBe(n);
+    expect(w.titan.status).toBe("awake");
+  });
+
+  it("lets a wounded titan the world could not finish escape after 8 hours", async () => {
+    w.titan.hp = w.titan.hpMax - 500;
     vi.setSystemTime(w.titan.wokeAt + 8 * 3600_000 + 10);
     await w.handleWake("escape");
     await settle(w);

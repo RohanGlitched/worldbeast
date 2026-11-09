@@ -5,6 +5,8 @@ import Footer from "./Footer";
 import Bookmarks from "./Bookmarks";
 import { Link } from "./router";
 
+const fmtN = (n) => n.toLocaleString("en-US");
+
 // Seeds known to wake each anatomy, for the specimen plates.
 const SPECIMENS = { throne: 1, coil: 2, strider: 7, bloom: 10, swarmheart: 5 };
 
@@ -128,6 +130,20 @@ export default function How() {
             </div>
           ))}
         </dl>
+      </section>
+
+      <section className="doc-section wb-fall-section" id="fall">
+        <h2>How a titan falls</h2>
+        <p>
+          A titan falls when the world has struck all its wounds. Its size is set when it wakes, from the world actor's own record of recent hunting: enough to last about two hours at the last few hours' pace, more for every hunter who came at once, and never less than {fmtN(10_000)} blows. So in a quiet world a handful of runs brings one down, and when many hunt it lasts. If nobody fells it within eight hours it escapes. The final blow, the greatest hunters and an epitaph go into the Hall, and twenty seconds later the next titan wakes.
+        </p>
+        <p>
+          To see a fall now, rehearse one: a titan of your own, woken near death in your browser alone. Only your blows wound it, it falls with the same ceremony, and nothing of it is written in the Hall.
+        </p>
+        <a className="join" href="/?rehearse=1">
+          Rehearse a fall
+          <small>a titan of your own · it doesn't count</small>
+        </a>
       </section>
 
       <section className="doc-section two">

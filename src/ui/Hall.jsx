@@ -9,6 +9,8 @@ import { Sigil } from "./sigils";
 import { Link } from "./router";
 import Footer from "./Footer";
 import Bookmarks from "./Bookmarks";
+import { base44 } from "@/api/base44Client";
+import { fmtAgo, recentRuns } from "./chronicle";
 
 const ORD = (n) => {
   const s = ["th", "st", "nd", "rd"],
@@ -130,13 +132,76 @@ function GhostPlate({ seed, label }) {
   );
 }
 
+/** No titan has ended yet: say so, and show the first plate being written by the titan awake now. */
+function FirstPlate({ awake }) {
+  const spec = awake ? makeTitan(awake.seed, awake.number) : null;
+  const dealt = awake ? Math.max(0, Math.round(awake.damageTotal ?? (awake.hpMax || 0) - (awake.hp ?? awake.hpMax ?? 0))) : 0;
+  const pct = awake && awake.hpMax ? (dealt / awake.hpMax) * 100 : 0;
+  return (
+    <article className="plate empty wb-first-plate">
+      <div className="plate-text">
+        <div className="folio">
+          <span>The first plate</span>
+          <span>being written now</span>
+        </div>
+        <h3>No titan has fallen yet</h3>
+        {spec ? (
+          <p className="lore">
+            The first plate will be <b>{spec.name}</b>'s. As of its last record it has taken{" "}
+            <b>{pct > 0 && pct < 0.1 ? "<0.1" : pct.toFixed(1)}%</b> of its wounds: {fmt(dealt)} of {fmt(awake.hpMax)} blows
+            {awake.hunterCount ? `, from ${fmt(awake.hunterCount)} ${awake.hunterCount === 1 ? "hunter" : "hunters"}` : ""}. When it falls, its engraving, the final blow and its greatest hunters are written here for good, and the next titan wakes.
+          </p>
+        ) : (
+          <p className="lore">When the world fells the titan that is awake, its engraving, its final blow and its greatest hunters are written here for good.</p>
+        )}
+        <Link className="join" to="/" style={{ marginTop: "0.6em" }}>
+          {spec ? `Strike ${spec.name} now` : "Join the hunt"}
+        </Link>
+        <p className="wb-rehearse">
+          Or <a href="/?rehearse=1">rehearse a fall</a>: a titan of your own, woken near death, so you can see what the Hall records. It doesn't count, and nothing of it is written here.
+        </p>
+      </div>
+    </article>
+  );
+}
+
+/** the latest finished runs, as the actor recorded them */
+function RecentRuns({ runs, titans }) {
+  if (!runs.length) return null;
+  const names = new Map(titans.map((t) => [t.number, makeTitan(t.seed, t.number).name]));
+  return (
+    <section className="doc-section">
+      <h2>The latest hunts</h2>
+      <p className="lore">Runs as the world recorded them: only blows the world accepted count.</p>
+      <ol className="roll wb-recent">
+        {runs.map((r) => {
+          const at = Number.isFinite(r.createdAt) ? r.createdAt : Date.parse(r.created_date || "");
+          return (
+            <li key={r.id}>
+              <Sigil id={r.sigil ?? 0} size={20} />
+              <span className="roll-name">{r.name || "A hunter"}</span>
+              <span className="roll-d">{fmt(r.damage)} blows</span>
+              <span className="roll-r">
+                {names.get(r.titanNumber) ? `against ${names.get(r.titanNumber)} · ` : ""}
+                {fmtAgo(Date.now() - at)}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+    </section>
+  );
+}
+
 export default function Hall() {
   const [titans, setTitans] = useState(null);
   const [hunters, setHunters] = useState([]);
+  const [runs, setRuns] = useState([]);
   useEffect(() => {
     document.title = "The Hall of Titans · WORLDBEAST";
     listTitans().then(setTitans);
     listHunters(12).then(setHunters);
+    recentRuns(base44?.entities, 8).then(setRuns);
   }, []);
   const list = titans ?? [];
   const awake = list.find((t) => t.status === "awake");
@@ -161,10 +226,14 @@ export default function Hall() {
         {rest.map((t) => (
           <Plate key={t.number} t={t} />
         ))}
+        {titans !== null && rest.length === 0 && <FirstPlate awake={awake} />}
         {titans !== null &&
-          rest.length < 3 &&
-          [[1, "throne"], [2, "coil"], [7, "strider"], [10, "bloom"]].slice(0, 3 - rest.length).map(([seed, label]) => <GhostPlate key={label} seed={seed} label={label} />)}
-        {titans !== null && rest.length < 2 && (
+          rest.length === 0 &&
+          [[1, "throne"], [2, "coil"], [7, "strider"], [10, "bloom"]]
+            .filter(([, label]) => !awake || makeTitan(awake.seed, awake.number).archetype !== label)
+            .slice(0, 1)
+            .map(([seed, label]) => <GhostPlate key={label} seed={seed} label={label} />)}
+        {titans !== null && rest.length === 1 && (
           <article className="plate empty">
             <div className="plate-text">
               <h3>Plates yet to be filled</h3>
@@ -196,6 +265,7 @@ export default function Hall() {
           </ol>
         )}
       </section>
+      <RecentRuns runs={runs} titans={list} />
       <Footer />
     </div>
   );

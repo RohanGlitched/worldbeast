@@ -581,3 +581,7 @@
   gap: 0.16em;
   line-height: 1.28;
 }
+/* in flight the strip's chronicle keeps to its words: no "moments ago" trailing onto a line it has no room for */
+.leaf.strip .chronicle .wb-ago {
+  display: none;
+}

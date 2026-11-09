@@ -124,6 +124,13 @@ export class PageLayer {
           float inA = step(uArena.x, vW.x) * step(vW.x, uArena.z) * step(uArena.y, vW.y) * step(vW.y, uArena.w);
           col *= 1. - .05 * uStage * inA;
           col += uGold * .03 * uPulse * inA;
+          // the double frame flashes gold on every beat, brightest on the bar (readable with the sound off)
+          float fx = min(abs(vW.x - uArena.x), abs(vW.x - uArena.z));
+          float fy = abs(vW.y - uArena.y);
+          float onV = step(uArena.y - .3, vW.y) * step(vW.y, uArena.w + .2);
+          float onH = step(uArena.x - .3, vW.x) * step(vW.x, uArena.z + .3);
+          float fr = max((1. - smoothstep(.0, .09, abs(fx - .32))) * onV, (1. - smoothstep(.0, .09, abs(fy - .34))) * onH);
+          col = mix(col, uGold * 1.15, fr * uPulse * .9);
           float edge = min(min(vW.x - uArena.x, uArena.z - vW.x), min(vW.y - uArena.y, uArena.w - vW.y));
           col = mix(col, uAccent, uHurt * (1. - smoothstep(.0, 7., edge)) * .5 * step(-.5, edge));
           gl_FragColor = vec4(col, 1.);

@@ -1,5 +1,5 @@
 import { ARENA, Stage } from "../titan";
-import { Field, newFrame, touch, Touch } from "../field";
+import { Field, newFrame, touch, Touch, STRIDE } from "../field";
 import { Hunt, Input } from "../hunt";
 
 // A look-ahead dodger used for fairness tests, demo echoes and attract mode.
@@ -21,6 +21,21 @@ export class Bot {
         const x = Math.max(-ARENA.W / 2 + 0.3, Math.min(ARENA.W / 2 - 0.3, h.x + dx * speed * hz));
         const y = Math.max(0.4, Math.min(ARENA.H - 1.2, h.y + dy * speed * hz));
         this.field.sample(t + hz, stage, this.probe);
+        // the hunter's own hounds are not in the shared field: extrapolate them along their velocity
+        const src = h.frame,
+          B = STRIDE.B;
+        for (let i = 0; i < src.bulletCount; i++) {
+          const o = i * B;
+          if (src.bullets[o + 5] < 12) continue;
+          const n = this.probe.bulletCount;
+          if (n * B >= this.probe.bullets.length) break;
+          const q = n * B;
+          for (let k = 0; k < B; k++) this.probe.bullets[q + k] = src.bullets[o + k];
+          this.probe.bullets[q] += src.bullets[o + 6] * hz;
+          this.probe.bullets[q + 1] += src.bullets[o + 7] * hz;
+          this.probe.bulletIds[n] = src.bulletIds[i];
+          this.probe.bulletCount++;
+        }
         touch(this.probe, x, y, this.tc);
         const c = Math.min(this.tc.nearest, 1.2);
         score += c < 0 ? -50 / hz : c;

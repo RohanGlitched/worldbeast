@@ -109,12 +109,12 @@ export default function Hall() {
         {rest.map((t) => (
           <Plate key={t.number} t={t} />
         ))}
-        {titans !== null && rest.length === 0 && (
+        {titans !== null && rest.length < 2 && (
           <article className="plate empty">
             <div className="plate-text">
-              <h3>The first plate is still blank</h3>
-              <p className="lore">No titan has fallen yet. When the world fells the one that is awake, its engraving, its final blow and its greatest hunters are written here for good.</p>
-              <Link className="join" to="/">
+              <h3>Plates yet to be filled</h3>
+              <p className="lore">When the world fells the titan that is awake, its engraving, its final blow and its greatest hunters are written here for good, and a new titan wakes: born from a new number, singing a new song.</p>
+              <Link className="join" to="/" style={{ marginTop: "0.8em" }}>
                 Join the hunt
               </Link>
             </div>
@@ -124,6 +124,7 @@ export default function Hall() {
       </section>
       <section className="doc-section">
         <h2>The greatest hunters</h2>
+        <p className="lore">All-time blows struck across every titan.</p>
         {hunters.length === 0 ? (
           <p className="lore">No hunter has finished a run yet. The first names written here will be the first to strike.</p>
         ) : (

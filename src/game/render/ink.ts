@@ -84,7 +84,7 @@ export class InkLayer {
           float aa = fwidth(d) * 1.2;
           float body = 1. - smoothstep(-aa, aa, d);
           if (body < .01 && d > .5) discard;
-          vec3 c = vInk < .5 ? uA : vInk < 1.5 ? uB : uGold;
+          vec3 c = vInk < .5 ? uA : vInk < 1.5 ? uB : vInk < 2.5 ? uGold : uInk * 1.3;
           // pooled pigment: darker rim, lighter wet centre, a tiny specular bead
           float rim = smoothstep(-.42, -.02, d);
           vec3 col = mix(c * 1.12, c * .55 + uInk * .25, rim);
@@ -250,6 +250,7 @@ export class InkLayer {
       d[i * 4 + 2] = f.bullets[o + 2];
       d[i * 4 + 3] = f.bullets[o + 3];
       m[i * 4] = f.bullets[o + 4];
+      if (f.bullets[o + 5] >= 12) d[i * 4 + 3] = 3; // hound
       m[i * 4 + 1] = (f.bulletIds[i] % 977) / 977;
       m[i * 4 + 2] = f.bullets[o + 6];
       m[i * 4 + 3] = f.bullets[o + 7];

@@ -74,6 +74,7 @@ export default function Hunt() {
   const runTimer = useRef(null);
   const [felled, setFelled] = useState(null);
   const [revived, setRevived] = useState(null);
+  const [labels, setLabels] = useState([]);
 
   useEffect(() => {
     const g = new Game(canvasRef.current);
@@ -139,11 +140,39 @@ export default function Hunt() {
     w.start();
     g.run();
     setLayout(g.layout());
+    // names beside other hunters and echoes, so the shared world is visible on the page itself
+    const labelTick = setInterval(() => {
+      const lw = w.world;
+      if (!lw || !g.spec) return setLabels((l) => (l.length ? [] : l));
+      const out = [];
+      for (const h of lw.remoteHunters()) {
+        if (h.flags & 128) continue;
+        const p = g.screenOf(h.x, h.y);
+        out.push({ k: "h" + h.id, x: p.x, y: p.y, text: h.name, sigil: h.sigil, kind: "live" });
+      }
+      for (const e of lw.echoesAt()) {
+        const p = g.screenOf(e.x, e.y);
+        out.push({ k: "e" + e.id, x: p.x, y: p.y, text: "echo · " + e.name, sigil: e.sigil, kind: "echo" });
+      }
+      setLabels(out.slice(0, 24));
+    }, 100);
+    const onHide = () => {
+      if (document.visibilityState !== "hidden") return;
+      const cur = g.currentSummary();
+      if (cur && cur.time > 3) w.sendRun(cur);
+      else if (runTimer.current) {
+        clearTimeout(runTimer.current);
+        runTimer.current = null;
+      }
+    };
+    document.addEventListener("visibilitychange", onHide);
     // any first gesture wakes the sound
     const unlock = () => audio?.unlock().catch(() => {});
     window.addEventListener("pointerdown", unlock, { once: true });
     window.addEventListener("keydown", unlock, { once: true });
     return () => {
+      document.removeEventListener("visibilitychange", onHide);
+      clearInterval(labelTick);
       clearTimeout(runTimer.current);
       w.stop();
       g.stop();
@@ -162,7 +191,8 @@ export default function Hunt() {
     }
     worldRef.current?.identify?.(profile);
     setSummary(null);
-    g.start(profile.aspect);
+    // a first hunt starts half-charged, so the first Surge comes early
+    g.start(profile.aspect, { resonance: (profile.runs || 0) === 0 ? 55 : 0 });
     canvasRef.current?.focus();
   }, [profile, world]);
 
@@ -276,6 +306,14 @@ export default function Hunt() {
 
   const lobbyControls = (
     <section aria-label="Join the hunt" style={{ display: "flex", flexDirection: "column", gap: "0.5em" }}>
+      {(() => {
+        const next = SEALS.find((x) => !(profile.seals || []).includes(x.id) && x.id !== "first");
+        return next && (profile.runs || 0) > 0 ? (
+          <div className="next-seal">
+            Next seal: <b>{next.name}</b>. {next.line}
+          </div>
+        ) : null;
+      })()}
       <div className="seal-row" aria-label={`Seals: ${(profile.seals || []).length} of ${SEALS.length}`}>
         {SEALS.map((x, i) => (
           <Seal key={x.id} i={i} earned={(profile.seals || []).includes(x.id)} size={u * 0.95} />
@@ -308,6 +346,19 @@ export default function Hunt() {
         ))}
       </div>
       <div className="aspect-line">{ASPECTS[profile.aspect].line}</div>
+      {(profile.runs || 0) < 2 && (
+        <ul className="howto" aria-label="How to hunt">
+          <li>
+            <i className="life" /> Three lights. Only the bright pip at your star's heart can be struck.
+          </li>
+          <li>
+            <i className="hk">✦</i> Gold wounds open on the beat; your light strikes them by itself. Nearer the titan strikes harder.
+          </li>
+          <li>
+            <i className="hk">≈</i> Brush past ink to fill Resonance, then Surge. {layout && !layout.spread ? "Double-tap" : "Space"} dashes through anything.
+          </li>
+        </ul>
+      )}
       <button className="join" onClick={begin} disabled={!!world?.interlude}>
         {world?.interlude ? `The next titan stirs… ${world.interlude}` : "Join the hunt"}
         <small>{world?.mode === "offline" ? "The world is out of reach: you hunt this titan alone for now" : world?.online > 1 ? `${world.online - 1} ${world.online - 1 === 1 ? "other is" : "others are"} watching or fighting it now` : "Your echo will fly with the hunters after you"}</small>
@@ -470,7 +521,12 @@ export default function Hunt() {
       )}
 
       {tip && arena && phase === "playing" && (
-        <div className="margin-note" style={{ left: arena.x + arena.w * 0.1, width: arena.w * 0.8, top: arena.y + arena.h * 0.36 }} key={tip.id} dangerouslySetInnerHTML={{ __html: tip.html }} />
+        <div
+          className={"margin-note" + (L?.spread ? " in-leaf" : "")}
+          style={L?.spread && L.left ? { left: L.left.x + L.left.w * 0.06, width: L.left.w * 0.88, top: L.left.y + L.left.h * 0.66 } : { left: arena.x + arena.w * 0.06, width: arena.w * 0.88, top: arena.y + 4 }}
+          key={tip.id}
+          dangerouslySetInnerHTML={{ __html: (L?.spread ? '<span class="manicule">☞</span> ' : "") + tip.html }}
+        />
       )}
 
       {felled && arena && (
@@ -501,6 +557,12 @@ export default function Hunt() {
           <b>{revived}</b> flew through your spark. You rise again.
         </div>
       )}
+
+      {labels.map((l) => (
+        <div key={l.k} className={"hunter-label " + l.kind} style={{ left: l.x, top: l.y }}>
+          <Sigil id={l.sigil} size={u * 0.38} /> {l.text}
+        </div>
+      ))}
 
       {floats.map((f) => (
         <div key={f.id} className={"float " + f.kind + "-f"} style={{ left: f.x, top: f.y }}>

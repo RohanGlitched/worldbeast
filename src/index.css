@@ -1285,3 +1285,72 @@ button {
     bottom: 70px !important;
   }
 }
+
+.hunter-label {
+  position: absolute;
+  pointer-events: none;
+  transform: translate(-50%, calc(var(--u) * 0.75));
+  font-family: var(--fell);
+  font-style: italic;
+  font-size: calc(var(--u) * 0.36);
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25em;
+  color: var(--ink-2);
+  text-shadow: 0 0 3px var(--vellum), 0 0 6px var(--vellum);
+  transition: left 0.1s linear, top 0.1s linear;
+}
+.hunter-label.echo {
+  opacity: 0.55;
+}
+.howto {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3em;
+  font-size: 0.86em;
+  color: var(--ink-2);
+}
+.howto li {
+  display: flex;
+  gap: 0.5em;
+  align-items: baseline;
+}
+.howto .life {
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  flex: none;
+}
+.howto .hk {
+  font-style: normal;
+  color: #8a6512;
+  width: 0.8em;
+  flex: none;
+  text-align: center;
+}
+
+.margin-note.in-leaf {
+  text-align: left;
+  font-size: calc(var(--u) * 0.66);
+  background: none;
+  border-left: 3px solid var(--vermilion);
+  padding: 0.3em 0 0.3em 0.8em;
+}
+.manicule {
+  font-style: normal;
+  color: var(--vermilion);
+  font-size: 1.3em;
+}
+.next-seal {
+  font-size: 0.86em;
+  font-style: italic;
+  color: var(--ink-2);
+}
+.next-seal b {
+  font-style: normal;
+  color: var(--vermilion);
+}

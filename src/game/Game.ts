@@ -179,6 +179,12 @@ export class Game {
       this.events.onDown?.(this.summaryOf(h, this.stage, true));
     }
   }
+  /** the run as it stands (used when the page is closed mid-run) */
+  currentSummary(): RunSummary | null {
+    const h = this.hunt;
+    return h && this.phase === "playing" ? this.summaryOf(h, this.stage, false) : null;
+  }
+
   /** someone flew through your spark: rise again */
   revive() {
     const h = this.hunt;
@@ -217,8 +223,9 @@ export class Game {
     this.autopilot = on && this.field ? new Bot(this.field, 1, greed) : null;
   }
 
-  start(aspect: AspectId) {
+  start(aspect: AspectId, opts: { resonance?: number } = {}) {
     this.hunt = new Hunt(this.spec, this.field, aspect);
+    if (opts.resonance) this.hunt.resonance = opts.resonance;
     this.hunt.x = 0;
     this.hunt.y = 3;
     this.target = { x: 0, y: 3 };
@@ -439,7 +446,7 @@ export class Game {
     }
 
     // --- page, ink, hunters, fx
-    const pulse = Math.pow(1 - (beat % 1), 8) * (beatInt % 4 === 0 ? 1 : 0.4);
+    const pulse = t < 0 ? 0 : Math.pow(1 - (beat % 1), 6) * (beatInt % 4 === 0 ? 1 : 0.45);
     this.hurtFlash = Math.max(0, this.hurtFlash - dt * 2.5);
     this.page.update(this.view.rect, t, stage, pulse, this.hurtFlash, this.view.leftLeaf);
     this.ink.update(frame, t);

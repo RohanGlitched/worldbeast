@@ -1,5 +1,6 @@
 import { ARENA, coreOpen, Stage, TitanSpec } from "./titan";
-import { Field, FieldFrame, newFrame, touch, Touch } from "./field";
+import { Field, FieldFrame, newFrame, pushPersonal, pushPersonalMark, touch, Touch } from "./field";
+import { rngFor } from "./rng";
 
 // One hunter's run: movement, dash, grazes, resonance, darts and damage. Pure logic, no DOM.
 
@@ -28,7 +29,7 @@ export const MAX_HITS = 3;
 const DASH_TIME = 0.16;
 const DASH_SPEED = 26;
 const INVULN_AFTER_HIT = 1.6;
-const RESONANCE_PER_GRAZE = 3.5;
+const RESONANCE_PER_GRAZE = 7;
 const SURGE_TIME = 3.2;
 const DART_SPEED = 30;
 
@@ -73,7 +74,7 @@ export class Hunt {
   vx = 0;
   vy = 0;
   hits = 0;
-  invuln = 2.0; // grace at spawn
+  invuln = 3.0; // grace at spawn
   dashT = 0;
   dashCd = 0;
   dashDir = { x: 0, y: 1 };
@@ -102,6 +103,16 @@ export class Hunt {
   private dashId = 0;
   private mirroredDash = -1;
   private grazed = new Set<number>();
+  /**
+   * Hounds: small volleys only you face, thrown at where you are. They stop a still hunter from
+   * farming the titan, fill the quiet bars of Calm, and grow fiercer the longer a run lasts.
+   */
+  private hounds: Array<{ beat: number; ox: number; oy: number; a: number; n: number; spread: number; speed: number; id: number }> = [];
+  private nextHound = -1;
+  private houndId = 0;
+  private stillT = 0;
+  private lastX = 0;
+  private lastY = 3;
   private lastBeat = 0;
 
   constructor(spec: TitanSpec, field: Field, aspect: AspectId) {
@@ -156,6 +167,9 @@ export class Hunt {
     this.x = Math.max(-ARENA.W / 2 + 0.3, Math.min(ARENA.W / 2 - 0.3, this.x + this.vx * dt));
     this.y = Math.max(0.4, Math.min(ARENA.H - 1.2, this.y + this.vy * dt));
 
+    // --- hounds (personal, local-only volleys)
+    this.houndsStep(t, beat, stage, dt);
+
     // --- hazards
     this.invuln = Math.max(0, this.invuln - dt);
     const tc = touch(this.frame, this.x, this.y, this.tch);
@@ -172,7 +186,7 @@ export class Hunt {
         this.hitLog.push(this.lastHitKind);
         this.invuln = INVULN_AFTER_HIT;
         this.combo = 0;
-        this.resonance *= 0.5;
+        this.resonance *= 0.75;
         if (this.hits >= MAX_HITS) {
           this.alive = false;
           return;
@@ -241,6 +255,49 @@ export class Hunt {
           this.events.push({ core: d.core, dmg, x: d.tx, y: d.ty, surge: d.surge, beat });
         }
         this.darts.splice(i, 1);
+      }
+    }
+  }
+
+  private houndsStep(t: number, beat: number, stage: Stage, dt: number) {
+    if (t < 0) return;
+    const moved = Math.hypot(this.x - this.lastX, this.y - this.lastY);
+    this.lastX = this.x;
+    this.lastY = this.y;
+    this.stillT = moved < dt * 1.2 ? this.stillT + dt : Math.max(0, this.stillT - dt * 2);
+    // interval in beats: shorter as the run goes on, in harder stages, and much shorter for a hunter who sits still
+    const runRamp = Math.min(1, this.time / 90);
+    let every = (stage === 0 ? 6 : stage === 1 ? 5 : 4) - runRamp * 2.5;
+    if (this.stillT > 1.2) every = 1.5;
+    if (this.nextHound < 0) this.nextHound = Math.ceil(beat) + 3;
+    if (beat >= this.nextHound) {
+      const r = rngFor("hound", this.spec.seed, this.houndId);
+      const o = this.spec.origins[this.houndId % this.spec.origins.length];
+      const lead = 1; // a beat of warning
+      const n = 3 + Math.floor(runRamp * 2) + (stage > 1 ? 1 : 0);
+      this.hounds.push({ beat: this.nextHound + lead, ox: o.x, oy: o.y, a: 0, n, spread: 0.32 - runRamp * 0.08, speed: 6.2 + runRamp * 1.6 + stage * 0.5, id: this.houndId++ });
+      this.nextHound += Math.max(1.5, Math.round(every * 2) / 2) + (r.chance(0.3) ? 0.5 : 0);
+    }
+    const bl = this.spec.beat;
+    for (let i = this.hounds.length - 1; i >= 0; i--) {
+      const h = this.hounds[i];
+      const age = beat - h.beat; // beats since release (negative = winding up)
+      if (age < -1) continue;
+      if (age < 0) {
+        // aim tracks you until the moment of release, then it is committed
+        h.a = Math.atan2(this.y - h.oy, this.x - h.ox);
+        pushPersonalMark(this.frame, h.ox, h.oy, 1 + age);
+        continue;
+      }
+      const ts = age * bl;
+      const d = h.speed * ts;
+      if (d > 34) {
+        this.hounds.splice(i, 1);
+        continue;
+      }
+      for (let k = 0; k < h.n; k++) {
+        const a = h.a + (k - (h.n - 1) / 2) * h.spread;
+        pushPersonal(this.frame, h.ox + Math.cos(a) * d, h.oy + Math.sin(a) * d, 0.25, 0x7f000000 + h.id * 16 + k, Math.cos(a) * h.speed, Math.sin(a) * h.speed);
       }
     }
   }

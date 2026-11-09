@@ -141,7 +141,7 @@ export function planPhrase(spec: TitanSpec, phrase: number, stage: Stage): Phras
 
   const overture = phrase === 0;
   const crescendo = phrase === LOOP_PHRASES - 1;
-  const density = (overture ? 0.65 : crescendo ? 1.25 : 1) * [1, 1.35, 1.7][stage];
+  const density = (overture ? 0.65 : crescendo ? 1.2 : 1) * [1, 1.3, 1.52][stage];
   // bars 0..15; each bar gets 0..2 volleys; heavy ones consume the next bar's budget
   const volleys: Volley[] = [];
   let idx = 0;
@@ -273,6 +273,18 @@ export class Field {
 
 let curKind = 0;
 export const KIND_LIST: Kind[] = ["ring", "spiral", "fan", "wall", "rain", "wave", "curve", "bloom", "beam", "slam", "glyph", "cross"];
+export const HOUND_KIND = KIND_LIST.length; // personal volleys aimed at one hunter
+
+/** add a drop that only this hunter sees (their hounds); marked so the renderer can tint it */
+export function pushPersonal(f: FieldFrame, x: number, y: number, r: number, id: number, vx: number, vy: number) {
+  const k = curKind;
+  curKind = HOUND_KIND;
+  pushBullet(f, x, y, r, 1, 1, id, vx, vy);
+  curKind = k;
+}
+export function pushPersonalMark(f: FieldFrame, x: number, y: number, progress: number) {
+  pushMark(f, x, y, progress, 1);
+}
 
 function pushBullet(f: FieldFrame, x: number, y: number, r: number, ink: number, alpha: number, id: number, vx = 0, vy = 0) {
   if (!inArena(x, y, r) || f.bulletCount * B >= f.bullets.length) return;

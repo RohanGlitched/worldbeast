@@ -7,7 +7,7 @@ import {
   sanitizeSigil, segDist, SPARK_MS, titanSeed, titanT, topHunters, validKey,
 } from "./logic.ts";
 import type { FeedItem, HitWhy, HunterRow, RosterRow, RunMsg, SparkRow, TitanEnd, TitanInfo, ToClient, ToServer } from "./shared/types.ts";
-import { F_DOWN, HIT_SURGE, Q } from "./shared/types.ts";
+import { F_DOWN, HIT_SURGE, Q, WORLD_SESSION } from "./shared/types.ts";
 
 // The world: one titan at a time, every hunter in one session. The fight itself is closed form
 // (core/field.ts), so this only keeps the clock, the global HP, the titan lifecycle and the relay.
@@ -547,7 +547,7 @@ export default class World extends Actor<ToServer, ToClient> {
         if (ev === "skip") return;
         if (ev) await this.db.Echo.delete(ev);
         await this.db.Echo.create(rec);
-      });
+      }, true);
     }
     conn.send({ t: "runAck", n: now, damage: r.damage, echo: !!echo, clamped: r.clamped });
   }
@@ -659,8 +659,12 @@ export default class World extends Actor<ToServer, ToClient> {
     return this.client.asServiceRole.entities;
   }
 
-  /** serialised per key (one of LANES chains), never throws, never blocks the caller */
-  private write(key: string, fn: () => Promise<unknown>) {
+  /**
+   * Serialised per key (one of LANES chains), never throws, never blocks the caller. Test sessions
+   * (any session but world-1) only write echoes, which are keyed by their own titan seeds.
+   */
+  private write(key: string, fn: () => Promise<unknown>, testOk = false) {
+    if (!testOk && this.instanceId !== WORLD_SESSION) return;
     const i = hash32("lane", key) % LANES;
     this.pending++;
     this.lanes[i] = this.lanes[i]

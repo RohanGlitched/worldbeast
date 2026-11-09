@@ -110,6 +110,7 @@ export class Game {
   private cssH = 1;
   /** seconds since this titan was first drawn: drives the engraving-in sequence */
   private revealT = 0;
+  private fallT = -1;
   private ro: ResizeObserver;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -138,6 +139,7 @@ export class Game {
     this.titan = new Titan(this.spec);
     this.titan.u.uReveal.value = 0;
     this.revealT = 0;
+    this.fallT = -1;
     this.view.scene.add(this.titan.group);
     this.resize();
     const p = this.spec.plate;
@@ -148,6 +150,21 @@ export class Game {
     this.coreHit = this.spec.cores.map(() => 0);
     this.hunt = null;
     this.phase = "lobby";
+  }
+
+  /** the world felled the titan: it shudders, its seams flood with gold, then the engraving lifts away */
+  fell() {
+    if (this.fallT >= 0) return;
+    this.fallT = 0;
+    this.shake = 1.2;
+    this.events.onSfx?.("felled");
+    if (this.hunt && this.phase === "playing") {
+      // your run ends with the titan: a victory, not a death
+      this.hunt.alive = false;
+    }
+  }
+  get falling() {
+    return this.fallT >= 0;
   }
 
   get revealing() {
@@ -349,8 +366,27 @@ export class Game {
     this.titanHurt = Math.max(0, this.titanHurt - dt * 2.5);
     const me = h && this.phase === "playing" ? { x: h.x, y: h.y } : { x: 0, y: 4 };
     const ctx: TitanCtx = { t, beat, player: me, cues, stage, crack: 1 - this.hpFrac, hurt: this.titanHurt, coreOpen: coreOpenArr, coreHit: this.coreHit };
+    if (this.fallT >= 0) {
+      this.fallT += dt;
+      const f = this.fallT;
+      ctx.hurt = Math.min(1, 0.6 + Math.sin(f * 40) * 0.4) * (f < 1.6 ? 1 : 0.3);
+      ctx.crack = 1;
+      ctx.stage = 2;
+      if (f < 1.6 && Math.random() < dt * 30) {
+        const x = (Math.random() - 0.5) * 16,
+          y = 20 + Math.random() * 11;
+        this.fx.burst(x, y, 6, { type: P.Fleck, size: 0.18, speed: 9, life: 1.4, g: -7 });
+      }
+      if (f > 1.6 && f - dt <= 1.6) {
+        for (let i = 0; i < 12; i++) this.fx.ring((Math.random() - 0.5) * 12, 21 + Math.random() * 9, 4 + Math.random() * 4, 0, 0.9);
+        this.fx.burst(0, 25, 160, { type: P.Fleck, size: 0.22, speed: 16, life: 2.2, g: -5 });
+        this.shake = 1.4;
+      }
+      // the engraving lifts away from the page, bottom to top
+      if (f > 1.6) this.titan.u.uReveal.value = Math.max(0, 1 - (f - 1.6) / 1.8);
+    }
     this.titan.update(ctx, dt);
-    if (this.revealT < 6) {
+    if (this.revealT < 6 && this.fallT < 0) {
       this.revealT += dt;
       const r = this.revealT;
       // lines cut in over 2.6 s, colour bleeds in over 1.3 s, gold settles over 1 s

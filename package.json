@@ -10,7 +10,7 @@
     "sync-core": "node scripts/sync-core.mjs",
     "predeploy": "node scripts/sync-core.mjs",
     "deploy": "npx base44 build && npx base44 deploy --yes",
-    "deploy:actors": "node scripts/sync-core.mjs && npx base44 entities push && npx base44 actors deploy",
+    "deploy:actors": "node scripts/sync-core.mjs && npx base44 entities push --yes && npx base44 actors deploy",
     "test": "vitest run",
     "live-check": "node scripts/live-check.mjs"
   },

@@ -63,6 +63,7 @@ export const F_DOWN = 128;
 
 export interface RunMsg {
   t: "run";
+  titan?: number; // titan number the run was fought against
   damage: number;
   time: number;
   grazes: number;

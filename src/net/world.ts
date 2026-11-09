@@ -142,7 +142,7 @@ export class World {
   private posSentAt = 0;
   private posSent = "";
   private hits: HitRow[] = [];
-  private remote = new Map<number, { s: Array<[number, number, number, number]>; sigil: number }>();
+  private remote = new Map<number, { s: Array<[number, number, number, number]>; sigil: number; seen: number }>();
   private remoteSeen = 0;
   private wokeFired = -1;
   private runWaiters: Array<(r: RunResult | null) => void> = [];
@@ -217,7 +217,7 @@ export class World {
     if (Number.isNaN(this.smoothOffset) || Math.abs(this.clockOffset - this.smoothOffset) > 250) this.smoothOffset = this.clockOffset;
     else this.smoothOffset += Math.max(-4, Math.min(4, this.clockOffset - this.smoothOffset));
     if (this.mode === "online" && now - this.lastPingAt > PING_EVERY_MS) this.ping();
-    const silentSince = this.lastMsgAt || this.openedAt;
+    const silentSince = Math.max(this.lastMsgAt, this.openedAt);
     if (!this.reconnectTimer && this.conn && now - silentSince > SILENT_MS) {
       if (this.mode === "online") this.setMode(this.local ? "offline" : "connecting");
       if (this.mode === "connecting" && !this.local) this.startLocal();
@@ -412,15 +412,15 @@ export class World {
     for (const [id, x, y, sigil, flags] of rows) {
       if (id === this.you) continue;
       let r = this.remote.get(id);
-      if (!r) this.remote.set(id, (r = { s: [], sigil }));
+      if (!r) this.remote.set(id, (r = { s: [], sigil, seen }));
       r.sigil = sigil;
       const last = r.s[r.s.length - 1];
       if (!last || n > last[0]) r.s.push([n, x, y, flags]);
       if (r.s.length > 16) r.s.shift();
-      (r as { seen?: number }).seen = seen;
+      r.seen = seen;
     }
     // a hunter missing from a state message is idle or out of view
-    for (const [id, r] of this.remote) if ((r as { seen?: number }).seen !== seen) this.remote.delete(id);
+    for (const [id, r] of this.remote) if (r.seen !== seen) this.remote.delete(id);
   }
 
   /** remote hunters, interpolated ~interpMs in the past for smooth motion */

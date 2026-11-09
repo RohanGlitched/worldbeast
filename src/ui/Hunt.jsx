@@ -6,6 +6,7 @@ import { Sigil, SIGIL_NAMES } from "./sigils";
 import { loadProfile, saveProfile, cleanName } from "./profile";
 import { createLocalWorld } from "./localWorld";
 import Canticle from "./Canticle";
+import Bookmarks from "./Bookmarks";
 
 const ORD = (n) => {
   const s = ["th", "st", "nd", "rd"],
@@ -35,6 +36,8 @@ export default function Hunt() {
   const [floats, setFloats] = useState([]);
   const [pickSigil, setPickSigil] = useState(false);
   const floatId = useRef(0);
+  const [tip, setTip] = useState(null);
+  const tipsSeen = useRef(new Set(profile.tips || []));
 
   useEffect(() => {
     const g = new Game(canvasRef.current);
@@ -64,6 +67,7 @@ export default function Hunt() {
       setFloats((f) => [...f.slice(-24), { id, text, x: p.x, y: p.y, kind }]);
       setTimeout(() => setFloats((f) => f.filter((q) => q.id !== id)), 950);
     };
+    document.title = "WORLDBEAST · one titan, everyone, right now";
     w.start();
     g.run();
     setLayout(g.layout());
@@ -88,6 +92,28 @@ export default function Hunt() {
     window.addEventListener("keydown", k);
     return () => window.removeEventListener("keydown", k);
   }, [phase, begin]);
+
+  // first-run marginal notes: each shows once, in order of need
+  const showTip = useCallback((id, html, ms = 4200) => {
+    if (tipsSeen.current.has(id)) return;
+    tipsSeen.current.add(id);
+    setTip({ id, html });
+    setTimeout(() => setTip((t) => (t?.id === id ? null : t)), ms);
+    setProfile((p) => {
+      const n = { ...p, tips: [...tipsSeen.current] };
+      saveProfile(n);
+      return n;
+    });
+  }, []);
+  useEffect(() => {
+    if (!hud || phase !== "playing") return;
+    const touch = layout && !layout.spread;
+    if (hud.time < 6) showTip("move", touch ? "Drag anywhere to fly. Only the bright pip at your star's heart can be struck." : "Fly with <b>WASD</b> or the arrows. Only the bright pip at your star's heart can be struck.");
+    else if (hud.coresOpen > 0) showTip("wound", "A <b>gold wound</b> is open. Your light strikes open wounds by itself; fly nearer the titan to strike harder.");
+    if (hud.grazes >= 3) showTip("graze", "<b>Grazing</b> an attack fills Resonance. Fill it and your light Surges.");
+    if (hud.time > 14) showTip("dash", touch ? "Tap <b>dash</b> or double-tap to pass clean through an attack." : "<b>Space</b> dashes you clean through an attack.");
+    if (hud.time > 24) showTip("song", "Every attack lands on the beat. Read what comes next in <b>the Canticle</b>.");
+  }, [hud, phase, layout, showTip]);
 
   const update = (patch) =>
     setProfile((p) => {
@@ -216,6 +242,7 @@ export default function Hunt() {
   const arena = L?.arena;
   return (
     <div className="stage" style={styleU}>
+      {phase !== "playing" && <Bookmarks />}
       <canvas ref={canvasRef} tabIndex={0} aria-label="The hunt. Move with WASD, the arrow keys, or by dragging. Dash with Space." />
 
       {/* the bestiary leaf (wide screens) */}
@@ -305,6 +332,10 @@ export default function Hunt() {
             </button>
           </div>
         </div>
+      )}
+
+      {tip && arena && phase === "playing" && (
+        <div className="margin-note" style={{ left: arena.x + arena.w * 0.1, width: arena.w * 0.8, top: arena.y + arena.h * 0.36 }} key={tip.id} dangerouslySetInnerHTML={{ __html: tip.html }} />
       )}
 
       {floats.map((f) => (

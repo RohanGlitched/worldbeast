@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { portrait } from "@/game/portrait";
+import { portraitAsync } from "@/game/portrait";
 
 // The closed codex: tooled leather, a gilded title, a clasp. Opening it unlocks sound and wakes the page.
 
@@ -8,12 +8,14 @@ export default function Cover({ rect, onOpen, online, spec }) {
   const [img, setImg] = useState(null);
   useEffect(() => {
     if (!spec) return;
-    const id = setTimeout(() => {
-      try {
-        setImg(portrait(spec.seed, spec.number, { w: 420, h: 420 }));
-      } catch {}
-    }, 50);
-    return () => clearTimeout(id);
+    // drawn by the game's renderer once the titan's programs are linked (the key-art medallion shows until then)
+    let live = true;
+    portraitAsync(spec.seed, spec.number, { w: 420, h: 420 })
+      .then((url) => live && setImg(url))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
   }, [spec?.seed, spec?.number]);
   const open = () => {
     if (opening) return;

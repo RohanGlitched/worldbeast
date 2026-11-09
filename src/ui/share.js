@@ -1,4 +1,4 @@
-import { portrait } from "@/game/portrait";
+import { portraitAsync } from "@/game/portrait";
 import { SIGIL_NAMES } from "./sigils";
 
 // A 1200×630 card for the run: the titan's engraving, your blows and your share of the world's.
@@ -42,7 +42,7 @@ export async function makeCard({ spec, summary, profile, share }) {
   g.lineWidth = 4;
   g.strokeRect(54, 54, W - 108, H - 108);
   // the titan
-  const img = await loadImg(portrait(spec.seed, spec.number, { crack: summary.felled ? 1 : 0.4, w: 560, h: 470 }));
+  const img = await loadImg(await portraitAsync(spec.seed, spec.number, { crack: summary.felled ? 1 : 0.4, w: 560, h: 470 }));
   g.drawImage(img, 640, 90, 520, 436);
   // words
   g.fillStyle = "#7a6a58";

@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { ARENA, coreOpen, makeTitan, PHRASE_BEATS, LOOP_PHRASES, Stage, stageFor, TitanSpec } from "@/core/titan";
 import { Field, newFrame } from "@/core/field";
 import { AspectId, Hunt, MAX_HITS } from "@/core/hunt";
-import { createView, PAGE, resizeView, toScreen, View } from "./render/stage";
+import { applyCam, camRect, createView, lerpCam, layoutView, Mode, PAGE, Rect, sizeView, toScreen, View } from "./render/stage";
 import { PageLayer } from "./render/page";
 import { InkLayer } from "./render/ink";
 import { Titan, TitanCtx } from "./render/titan/titan";
@@ -10,6 +10,7 @@ import { HunterDraw, HunterLayer } from "./render/hunters";
 import { FxLayer, P } from "./render/fx";
 import { Input } from "./input";
 import { Bot } from "@/core/bot/bot";
+import { setPortraitHost } from "./portrait";
 
 // The conductor: one synced clock, one titan, your run, everyone else's sparks, the page.
 
@@ -45,7 +46,13 @@ export interface GameEvents {
   onDown?(summary: RunSummary): void;
   onSfx?(name: string, x?: number, strength?: number): void;
   onFloat?(text: string, x: number, y: number, kind: "dmg" | "graze" | "info"): void;
+  /** the layout settled (once per change: never during a camera move) */
   onLayout?(l: Layout): void;
+  /**
+   * while the camera leans in or out: how screen positions from the last layout map to the screen now
+   * (x' = x * s + tx, y' = y * s + ty), so DOM overlays can follow with a CSS transform. dir: +1 in, -1 out.
+   */
+  onCamera?(m: { s: number; tx: number; ty: number; dir: number; k: number }): void;
   /** every frame while a run is live: send your position to the world */
   onPos?(x: number, y: number, alive: boolean, flags: number): void;
   /** every frame: drive the music */
@@ -55,13 +62,22 @@ export interface GameEvents {
 }
 
 export interface Layout {
+  /** the open codex (wide screens) */
   spread: boolean;
   portrait: boolean;
+  /** spread | side (a short landscape screen) | single (a tall screen) */
+  mode: Mode;
+  /** the camera leans in on the fight (a run is live): in spread mode the left leaf is folded to a strip */
+  focus: boolean;
   pxPerUnit: number;
-  /** CSS-pixel rects of the leaves (left is null when not in spread mode) */
+  /** CSS-pixel rects of the leaves (left is null when not in spread mode; the strip while folded) */
   left: { x: number; y: number; w: number; h: number } | null;
   right: { x: number; y: number; w: number; h: number };
   arena: { x: number; y: number; w: number; h: number };
+  /** CSS pixels kept clear along the bottom (single mode) */
+  reserve: number;
+  vw: number;
+  vh: number;
 }
 
 export interface RunSummary {
@@ -124,13 +140,31 @@ export class Game {
   private cssH = 1;
   /** seconds since this titan was first drawn: drives the engraving-in sequence */
   private revealT = 0;
-  /** 0 = the whole open book, 1 = leaning in on the fight (wide screens, during a run) */
-  private focus = 0;
+  /**
+   * The lean-in: the camera glides between the whole book (0) and the fight (1). Only the projection
+   * moves while it does; the backing store, the baked paper and the DOM layout change once, at the end.
+   */
+  private fz = { from: 0, to: 0, t: 1, dur: 1 };
+  /** where the camera is now, 0..1 (eased) */
+  private camAt = 0;
+  private focusPhase: Phase = "lobby";
+  private downHold = 0;
+  /** the camera rect when the layout was last handed to the DOM */
+  private layoutRect: Rect = { x0: 0, x1: 1, y0: 0, y1: 1 };
   private qualityAt = 0;
-  /** shader programs are warm (the engraving waits for them, so the first frames don't hitch) */
-  private compiled = true;
+  /** frame-time samples are ignored until then (camera moves, resizes, the first frames) */
+  private quietUntil = 0;
+  private slowWindows = 0;
+  private paperSpec: Parameters<PageLayer["bake"]>[1] | null = null;
+  /** the paper's programs are linked (until then nothing is drawn) */
+  private pageReady = false;
+  /** every program is linked off the main thread; until then only the paper is drawn, so nothing stalls */
+  private compiled = false;
+  /** Join was pressed while the titan was still being engraved: finish it quickly */
+  private rushReveal = false;
   private fallT = -1;
   private ro: ResizeObserver;
+  private safeBottom = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -141,10 +175,72 @@ export class Game {
     this.fx = new FxLayer(this.view.scene);
     this.input = new Input(canvas, (dx, dy) => ({ x: dx * this.view.unitsPerPx, y: -dy * this.view.unitsPerPx }));
     this.reducedMotion = typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const r = this.view.renderer;
+    // Ask for every extension three will look up later now, while the GPU process is idle: a first
+    // lookup is a synchronous round trip, and behind a queue of shader links it waited 370 ms.
+    for (const x of ["EXT_texture_filter_anisotropic", "WEBGL_multisampled_render_to_texture", "EXT_color_buffer_float", "EXT_color_buffer_half_float", "OES_texture_float_linear", "EXT_float_blend", "WEBGL_render_shared_exponent", "KHR_parallel_shader_compile"]) {
+      try {
+        r.extensions.has(x);
+      } catch {}
+    }
+    // the paper's two programs first (small): the desk and the leaves can show while the titan's link
+    const pageDone = () => {
+      if (this.pageReady) return;
+      this.primePrograms();
+      this.pageReady = true;
+    };
+    try {
+      Promise.all([this.page.compileBake(r), r.compileAsync(this.page.mesh, this.view.camera, this.view.scene)]).then(pageDone, pageDone);
+    } catch {
+      pageDone();
+    }
+    setTimeout(pageDone, 1500);
+    // the cover medallion and share cards are drawn by this renderer (no second WebGL context)
+    setPortraitHost({ renderer: r, ready: () => this.untilReady(), titanFor: (seed) => (this.spec?.seed === seed && this.titan ? this.titan : null) });
     this.resize();
     window.addEventListener("resize", this.resize);
     this.ro = new ResizeObserver(() => this.resize());
     this.ro.observe(canvas);
+  }
+
+  /** the titan's programs are warm: Join can be pressed (the engraving may still be finishing) */
+  get ready() {
+    return !!this.spec && this.compiled;
+  }
+  /**
+   * Read every linked program's uniform and attribute tables now, before any of them draws. These reads
+   * are synchronous; done mid-frame they each waited behind the draws queued before them (the GPU builds
+   * its shader variants at first draw), which made the first full frame a 600 ms freeze.
+   */
+  private primePrograms(list = this.programList(), budgetMs = Infinity) {
+    const t0 = performance.now();
+    while (list.length && performance.now() - t0 < budgetMs) {
+      const p = list.shift()!;
+      try {
+        p.getUniforms();
+        p.getAttributes();
+      } catch {}
+    }
+    return list.length === 0;
+  }
+  private programList() {
+    const progs = (this.view.renderer.info.programs || []) as unknown as Array<{ isReady?: () => boolean; getUniforms(): unknown; getAttributes(): unknown }>;
+    return progs.filter((p) => !p.isReady || p.isReady());
+  }
+  private primeQueue: ReturnType<Game["programList"]> | null = null;
+  /** a slice of program priming per frame; when it is all done, the titan may draw */
+  private primeStep() {
+    if (!this.primeQueue) return;
+    if (!this.primePrograms(this.primeQueue, 6)) return;
+    this.primeQueue = null;
+    this.compiled = true;
+    for (const w of this.whenReady.splice(0)) w();
+  }
+  private compileToken: object = {};
+  private whenReady: Array<() => void> = [];
+  /** resolves once the titan's programs are linked */
+  untilReady(): Promise<void> {
+    return this.ready ? Promise.resolve() : new Promise((r) => this.whenReady.push(r));
   }
 
   setTitan(seed: number, number: number) {
@@ -160,15 +256,23 @@ export class Game {
     this.revealT = 0;
     this.fallT = -1;
     this.view.scene.add(this.titan.group);
-    // warm every program off the main thread where the browser allows it (KHR_parallel_shader_compile)
+    this.rushReveal = false;
+    // warm every program off the main thread where the browser allows it (KHR_parallel_shader_compile).
+    // Nothing but the paper is drawn until they are linked, so the first use never blocks.
+    const token = (this.compileToken = {});
+    const done = () => {
+      if (this.compileToken !== token || this.compiled || this.primeQueue) return;
+      // read the linked programs' tables a few per frame (see primeStep), then draw the titan
+      this.primeQueue = this.programList();
+    };
+    this.compiled = false;
+    this.primeQueue = null;
     try {
-      this.compiled = false;
-      const done = () => (this.compiled = true);
       this.view.renderer.compileAsync(this.view.scene, this.view.camera).then(done, done);
-      setTimeout(done, 2500); // never wait longer than this
     } catch {
-      this.compiled = true;
+      done();
     }
+    setTimeout(done, 4000); // never wait longer than this
     this.resize();
     const p = this.spec.plate;
     this.page.setPlate(p);
@@ -282,6 +386,8 @@ export class Game {
     this.runStart = this.clock();
     this.lastHurt = 0;
     this.lastSurges = 0;
+    // joined while the titan was still being engraved: finish the engraving in a moment (spawn grace covers it)
+    if (this.revealing) this.rushReveal = true;
     this.events.onSfx?.("start");
   }
 
@@ -291,6 +397,7 @@ export class Game {
       this.raf = requestAnimationFrame(loop);
       const dt = Math.min(0.05, (now - this.last) / 1000);
       this.last = now;
+      this.primeStep();
       this.frame(dt);
       this.adaptQuality(dt);
     };
@@ -302,42 +409,129 @@ export class Game {
     window.removeEventListener("resize", this.resize);
     this.ro.disconnect();
     this.input.dispose();
+    setPortraitHost(null);
     this.view.renderer.dispose();
   }
 
+  /** the canvas changed size (or the quality stepped): size the backing store, lay out, bake, tell the DOM */
   private resize = () => {
     const r = this.canvas.getBoundingClientRect();
-    this.cssW = Math.max(1, r.width);
-    this.cssH = Math.max(1, r.height);
-    resizeView(this.view, this.cssW, this.cssH, this.quality, this.focus);
-    this.events.onLayout?.(this.layout());
-    // engraving lines: about one line every 4.5 device pixels, whatever the screen
-    if (this.titan) {
-      this.titan.u.uPx.value = this.view.unitsPerPx / this.view.dpr;
-      // in the open book the titan may spill onto the desk, but never across the gutter onto the text
-      this.titan.u.uClipX.value = this.view.spread ? -PAGE.W / 2 - 0.15 : -1e4;
-      this.titan.u.uClipX2.value = this.view.spread ? PAGE.W / 2 + 0.15 : 1e4;
+    const w = Math.max(1, r.width),
+      h = Math.max(1, r.height);
+    const sized = w !== this.cssW || h !== this.cssH;
+    this.cssW = w;
+    this.cssH = h;
+    const v = this.view;
+    sizeView(v, w, h, this.quality);
+    // (only tall screens keep a bottom band; reading the safe area forces a style pass, so skip it elsewhere)
+    if (sized && w / h < 1.12) this.safeBottom = readSafeBottom();
+    const wasMode = v.mode;
+    // tall screens keep a band clear along the bottom: the host's badge and the run's gauges live there
+    layoutView(v, w, h, 92 + this.safeBottom);
+    if (v.mode !== wasMode && this.fz.t < 1) this.fz.t = 1;
+    if (this.fz.t < 1) {
+      // mid-glide: finish it now rather than chase a moving target
+      this.fz.t = 1;
+      this.camAt = this.fz.to;
     }
+    // a run on a screen that can't lean in keeps the plain view
+    if (v.mode === "single") this.camAt = this.fz.to = this.fz.from = 0;
+    this.applyCamera();
+    // the papers cover both views (and a margin for camera shake), each at its own density
+    const c0 = camRect(v.cams[0]),
+      c1 = camRect(v.cams[1]);
+    const m = 2;
+    const u = { x0: Math.min(c0.x0, c1.x0) - m, y0: Math.min(c0.y0, c1.y0) - m, x1: Math.max(c0.x1, c1.x1) + m, y1: Math.max(c0.y1, c1.y1) + m };
+    const dens = (i: number) => (v.dpr * w) / (v.cams[i].halfW * 2);
+    this.paperSpec = { u, densA: dens(0), densB: dens(1), leaf: v.leftLeaf, strip: v.strip, needB: v.mode !== "single" };
+    if (sized) this.quietUntil = performance.now() + 1200;
+    this.emitLayout();
   };
 
+  /** point the camera where the lean-in has got to (a projection matrix and a few uniforms: no re-bake, no re-layout) */
+  private applyCamera() {
+    const v = this.view;
+    applyCam(v, lerpCam(v.cams[0], v.cams[1], this.camAt));
+    if (this.titan) {
+      // engraving lines: about one line every 4.5 device pixels, whatever the screen and the zoom
+      this.titan.u.uPx.value = v.unitsPerPx / v.dpr;
+      // in the open book the titan may spill onto the desk, but never across the gutter onto the text
+      this.titan.u.uClipX.value = v.spread ? -PAGE.W / 2 - 0.15 : -1e4;
+      this.titan.u.uClipX2.value = v.spread ? PAGE.W / 2 + 0.15 : 1e4;
+    }
+  }
+
+  private emitLayout() {
+    this.layoutRect = { ...this.view.rect };
+    this.events.onLayout?.(this.layout());
+  }
+
+  /** start leaning in (1) or back out to the whole book (0) */
+  private beginFocus(to: number) {
+    const span = Math.abs(to - this.camAt);
+    this.fz = { from: this.camAt, to, t: 0, dur: this.reducedMotion ? 1e-3 : (to ? 1.05 : 0.9) * Math.max(0.35, span) };
+    // the glide and the frame after it never count against the quality
+    this.frameTimes.length = 0;
+    this.quietUntil = performance.now() + this.fz.dur * 1000 + 700;
+  }
+
+  private stepFocus(dt: number) {
+    const v = this.view;
+    // when your light goes out, stay close for a breath (the burst, the silence) before the book opens again
+    if (this.phase === "down" && this.focusPhase === "playing") this.downHold = 0.55;
+    this.focusPhase = this.phase;
+    this.downHold = Math.max(0, this.downHold - dt);
+    const live = this.phase === "playing" || this.phase === "replay" || (this.phase === "down" && this.downHold > 0);
+    const want = v.mode !== "single" && live && !this.falling ? 1 : 0;
+    if (want !== this.fz.to) this.beginFocus(want);
+    if (this.fz.t >= 1) return;
+    this.fz.t = Math.min(1, this.fz.t + dt / this.fz.dur);
+    const k = this.fz.t;
+    const e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2; // ease in-out cubic
+    this.camAt = this.fz.from + (this.fz.to - this.fz.from) * e;
+    this.applyCamera();
+    if (this.fz.t >= 1) {
+      this.camAt = this.fz.to;
+      this.emitLayout();
+    } else {
+      const L = this.layoutRect,
+        C = v.rect;
+      const cw = C.x1 - C.x0,
+        ch = C.y1 - C.y0;
+      this.events.onCamera?.({ s: (L.x1 - L.x0) / cw, tx: ((L.x0 - C.x0) / cw) * this.cssW, ty: ((C.y1 - L.y1) / ch) * this.cssH, dir: this.fz.to > this.fz.from ? 1 : -1, k: e });
+    }
+  }
+
   private adaptQuality(dt: number) {
+    const now = performance.now();
+    // the first seconds (shader warm-up, the engraving), camera glides and resizes never count
+    if (!this.compiled || this.revealT < 6 || this.fz.t < 1 || now < this.quietUntil) {
+      this.frameTimes.length = 0;
+      return;
+    }
     this.frameTimes.push(dt);
     if (this.frameTimes.length < 90) return;
     const avg = this.frameTimes.reduce((a, b) => a + b, 0) / this.frameTimes.length;
     this.frameTimes.length = 0;
-    // step down (1 → 0.75 → 0.5) when frames run long; step back up when there is headroom.
-    // The first seconds (shader warm-up, the reveal) never count.
-    if (this.revealT < 6) return;
-    const now = performance.now();
     if (now - this.qualityAt < 6000) return; // give each step time to settle
+    // step down (1 → 0.75 → 0.5) when frames run long; step back up when there is headroom
     if (avg > 1 / 48 && this.quality > 0.5) {
+      // a desktop at native density 1 keeps it unless it is truly slow (under 45 fps for three windows running)
+      if (this.quality >= 1 && (window.devicePixelRatio || 1) <= 1) {
+        this.slowWindows = avg > 1 / 45 ? this.slowWindows + 1 : 0;
+        if (this.slowWindows < 3) return;
+      }
+      this.slowWindows = 0;
       this.qualityAt = now;
       this.quality = this.quality > 0.75 ? 0.75 : 0.5;
       this.resize();
-    } else if (avg < 1 / 58 && this.quality < 1) {
-      this.qualityAt = now;
-      this.quality = this.quality < 0.75 ? 0.75 : 1;
-      this.resize();
+    } else {
+      this.slowWindows = 0;
+      if (avg < 1 / 58 && this.quality < 1) {
+        this.qualityAt = now;
+        this.quality = this.quality < 0.75 ? 0.75 : 1;
+        this.resize();
+      }
     }
   }
 
@@ -348,13 +542,20 @@ export class Game {
         b = this.screenOf(x1, y0);
       return { x: a.x, y: a.y, w: b.x - a.x, h: b.y - a.y };
     };
+    const focus = this.camAt >= 1 && v.mode !== "single";
+    const leaf = v.spread ? (focus ? v.strip : v.leftLeaf) : null;
     return {
       spread: v.spread,
       portrait: v.portrait,
+      mode: v.mode,
+      focus,
       pxPerUnit: 1 / v.unitsPerPx,
-      left: v.leftLeaf ? rr(v.leftLeaf.x0, Math.max(v.leftLeaf.y0, v.rect.y0), v.leftLeaf.x1, Math.min(v.leftLeaf.y1, v.rect.y1 - 0.4)) : null,
+      left: leaf ? rr(leaf.x0, Math.max(leaf.y0, v.rect.y0), leaf.x1, Math.min(leaf.y1, v.rect.y1 - 0.4)) : null,
       right: rr(-PAGE.W / 2, PAGE.Y0, PAGE.W / 2, PAGE.Y1),
       arena: rr(-ARENA.W / 2, 0, ARENA.W / 2, ARENA.H),
+      reserve: v.reserve,
+      vw: this.cssW,
+      vh: this.cssH,
     };
   }
 
@@ -495,7 +696,8 @@ export class Game {
     }
     this.titan.update(ctx, dt);
     if (this.revealT < 6 && this.fallT < 0) {
-      if (!this.holdReveal && this.compiled) this.revealT += dt;
+      // (reduced motion: the plate is simply there, fully engraved)
+      if (!this.holdReveal && this.compiled) this.revealT = this.reducedMotion ? 6 : this.revealT + dt * (this.rushReveal ? 6 : 1);
       const r = this.revealT;
       // lines cut in over 2.6 s, colour bleeds in over 1.3 s, gold settles over 1 s
       this.titan.u.uReveal.value = r < 2.6 ? (r / 2.6) : r < 3.9 ? 1 + (r - 2.6) / 1.3 : Math.min(3, 2 + (r - 3.9));
@@ -505,7 +707,11 @@ export class Game {
     // --- page, ink, hunters, fx
     const pulse = t < 0 ? 0 : Math.pow(1 - (beat % 1), 6) * (beatInt % 4 === 0 ? 1 : 0.45);
     this.hurtFlash = Math.max(0, this.hurtFlash - dt * 2.5);
-    this.page.update(this.view.rect, t, stage, pulse, this.hurtFlash, this.view.leftLeaf);
+    // (the camera for this frame: the lean-in glides here, before anything reads the view)
+    this.stepFocus(dt);
+    const v = this.view;
+    const crease = v.leftLeaf && v.strip ? v.leftLeaf.x0 + (v.strip.x0 - v.leftLeaf.x0) * Math.min(1, this.camAt * 1.15) : 0;
+    this.page.update(v.rect, stage, pulse, this.hurtFlash, this.camAt, crease, v.spread ? v.leftLeaf : null);
     this.ink.update(frame, t);
     this.ink.uniforms.uShow.value = Math.min(1, Math.max(0, (this.revealT - 2.4) / 1.4));
     const draws: HunterDraw[] = this.others ? this.others.list(t) : [];
@@ -514,21 +720,23 @@ export class Game {
     if (Math.random() < dt * 6) this.fx.add({ x: (Math.random() - 0.5) * ARENA.W * 1.1, y: Math.random() * ARENA.TOP, vx: (Math.random() - 0.5) * 0.4, vy: 0.3 + Math.random() * 0.4, type: P.Spore, col: 0, size: 0.06 + Math.random() * 0.06, max: 4, drag: 0 });
     this.fx.update(dt);
 
-    // --- lean in on the fight while a run is live (landscape only); ease back out in the lobby
-    const wantFocus = this.view.spread && (this.phase === "playing" || this.phase === "replay") && !this.falling ? 1 : 0;
-    if (Math.abs(wantFocus - this.focus) > 0.001) {
-      this.focus += (wantFocus - this.focus) * Math.min(1, dt * 3.2);
-      if (Math.abs(wantFocus - this.focus) < 0.002) this.focus = wantFocus;
-      this.resize();
-    }
-
     // --- camera shake
     this.shake = Math.max(0, this.shake - dt * 2.2);
     const s = this.reducedMotion ? 0 : this.shake * this.shake * 0.35;
-    this.view.camera.position.set(0, 0, 50);
-    this.page.bake(this.view.renderer, this.view.camera);
     this.view.camera.position.set((Math.random() - 0.5) * s, (Math.random() - 0.5) * s, 50);
-    this.view.renderer.render(this.view.scene, this.view.camera);
+    // nothing is drawn until the paper's programs are linked; then only the paper until the titan's are
+    // (a program used before it has linked blocks the main thread: that was the startup freeze)
+    if (this.pageReady) {
+      const r = this.view.renderer;
+      if (this.paperSpec) this.page.bake(r, this.paperSpec);
+      if (this.compiled) r.render(v.scene, v.camera);
+      else {
+        const hidden: THREE.Object3D[] = [];
+        for (const o of v.scene.children) if (o !== this.page.mesh && o.visible) (o.visible = false), hidden.push(o);
+        r.render(v.scene, v.camera);
+        for (const o of hidden) o.visible = true;
+      }
+    }
 
     // --- hud (10 Hz)
     this.hudT -= dt;
@@ -573,6 +781,20 @@ export class Game {
       }
     }
     return out;
+  }
+}
+
+/** the height of the screen's bottom safe area (the iPhone home bar), in CSS px */
+function readSafeBottom() {
+  try {
+    const d = document.createElement("div");
+    d.style.cssText = "position:fixed;left:0;bottom:0;width:0;height:env(safe-area-inset-bottom,0px);visibility:hidden;pointer-events:none";
+    document.body.appendChild(d);
+    const h = d.getBoundingClientRect().height;
+    d.remove();
+    return h || 0;
+  } catch {
+    return 0;
   }
 }
 

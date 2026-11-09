@@ -286,6 +286,10 @@ export function pushPersonal(f: FieldFrame, x: number, y: number, r: number, id:
 export function pushPersonalMark(f: FieldFrame, x: number, y: number, progress: number) {
   pushMark(f, x, y, progress, 1);
 }
+/** the aim line from a winding-up hound to the hunter it hunts (a telegraph, never a hazard) */
+export function pushPersonalAim(f: FieldFrame, x1: number, y1: number, x2: number, y2: number) {
+  pushBeam(f, x1, y1, x2, y2, 0.2, 0, 1);
+}
 
 function pushBullet(f: FieldFrame, x: number, y: number, r: number, ink: number, alpha: number, id: number, vx = 0, vy = 0) {
   if (!inArena(x, y, r) || f.bulletCount * B >= f.bullets.length) return;

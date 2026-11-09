@@ -217,7 +217,7 @@ export class InkLayer {
             vec2 q = vW - vA.yz; float pr = vB.x;
             float line = 1. - smoothstep(.02, .05, abs(q.x));
             float tick = step(.7, fract(vW.y * .8 - uTime * 4.)) * (1. - smoothstep(.1, .16, abs(q.x)));
-            a = max(line * .55, tick * .7) * (.25 + .75 * pr);
+            a = max(line * .28, tick * .38) * (.2 + .8 * pr);
             col = c;
           }
           a *= uShow;

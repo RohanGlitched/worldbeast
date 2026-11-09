@@ -490,7 +490,7 @@ export default function Hunt() {
 
       {/* run summary */}
       {summary && arena && (
-        <div className="summary" style={{ left: arena.x + arena.w * 0.08, width: arena.w * 0.84, top: arena.y + arena.h * 0.2 }} role="dialog" aria-label="Your run">
+        <div className="summary" style={{ left: arena.x + arena.w * 0.08, width: arena.w * 0.84, top: arena.y + arena.h * (summary.felled ? 0.42 : 0.2) }} role="dialog" aria-label="Your run">
           <h2>{summary.felled ? "The titan is felled!" : "Your light went out"}</h2>
           <div className="rubric">
             against {spec?.name}, after {summary.time.toFixed(1)} s{!summary.felled && summary.killer ? `, struck down by ${killerOf(summary.killer)[0]}` : ""}

@@ -1,0 +1,72 @@
+import * as THREE from "three";
+import { ARENA } from "@/core/titan";
+
+// The page: an orthographic view of a manuscript leaf. Arena units map 1:1 to world x/y.
+// Page spans x in [-PAGE_W/2, PAGE_W/2], y in [PAGE_Y0, PAGE_Y1]. The titan lives above the arena (y > 20).
+
+export const PAGE = { W: ARENA.W + 1.2, Y0: -0.9, Y1: ARENA.TOP + 13.2 };
+
+export interface View {
+  renderer: THREE.WebGLRenderer;
+  scene: THREE.Scene;
+  camera: THREE.OrthographicCamera;
+  /** world units per CSS pixel */
+  unitsPerPx: number;
+  /** visible world rect */
+  rect: { x0: number; x1: number; y0: number; y1: number };
+  portrait: boolean;
+  dpr: number;
+}
+
+export function createView(canvas: HTMLCanvasElement): View {
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: "high-performance" });
+  renderer.setClearColor(0x1a1410, 1);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  const scene = new THREE.Scene();
+  const camera = new THREE.OrthographicCamera(-10, 10, 10, -10, -200, 200);
+  camera.position.set(0, 0, 50);
+  camera.lookAt(0, 0, 0);
+  const view: View = { renderer, scene, camera, unitsPerPx: 0.02, rect: { x0: -10, x1: 10, y0: -10, y1: 10 }, portrait: false, dpr: 1 };
+  return view;
+}
+
+/** Fit the page into the canvas. In landscape the page is centred with margins; in portrait it fills the width. */
+export function resizeView(v: View, cssW: number, cssH: number, quality: number) {
+  const dpr = Math.min(window.devicePixelRatio || 1, quality >= 1 ? 2 : 1.25);
+  v.dpr = dpr;
+  v.renderer.setPixelRatio(dpr);
+  v.renderer.setSize(cssW, cssH, false);
+  const pageH = PAGE.Y1 - PAGE.Y0;
+  const pageW = PAGE.W;
+  const aspect = cssW / cssH;
+  v.portrait = aspect < pageW / pageH * 1.25;
+  let halfH: number, halfW: number, cy: number;
+  if (aspect >= pageW / pageH) {
+    // height-bound: the whole page is visible, margins left and right
+    halfH = pageH / 2;
+    halfW = halfH * aspect;
+    cy = (PAGE.Y0 + PAGE.Y1) / 2;
+  } else {
+    // width-bound (phones): fit width, anchor the arena bottom, crop the titan's crown if needed
+    halfW = pageW / 2;
+    halfH = halfW / aspect;
+    cy = PAGE.Y0 + halfH;
+    if (cy + halfH < ARENA.TOP + 6) cy = ARENA.TOP + 6 - halfH; // always keep the cores in view
+  }
+  v.camera.left = -halfW;
+  v.camera.right = halfW;
+  v.camera.top = cy + halfH;
+  v.camera.bottom = cy - halfH;
+  v.camera.updateProjectionMatrix();
+  v.unitsPerPx = (halfW * 2) / cssW;
+  v.rect = { x0: -halfW, x1: halfW, y0: cy - halfH, y1: cy + halfH };
+}
+
+/** CSS pixel -> world */
+export function toWorld(v: View, px: number, py: number, cssW: number, cssH: number) {
+  return { x: v.rect.x0 + (px / cssW) * (v.rect.x1 - v.rect.x0), y: v.rect.y1 - (py / cssH) * (v.rect.y1 - v.rect.y0) };
+}
+/** world -> CSS pixel */
+export function toScreen(v: View, x: number, y: number, cssW: number, cssH: number) {
+  return { x: ((x - v.rect.x0) / (v.rect.x1 - v.rect.x0)) * cssW, y: ((v.rect.y1 - y) / (v.rect.y1 - v.rect.y0)) * cssH };
+}

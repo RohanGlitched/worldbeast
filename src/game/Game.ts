@@ -423,7 +423,8 @@ export class Game {
     for (let i = 0; i < this.coreHit.length; i++) this.coreHit[i] = Math.max(0, this.coreHit[i] - dt * 6);
     this.titanHurt = Math.max(0, this.titanHurt - dt * 2.5);
     const me = h && this.phase === "playing" ? { x: h.x, y: h.y } : { x: 0, y: 4 };
-    const ctx: TitanCtx = { t, beat, player: me, cues, stage, crack: 1 - this.hpFrac, hurt: this.titanHurt, coreOpen: coreOpenArr, coreHit: this.coreHit };
+    const coreSoon = this.spec.cores.map((c, i) => !coreOpenArr[i] && t >= 0 && (coreOpen(c, beat + 1, stage) || coreOpen(c, beat + 2, stage)));
+    const ctx: TitanCtx = { t, beat, player: me, cues, stage, crack: 1 - this.hpFrac, hurt: this.titanHurt, coreOpen: coreOpenArr, coreHit: this.coreHit, coreSoon };
     if (this.fallT >= 0) {
       this.fallT += dt;
       const f = this.fallT;

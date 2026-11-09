@@ -17,6 +17,7 @@ export interface TitanCtx {
   hurt: number;
   coreOpen: boolean[];
   coreHit: number[];
+  coreSoon?: boolean[];
 }
 
 interface Rig {
@@ -731,7 +732,8 @@ export class Titan {
       const u = m.mat.uniforms as unknown as { uOpen: { value: number }; uHit: { value: number } };
       u.uOpen.value = m.open;
       u.uHit.value = c.coreHit[i] ?? 0;
-      (m.aura.material as THREE.ShaderMaterial).uniforms.uOpen.value = m.open;
+      const soon = c.coreSoon?.[i] ? 0.28 + 0.22 * Math.sin(c.t * 18) : 0;
+      (m.aura.material as THREE.ShaderMaterial).uniforms.uOpen.value = Math.max(m.open, soon);
       m.aura.scale.setScalar(1 + (c.coreHit[i] ?? 0) * 0.25);
       const k = m.open;
       // blades swing outward like an aperture, and shrink back into the frame

@@ -1,9 +1,20 @@
 import { useEffect, useState } from "react";
+import { portrait } from "@/game/portrait";
 
 // The closed codex: tooled leather, a gilded title, a clasp. Opening it unlocks sound and wakes the page.
 
-export default function Cover({ rect, onOpen, online }) {
+export default function Cover({ rect, onOpen, online, spec }) {
   const [opening, setOpening] = useState(false);
+  const [img, setImg] = useState(null);
+  useEffect(() => {
+    if (!spec) return;
+    const id = setTimeout(() => {
+      try {
+        setImg(portrait(spec.seed, spec.number, { w: 420, h: 420 }));
+      } catch {}
+    }, 50);
+    return () => clearTimeout(id);
+  }, [spec?.seed, spec?.number]);
   const open = () => {
     if (opening) return;
     setOpening(true);
@@ -26,15 +37,16 @@ export default function Cover({ rect, onOpen, online }) {
         <svg className="cover-tooling" viewBox="0 0 400 560" preserveAspectRatio="none" aria-hidden="true">
           <rect x="18" y="18" width="364" height="524" />
           <rect x="30" y="30" width="340" height="500" />
-          <path d="M200 70 L214 112 L256 126 L214 140 L200 182 L186 140 L144 126 L186 112 Z" className="gilt" />
-          <circle cx="200" cy="126" r="9" />
+
           <path d="M60 60 q30 10 40 40 M340 60 q-30 10 -40 40 M60 500 q30 -10 40 -40 M340 500 q-30 -10 -40 -40" />
           <path d="M70 430 H330 M90 444 H310" />
         </svg>
+        <span className="medallion" aria-hidden="true">{img ? <img src={img} alt="" /> : null}</span>
+        {spec && <span className="cover-awake">Awake now: {spec.name}, {spec.epithet}</span>}
         <span className="cover-title">Worldbeast</span>
         <span className="cover-sub">One titan · everyone online · the same moment</span>
         <span className="cover-open">{opening ? "…" : "Open the codex"}</span>
-        <span className="cover-meta">{online > 1 ? `${online} hunters inside` : "A living bestiary"} · sound on</span>
+        <span className="cover-meta">{online > 1 ? `${online} hunters inside right now` : "A living bestiary"} · sound on · Enter opens</span>
         <span className="clasp" aria-hidden="true" />
       </button>
     </div>

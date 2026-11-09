@@ -1073,6 +1073,37 @@ button {
   fill: rgba(214, 165, 49, 0.85);
   stroke: #e9c46a;
 }
+.medallion {
+  position: relative;
+  width: min(34vh, 300px);
+  height: min(34vh, 300px);
+  border-radius: 50%;
+  background: radial-gradient(circle, #f3e9d3 58%, #e2d2ae);
+  box-shadow: 0 0 0 6px #d6a531, 0 0 0 9px #2a0d08, 0 0 0 12px #9c7420, 0 12px 40px rgba(0, 0, 0, 0.55), inset 0 0 30px rgba(90, 60, 20, 0.35);
+  overflow: hidden;
+  margin-top: 4vh;
+}
+.medallion img {
+  width: 118%;
+  height: 118%;
+  margin: -6% 0 0 -9%;
+  object-fit: contain;
+  animation: medallionIn 1.6s ease both;
+}
+@keyframes medallionIn {
+  from {
+    opacity: 0;
+    filter: blur(6px);
+  }
+}
+.cover-awake {
+  position: relative;
+  font-family: var(--fell);
+  font-style: italic;
+  font-size: clamp(13px, 1.3vw, 17px);
+  color: #e9c46a;
+  opacity: 0.85;
+}
 .cover-title {
   position: relative;
   font-family: var(--display);
@@ -1083,7 +1114,7 @@ button {
   background-clip: text;
   color: transparent;
   filter: drop-shadow(0 2px 0 #1c0906) drop-shadow(0 0 18px rgba(214, 165, 49, 0.25));
-  margin-top: 10vh;
+  margin-top: 0.5vh;
 }
 .cover-sub {
   position: relative;
@@ -1097,7 +1128,7 @@ button {
 }
 .cover-open {
   position: relative;
-  margin-top: 4vh;
+  margin-top: 1.5vh;
   font-family: var(--display);
   font-size: clamp(22px, 2.4vw, 34px);
   color: #2a0d08;

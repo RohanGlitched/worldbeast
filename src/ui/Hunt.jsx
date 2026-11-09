@@ -396,6 +396,7 @@ export default function Hunt() {
         <Cover
           rect={L ? (L.spread && L.left ? { x: L.left.x, y: L.left.y - 4, w: L.right.x + L.right.w - L.left.x, h: L.left.h + 8 } : null) : null}
           online={world?.online ?? 1}
+          spec={world?.spec}
           onOpen={() => {
             try {
               sessionStorage.setItem("wb-opened", "1");

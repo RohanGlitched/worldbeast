@@ -62,6 +62,7 @@ export class Titan {
     mk("bone", { wash: 0.12, tone: 0.18, tint: "paper", cracks: 0.6 });
     mk("eye", { wash: 0.05, tone: 0.35, tint: "paper", cracks: 0 });
     mk("pupil", { wash: 0, tone: -0.9, gilt: 0.35, cracks: 0 });
+    mk("void", { wash: 0, tone: -1, gilt: 0, cracks: 0 });
     this.group.add(this.anatomy);
     switch (spec.archetype) {
       case "coil":
@@ -115,12 +116,27 @@ export class Titan {
     return this.part(eng(new THREE.CapsuleGeometry(r, len, 8, 16), Math.round(r * 12 + 6), Math.round((len + r * 2) * 5)), mat, parent, ow);
   }
   /** an eye that follows the hunter; `look` scales how far the pupil travels */
-  private eye(parent: THREE.Object3D, pos: THREE.Vector3, r: number, look = 1) {
+  private eye(parent: THREE.Object3D, pos: THREE.Vector3, r: number, look = 1, iris = false) {
     const ball = this.part(orb(16, 10, 1, 0), "eye", parent, Math.max(0.03, r * 0.12));
     ball.scale.setScalar(r);
     ball.position.copy(pos);
-    const pupil = new THREE.Mesh(orb(10, 6, 2, 0), this.m.pupil);
-    pupil.scale.set(0.42, 0.62, 0.3);
+    let pupil: THREE.Object3D;
+    if (iris) {
+      // a great gilt iris around a black slit with a molten gold core (the bloom's single eye)
+      pupil = new THREE.Group();
+      const disc = this.part(orb(20, 10, 3, 0), "gilt", pupil, 0.025);
+      disc.scale.set(0.74, 0.74, 0.2);
+      const slit = this.part(orb(12, 10, 4, 0), "void", pupil, 0.02);
+      slit.scale.set(0.2, 0.62, 0.26);
+      slit.position.z = 0.03;
+      const core = new THREE.Mesh(orb(8, 8, 5, 0), this.m.gilt);
+      core.scale.set(0.03, 0.36, 0.28);
+      core.position.z = 0.06;
+      pupil.add(core);
+    } else {
+      pupil = new THREE.Mesh(orb(10, 6, 2, 0), this.m.pupil);
+      pupil.scale.set(0.42, 0.62, 0.3);
+    }
     pupil.position.z = 0.82;
     ball.add(pupil);
     const lid = new THREE.Group();
@@ -624,7 +640,7 @@ export class Titan {
     this.orbPart(2.7, 2.6, 2.2, V(0, 26.2, 0.4), "body", A, 0.05, 0.1);
     const ruff = this.torus(2.7, 0.22, "gilt", A);
     ruff.position.set(0, 26.2, 1.2);
-    this.eye(A, V(0, 26.3, 2.25), 1.2, 0.6);
+    this.eye(A, V(0, 26.3, 2.25), 1.7, 0.45, true);
     const tendrils: Array<{ sw: Sweep; root: THREE.Vector3; tip: THREE.Vector3; ph: number; bud: THREE.Mesh; lift: number; pts: THREE.Vector3[] }> = [];
     for (const o of this.spec.origins) {
       const sw = new Sweep(18, 10, 10, 26);

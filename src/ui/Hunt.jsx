@@ -14,6 +14,7 @@ import Cover from "./Cover";
 import { Floats, Labels } from "./Overlays";
 import { unpackReplay, replayUrl } from "./replay";
 import { Seal, SEALS, judgeSeals } from "./seals";
+import { omenFor, judgeOmen, liveStreak, untilNext, dayIndex } from "./omen";
 
 const ORD = (n) => {
   const s = ["th", "st", "nd", "rd"],
@@ -150,8 +151,9 @@ export default function Hunt() {
       }, s.felled ? 0 : 8600);
       setProfile((p) => {
         const freshSeals = judgeSeals(p, s);
-        setSummary({ ...s, worldShare: w.shareOf(s.damage), freshSeals });
-        const n = { ...p, runs: p.runs + 1, total: p.total + s.damage, best: Math.max(p.best, s.damage), fresh: false, seals: [...(p.seals || []), ...freshSeals] };
+        const omen = judgeOmen(p, s);
+        setSummary({ ...s, worldShare: w.shareOf(s.damage), freshSeals, omen });
+        const n = { ...p, ...(omen || {}), runs: p.runs + 1, total: p.total + s.damage, best: Math.max(p.best, s.damage), fresh: false, seals: [...(p.seals || []), ...freshSeals] };
         saveProfile(n);
         return n;
       });
@@ -308,8 +310,39 @@ export default function Hunt() {
     </>
   );
 
+  const today = dayIndex();
+  const omen = omenFor(today);
+  const omenDone = profile.omenDay === today;
+  const streak = liveStreak(profile, today);
+  const omenBox = (
+    <div className={"omen" + (omenDone ? " done" : "")} aria-label="Today's omen">
+      <div className="omen-head">
+        <span className="rubric">Today's omen</span>
+        <span className="omen-meta">{omenDone ? "fulfilled" : `the same for every hunter · ${untilNext()} left`}</span>
+      </div>
+      <div className="omen-text">
+        {omen.text}
+        {!omenDone && omen.aspect && profile.aspect !== omen.aspect && (
+          <>
+            {" "}
+            <button className="omen-take" onClick={() => update({ aspect: omen.aspect })}>
+              Take up {ASPECTS[omen.aspect].name}
+            </button>
+          </>
+        )}
+      </div>
+      {streak > 0 && (
+        <div className="omen-streak">
+          {streak === 1 ? "A first day kept." : `${streak} days kept in a row.`}
+          {!omenDone ? " Fulfil today's to keep it." : " Come back tomorrow for the next."}
+        </div>
+      )}
+    </div>
+  );
+
   const lobbyControls = (
     <section aria-label="Join the hunt" style={{ display: "flex", flexDirection: "column", gap: "0.5em" }}>
+      {(profile.runs || 0) > 0 && omenBox}
       {(() => {
         const next = SEALS.find((x) => !(profile.seals || []).includes(x.id) && x.id !== "first");
         return next && (profile.runs || 0) > 0 ? (
@@ -502,6 +535,15 @@ export default function Hunt() {
             <dt>Your best</dt>
             <dd>{fmt(Math.max(profile.best, summary.damage))}</dd>
           </dl>
+          {summary.omen && (
+            <div className="omen done fresh">
+              <span className="rubric">The omen is fulfilled</span>
+              <div className="omen-text">{omenFor(summary.omen.omenDay).text}</div>
+              <div className="omen-streak">
+                {summary.omen.omenStreak === 1 ? "Your first day kept. Return tomorrow for a new omen." : `${summary.omen.omenStreak} days kept in a row.`}
+              </div>
+            </div>
+          )}
           {summary.freshSeals?.length > 0 && (
             <div className="fresh-seals">
               {summary.freshSeals.map((id) => {

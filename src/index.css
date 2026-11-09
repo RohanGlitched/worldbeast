@@ -1488,3 +1488,55 @@ button {
   color: var(--ink-3);
   font-variant-numeric: tabular-nums;
 }
+
+.omen {
+  border: 1px solid rgba(35, 28, 23, 0.28);
+  border-left: 3px solid var(--vermilion);
+  padding: 0.35em 0.6em 0.4em;
+  background: rgba(255, 250, 236, 0.45);
+}
+.omen.done {
+  border-left-color: var(--gold, #b8892a);
+}
+.omen-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.6em;
+}
+.omen-meta {
+  font-style: italic;
+  font-size: 0.8em;
+  color: var(--ink-3);
+}
+.omen-text {
+  font-size: 1.02em;
+  line-height: 1.3;
+}
+.omen.done .omen-text {
+  text-decoration: line-through;
+  text-decoration-color: rgba(168, 38, 26, 0.55);
+}
+.omen.fresh .omen-text {
+  text-decoration: none;
+}
+.omen-streak {
+  font-style: italic;
+  font-size: 0.85em;
+  color: var(--ink-2);
+}
+.summary .omen {
+  margin-top: 0.6em;
+  text-align: left;
+}
+.omen-take {
+  font: inherit;
+  font-style: italic;
+  font-size: 0.85em;
+  color: var(--vermilion);
+  background: none;
+  border: 0;
+  border-bottom: 1px dotted var(--vermilion);
+  padding: 0;
+  cursor: pointer;
+}

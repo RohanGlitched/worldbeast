@@ -88,6 +88,8 @@ export class Game {
   hpFrac = 1;
   quality = 1;
   reducedMotion = false;
+  /** the codex is still closed: keep the titan unengraved until it opens */
+  holdReveal = false;
   /** demo / attract mode: a look-ahead bot plays your run */
   autopilot: Bot | null = null;
 
@@ -394,7 +396,7 @@ export class Game {
     }
     this.titan.update(ctx, dt);
     if (this.revealT < 6 && this.fallT < 0) {
-      this.revealT += dt;
+      if (!this.holdReveal) this.revealT += dt;
       const r = this.revealT;
       // lines cut in over 2.6 s, colour bleeds in over 1.3 s, gold settles over 1 s
       this.titan.u.uReveal.value = r < 2.6 ? (r / 2.6) : r < 3.9 ? 1 + (r - 2.6) / 1.3 : Math.min(3, 2 + (r - 3.9));

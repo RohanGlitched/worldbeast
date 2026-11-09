@@ -8,6 +8,7 @@ import { createLocalWorld } from "./localWorld";
 import Canticle from "./Canticle";
 import Bookmarks from "./Bookmarks";
 import { shareRun } from "./share";
+import Cover from "./Cover";
 
 const ORD = (n) => {
   const s = ["th", "st", "nd", "rd"],
@@ -37,7 +38,16 @@ export default function Hunt() {
   const [floats, setFloats] = useState([]);
   const [pickSigil, setPickSigil] = useState(false);
   const [shareMsg, setShareMsg] = useState(null);
+  const [closed, setClosed] = useState(() => {
+    try {
+      return !sessionStorage.getItem("wb-opened") && !new URLSearchParams(location.search).has("open");
+    } catch {
+      return true;
+    }
+  });
   const floatId = useRef(0);
+  const closedRef = useRef(true);
+  closedRef.current = closed;
   const [tip, setTip] = useState(null);
   const tipsSeen = useRef(new Set(profile.tips || []));
 
@@ -70,6 +80,7 @@ export default function Hunt() {
       setTimeout(() => setFloats((f) => f.filter((q) => q.id !== id)), 950);
     };
     document.title = "WORLDBEAST · one titan, everyone, right now";
+    g.holdReveal = closedRef.current;
     w.start();
     g.run();
     setLayout(g.layout());
@@ -244,7 +255,21 @@ export default function Hunt() {
   const arena = L?.arena;
   return (
     <div className="stage" style={styleU}>
-      {phase !== "playing" && <Bookmarks />}
+      {phase !== "playing" && !closed && <Bookmarks />}
+      {closed && (
+        <Cover
+          rect={L ? (L.spread && L.left ? { x: L.left.x, y: L.left.y - 4, w: L.right.x + L.right.w - L.left.x, h: L.left.h + 8 } : null) : null}
+          online={world?.online ?? 1}
+          onOpen={() => {
+            try {
+              sessionStorage.setItem("wb-opened", "1");
+            } catch {}
+            gameRef.current.holdReveal = false;
+            gameRef.current.events.onSfx?.("ui");
+            setTimeout(() => setClosed(false), 1350);
+          }}
+        />
+      )}
       <canvas ref={canvasRef} tabIndex={0} aria-label="The hunt. Move with WASD, the arrow keys, or by dragging. Dash with Space." />
 
       {/* the bestiary leaf (wide screens) */}

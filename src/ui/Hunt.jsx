@@ -9,6 +9,7 @@ import Canticle from "./Canticle";
 import Bookmarks from "./Bookmarks";
 import { shareRun } from "./share";
 import Cover from "./Cover";
+import { Seal, SEALS, judgeSeals } from "./seals";
 
 const ORD = (n) => {
   const s = ["th", "st", "nd", "rd"],
@@ -65,10 +66,11 @@ export default function Hunt() {
     };
     g.events.onHits = (dmg, core, beat) => w.addHit(core, dmg, beat);
     g.events.onDown = (s) => {
-      setSummary({ ...s, worldShare: w.shareOf(s.damage) });
       w.sendRun(s);
       setProfile((p) => {
-        const n = { ...p, runs: p.runs + 1, total: p.total + s.damage, best: Math.max(p.best, s.damage), fresh: false };
+        const freshSeals = judgeSeals(p, s);
+        setSummary({ ...s, worldShare: w.shareOf(s.damage), freshSeals });
+        const n = { ...p, runs: p.runs + 1, total: p.total + s.damage, best: Math.max(p.best, s.damage), fresh: false, seals: [...(p.seals || []), ...freshSeals] };
         saveProfile(n);
         return n;
       });
@@ -207,6 +209,12 @@ export default function Hunt() {
 
   const lobbyControls = (
     <section aria-label="Join the hunt" style={{ display: "flex", flexDirection: "column", gap: "0.5em" }}>
+      <div className="seal-row" aria-label={`Seals: ${(profile.seals || []).length} of ${SEALS.length}`}>
+        {SEALS.map((x, i) => (
+          <Seal key={x.id} i={i} earned={(profile.seals || []).includes(x.id)} size={u * 0.95} />
+        ))}
+        <span className="seal-count">{(profile.seals || []).length} of {SEALS.length} seals</span>
+      </div>
       <div className="namebox">
         <button className="sigil-pick" onClick={() => setPickSigil((v) => !v)} aria-label={"Your sigil: " + SIGIL_NAMES[profile.sigil]}>
           <Sigil id={profile.sigil} size={u * 0.75} className="filled" />
@@ -350,6 +358,23 @@ export default function Hunt() {
             <dt>Your best</dt>
             <dd>{fmt(Math.max(profile.best, summary.damage))}</dd>
           </dl>
+          {summary.freshSeals?.length > 0 && (
+            <div className="fresh-seals">
+              {summary.freshSeals.map((id) => {
+                const i = SEALS.findIndex((x) => x.id === id);
+                return (
+                  <span key={id} className="fresh-seal">
+                    <Seal i={i} earned fresh size={u * 1.5} />
+                    <span>
+                      <b>{SEALS[i].name}</b>
+                      <br />
+                      <i>{SEALS[i].line}</i>
+                    </span>
+                  </span>
+                );
+              })}
+            </div>
+          )}
           {shareMsg && <div className="rubric" style={{ marginTop: "0.5em" }}>{shareMsg}</div>}
           <div className="row">
             <button className="join" style={{ flex: 2, fontSize: "1.3em" }} onClick={begin} autoFocus>

@@ -93,6 +93,9 @@ export class Hunt {
   hurtEvents = 0; // incremented when hit (caller reads deltas)
   mirrorReflects = 0;
   lastHitKind = "";
+  /** longest stretch without being struck, seconds */
+  cleanBest = 0;
+  private lastHitAt = 0;
   hitLog: string[] = [];
   private dashId = 0;
   private mirroredDash = -1;
@@ -162,6 +165,7 @@ export class Hunt {
         this.hits++;
         this.hurtEvents++;
         this.lastHitKind = tc.hitKind ?? "?";
+        this.lastHitAt = this.time;
         this.hitLog.push(this.lastHitKind);
         this.invuln = INVULN_AFTER_HIT;
         this.combo = 0;
@@ -182,6 +186,7 @@ export class Hunt {
       if (this.surgeT <= 0) this.resonance = Math.min(100, this.resonance + RESONANCE_PER_GRAZE);
     }
     if (this.grazed.size > 4000) this.grazed.clear();
+    this.cleanBest = Math.max(this.cleanBest, this.time - this.lastHitAt);
     this.comboT -= dt;
     if (this.comboT <= 0) this.combo = 0;
 

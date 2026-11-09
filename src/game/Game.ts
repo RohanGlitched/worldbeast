@@ -67,6 +67,8 @@ export interface RunSummary {
   startT: number; // titan time when the run began
   stage: Stage;
   felled?: boolean; // the run ended because the world felled the titan
+  cleanTime?: number;
+  finalBlow?: boolean;
 }
 
 export class Game {
@@ -170,7 +172,7 @@ export class Game {
     }
   }
   private summaryOf(h: Hunt, stage: Stage, felled: boolean): RunSummary {
-    return { damage: h.damage, time: h.time, grazes: h.grazeCount, bestCombo: h.bestCombo, surges: h.surges, aspect: h.aspect.id, path: this.path.slice(), startT: this.runStart, stage, felled };
+    return { damage: h.damage, time: h.time, grazes: h.grazeCount, bestCombo: h.bestCombo, surges: h.surges, aspect: h.aspect.id, path: this.path.slice(), startT: this.runStart, stage, felled, cleanTime: h.cleanBest };
   }
   get falling() {
     return this.fallT >= 0;

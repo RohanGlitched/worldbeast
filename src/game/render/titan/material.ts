@@ -61,7 +61,9 @@ export interface EngraveOpts {
   ashlar?: number; // 0..1 masonry joints on a planar (world-unit) uv: coursed stone
 }
 
-const f3 = (n: number) => n.toFixed(3);
+/** per-material settings travel as uniforms (rounded as the old baked constants were), so every titan shares one program */
+const q3 = (n: number) => Math.round(n * 1000) / 1000;
+const TINT = { body: 0, accent: 1, paper: 2, ink: 3, wash2: 4 } as const;
 
 /** GLSL: screen-pitch line families (shared by every engraved part). */
 const LINES = /* glsl */ `
@@ -87,19 +89,23 @@ const LINES = /* glsl */ `
 `;
 
 export function engraveMaterial(u: TitanUniforms, o: EngraveOpts = {}) {
-  const wash = o.wash ?? 0.7;
-  const tone = o.tone ?? 0;
-  const gilt = o.gilt ?? 0;
-  const scales = o.scales ?? 0;
-  const cracks = o.cracks ?? 1;
-  const pitch = o.pitch ?? 1;
-  const inkK = o.ink ?? 0.94;
-  const ashlar = o.ashlar ?? 0;
-  const tint = o.tint ?? "body";
-  const tintExpr =
-    tint === "accent" ? "uAccent" : tint === "paper" ? "uVellum" : tint === "ink" ? "uInk * 1.6 + .05" : tint === "wash2" ? "uWash2" : "mix(uWash2, uBody, smoothstep(.9, .35, tone))";
+  // The material's own settings are uniforms, not constants baked into the source: every engraved part of
+  // every titan then compiles to the same program (two with instancing), instead of ~10 new programs per
+  // titan. The shared titan uniforms are the same objects, so they still move together.
+  const uniforms = {
+    ...u,
+    uWash: { value: q3(o.wash ?? 0.7) },
+    uTone: { value: q3(o.tone ?? 0) },
+    uGilt: { value: q3(o.gilt ?? 0) },
+    uScales: { value: q3(o.scales ?? 0) },
+    uCracks: { value: q3(o.cracks ?? 1) },
+    uPitch: { value: q3(o.pitch ?? 1) },
+    uInkK: { value: q3(o.ink ?? 0.94) },
+    uAshlar: { value: q3(o.ashlar ?? 0) },
+    uTint: { value: TINT[o.tint ?? "body"] },
+  };
   return new THREE.ShaderMaterial({
-    uniforms: u,
+    uniforms,
     vertexShader: /* glsl */ `
       attribute vec2 aLines;
       varying vec3 vN; varying vec3 vObj; varying vec2 vUv; varying vec2 vL; varying vec3 vWorld;
@@ -120,6 +126,7 @@ export function engraveMaterial(u: TitanUniforms, o: EngraveOpts = {}) {
       precision highp float;
       uniform float uTime, uCrack, uFlash, uWrath, uPx, uReveal, uClipX, uClipX2;
       uniform vec3 uInk, uBody, uVellum, uGold, uAccent, uLight, uWash2;
+      uniform float uWash, uTone, uGilt, uScales, uCracks, uPitch, uInkK, uAshlar, uTint;
       varying vec3 vN; varying vec3 vObj; varying vec2 vUv; varying vec2 vL; varying vec3 vWorld;
       ${NOISE}
       ${LINES}
@@ -131,10 +138,10 @@ export function engraveMaterial(u: TitanUniforms, o: EngraveOpts = {}) {
         float fill = max(dot(n, normalize(vec3(.6, -.2, .7))), 0.) * .25;
         float under = smoothstep(.2, -.8, n.y) * .25; // undersides sink into shadow
         float rim = pow(1. - abs(n.z), 3.);
-        float tone = clamp(.12 + .82 * key + fill - under - .25 * rim + ${f3(tone)}, 0., 1.);
+        float tone = clamp(.12 + .82 * key + fill - under - .25 * rim + uTone, 0., 1.);
         // the pitch: ~4-5 device px wherever the titan is small or mid-sized (Hall plates, the lobby, play),
         // opening up on big high-density screens so the plate keeps about the same number of lines
-        float S = clamp(.14 / max(uPx, 1e-4), 4.2, 9.) * ${f3(pitch)};
+        float S = clamp(.14 / max(uPx, 1e-4), 4.2, 9.) * uPitch;
         S *= 1. + .9 * rim; // lines open out and thin toward the silhouette instead of bunching up
         // the burin's hand: a slow sideways wobble and a swell along each cut
         float wob = (vnoise(vWorld.xy * 1.7 + vObj.z) - .5) * 1.6;
@@ -174,28 +181,32 @@ export function engraveMaterial(u: TitanUniforms, o: EngraveOpts = {}) {
           float dotR = S * .3 * k3;
           lines = max(lines, (1. - smoothstep(dotR - .6, dotR + .6, length(q))) * k3);
         }
-        ${scales > 0 ? `
+        // the surface patterns, cut only where a material asks for them. Their derivatives are taken here, before
+        // the branches (ANGLE/D3D are strict about derivatives in flow control, even on a uniform)
         // scale / plate pattern: overlapping arcs cut into the surface (fades out where the cells get tiny)
         vec2 sc = vec2(lc.x * .5, lc.y * .35 + step(1., mod(floor(lc.x * .5), 2.)) * .5);
-        vec2 sf = fract(sc) - vec2(.5, .0);
-        float arc = abs(length(sf * vec2(1., 1.6)) - .55);
-        float cellPx = 1. / max(fwidth(sc.y), 1e-5);
-        float scaleLine = 1. - smoothstep(.03, .05 + fwidth(sc.y) * 1.2, arc);
-        lines = max(lines, scaleLine * ${f3(scales)} * smoothstep(1.02, .3, tone) * smoothstep(7., 16., cellPx));
-        ` : ""}
-        ${ashlar > 0 ? `
+        float dSc = fwidth(sc.y);
         // coursed ashlar: bed joints every course, staggered head joints (vUv here is in world units)
         vec2 st = vec2(vUv.x * vL.x / 1.6, vUv.y * vL.y / .9);
         float course = floor(st.y);
         float bx = st.x + mod(course, 2.) * .5;
-        float jy = abs(fract(st.y + .5) - .5) / max(fwidth(st.y), 1e-5);
-        float jx = abs(fract(bx + .5) - .5) / max(fwidth(bx), 1e-5);
-        float joint = 1. - smoothstep(.5, 1.5, min(jy, jx));
-        lines = max(lines * .8, joint * ${f3(ashlar)} * smoothstep(1.05, .4, tone));
-        ` : ""}
+        float dSt = fwidth(st.y), dBx = fwidth(bx);
+        if (uScales > 0.) {
+          vec2 sf = fract(sc) - vec2(.5, .0);
+          float arc = abs(length(sf * vec2(1., 1.6)) - .55);
+          float cellPx = 1. / max(dSc, 1e-5);
+          float scaleLine = 1. - smoothstep(.03, .05 + dSc * 1.2, arc);
+          lines = max(lines, scaleLine * uScales * smoothstep(1.02, .3, tone) * smoothstep(7., 16., cellPx));
+        }
+        if (uAshlar > 0.) {
+          float jy = abs(fract(st.y + .5) - .5) / max(dSt, 1e-5);
+          float jx = abs(fract(bx + .5) - .5) / max(dBx, 1e-5);
+          float joint = 1. - smoothstep(.5, 1.5, min(jy, jx));
+          lines = max(lines * .8, joint * uAshlar * smoothstep(1.05, .4, tone));
+        }
         // hand-coloured wash: strong in the midtones, paper showing through the highlights
-        vec3 washCol = ${tintExpr};
-        vec3 paper = mix(uVellum, washCol, ${f3(wash)} * (.45 + .55 * smoothstep(1., .25, tone)));
+        vec3 washCol = uTint < .5 ? mix(uWash2, uBody, smoothstep(.9, .35, tone)) : uTint < 1.5 ? uAccent : uTint < 2.5 ? uVellum : uTint < 3.5 ? uInk * 1.6 + .05 : uWash2;
+        vec3 paper = mix(uVellum, washCol, uWash * (.45 + .55 * smoothstep(1., .25, tone)));
         paper = mix(paper, uVellum * 1.05, smoothstep(.82, 1., tone) * .55);
         // the engraver's pass: lines are cut in from the crown down with a ragged burin front,
         // then the hand-colouring bleeds in, then the gold leaf settles
@@ -203,9 +214,9 @@ export function engraveMaterial(u: TitanUniforms, o: EngraveOpts = {}) {
         float cutIn = smoothstep(frontY - .7, frontY + .7, vWorld.y + (vnoise(vWorld.xy * 1.3) - .5) * 1.6);
         float washIn = clamp((uReveal - 1.) * 1.4 - (vnoise(vWorld.xy * .45) - .5) * .8, 0., 1.);
         paper = mix(uVellum, paper, washIn);
-        vec3 col = mix(paper, uInk, lines * ${f3(inkK)} * cutIn);
+        vec3 col = mix(paper, uInk, lines * uInkK * cutIn);
         if (cutIn < .01 && washIn < .01) discard;
-        float gl = ${f3(gilt)} * clamp(uReveal - 2., 0., 1.);
+        float gl = uGilt * clamp(uReveal - 2., 0., 1.);
         if (gl > 0.) {
           vec3 h = normalize(L + vec3(0., 0., 1.));
           float spec = pow(max(dot(n, h), 0.), 40.);
@@ -218,7 +229,7 @@ export function engraveMaterial(u: TitanUniforms, o: EngraveOpts = {}) {
           vec2 cq = vObj.xy * .9 + vObj.z * .5 + 4.2;
           float cn = vnoise(cq) * .55 + vnoise(cq * 2.1 + 7.) * .3 + vnoise(cq * 4.3 + 3.) * .15;
           float vein = 1. - smoothstep(.0, .014 + .03 * uCrack, abs(cn - .5));
-          float reveal = smoothstep(.2, .95, uCrack + (vnoise(vObj.xy * .6) - .5) * .5) * ${f3(cracks)};
+          float reveal = smoothstep(.2, .95, uCrack + (vnoise(vObj.xy * .6) - .5) * .5) * uCracks;
           vec3 crackCol = mix(uGold * 1.2, vec3(1., .86, .5), .5 + .5 * sin(uTime * 3. + vObj.y * 2.));
           col = mix(col, crackCol, vein * reveal);
         }
@@ -234,9 +245,10 @@ export function engraveMaterial(u: TitanUniforms, o: EngraveOpts = {}) {
 /** Ink outline: back faces pushed out along the normal (width in world units). */
 export function outlineMaterial(u: TitanUniforms, width = 0.07) {
   return new THREE.ShaderMaterial({
-    uniforms: u,
+    uniforms: { ...u, uOutline: { value: q3(width) } },
     side: THREE.BackSide,
     vertexShader: /* glsl */ `
+      uniform float uOutline;
       varying float vY; varying float vX;
       void main(){
         vec4 local = vec4(position, 1.);
@@ -247,7 +259,7 @@ export function outlineMaterial(u: TitanUniforms, width = 0.07) {
         #endif
         vec3 nW = normalize(mat3(modelMatrix) * nrm);
         vec4 w = modelMatrix * local;
-        w.xyz += nW * ${f3(width)};
+        w.xyz += nW * uOutline;
         vY = w.y; vX = w.x;
         gl_Position = projectionMatrix * viewMatrix * w;
       }

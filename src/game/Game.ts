@@ -484,12 +484,9 @@ export class Game {
 
   start(aspect: AspectId, opts: { resonance?: number; gentle?: boolean; forgiving?: boolean } = {}) {
     // (forgiving: a rehearsal, where a hit costs Resonance instead of a light)
-    this.hunt = new Hunt(this.spec, this.field, aspect, { forgiving: opts.forgiving });
+    // (gentle: a first hunt, where the titan holds back for this hunter alone: core/hunt.ts GENTLE_S)
+    this.hunt = new Hunt(this.spec, this.field, aspect, { forgiving: opts.forgiving, gentle: opts.gentle });
     if (opts.resonance) this.hunt.resonance = opts.resonance;
-    if (opts.gentle) {
-      this.hunt.houndsAfter = 20;
-      this.hunt.invuln = 4;
-    }
     // a spawn point that stays clear through the grace and two beats more (deterministic for this seed and moment)
     this.hunt.place(this.clock(), this.stage);
     this.target = { x: this.hunt.x, y: this.hunt.y };

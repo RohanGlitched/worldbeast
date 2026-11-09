@@ -571,13 +571,15 @@ export default function Hunt() {
     // never while the leaf is still folding (the note would hang over the desk): only once the run's layout is in
     if (!L || (L.spread && !L.focus)) return;
     const touch = !L.spread;
-    if (hud.time < 6) showTip("move", touch ? "Drag anywhere to fly. Only the bright pip at your star's heart can be struck." : "Fly with <b>WASD</b> or the arrows. Only the bright pip at your star's heart can be struck.");
+    // (a first hunt: the titan holds back for this hunter alone, core/hunt.ts gentle; the note says for how long)
+    const held = gameRef.current?.hunt?.gentleLeft > 1 ? ` The titan holds back for your first ${Math.round(gameRef.current.hunt.gentleLeft)} s.` : "";
+    if (hud.time < 6) showTip("move", (touch ? "Drag anywhere to fly. Only the bright pip at your star's heart can be struck." : "Fly with <b>WASD</b> or the arrows. Only the bright pip at your star's heart can be struck.") + held, held ? 5600 : 4200);
     else if (hud.coresOpen > 0) showTip("wound", "A <b>gold wound</b> is open. Your light strikes open wounds by itself; fly nearer the titan, and away from the outer margins, to strike harder.");
     if (gameRef.current?.hunt?.houndWarned) showTip("hound", "<b>Hounds</b>: dark drops thrown at where you stand. Their arrowed line shows the aim: keep moving.");
     if (hud.grazes >= 3) showTip("graze", "<b>Grazing</b> an attack fills Resonance. Fill it and your light Surges.");
     if (hud.time > 14) showTip("dash", touch ? "Tap <b>dash</b> or double-tap to pass clean through an attack." : "<b>Space</b> dashes you clean through an attack.");
     if (hud.time > 24) showTip("song", "Every attack lands on the beat. Read what comes next in <b>the Canticle</b>.");
-    if (hud.hits >= 1) showTip("relight", "A lost light <b>returns</b> after 15 s unstruck, or on each Surge.");
+    if (hud.hits >= 1) showTip("relight", "A lost light <b>returns</b> after 15 s unstruck, or on a Surge: up to twice a run.");
   };
 
   const update = (patch) =>
@@ -650,13 +652,13 @@ export default function Hunt() {
           ) : (
             <>Felled. Its plate is torn from the book, and the next titan is engraved in its place.</>
           )
-        ) : rehearsal && interlude > 0 ? (
+        ) : rehearsal && interlude > 0 && !world.nearDeath ? (
           <>
             The next titan of your rehearsal, whole and asleep: it wakes in {interlude} s and sings at {spec.bpm} beats a minute in {NOTE[spec.root % 12]} {spec.mode}. Only your blows wound it. <a href="/">The live titan</a> is fought by everyone online.
           </>
         ) : rehearsal ? (
           <>
-            {hpFrac < 0.5 ? "This one is yours alone, woken near death so you can see a titan fall:" : "This one is yours alone, as whole as a live titan:"} only your blows wound it, and it is not written in the Hall. <a href="/">The live titan</a> is fought by everyone online.
+            {world.nearDeath ? "This one is yours alone, woken near death so you can see a titan fall:" : "This one is yours alone, as whole as a live titan:"} only your blows wound it, and it is not written in the Hall. <a href="/">The live titan</a> is fought by everyone online.
           </>
         ) : (
           <>
@@ -940,7 +942,7 @@ export default function Hunt() {
           </div>
         );
       })()}
-      {live && world.shrugged > 0 && <div className="wb-shrug">You have struck your share; it needs other hunters to fall.</div>}
+      {live && world.shrugged > 0 && <div className="wb-shrug">Others are fighting this titan too: past two fifths of its life, your blows land at a quarter.</div>}
       {rehearsal && summary.felled && (
         <a className="wb-rehearse-live" href="/">
           Now hunt the live titan, with everyone

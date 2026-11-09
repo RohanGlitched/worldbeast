@@ -313,11 +313,13 @@ export class InkLayer {
             if (live > 1.5) {
               // a shockwave gap's sight on the rail or the foot of the page: a gilt lozenge with an inked rim,
               // faint while the slam winds up, solid while its ring passes, fading as the ring spends itself
+              // (a third larger than at first: it also marks where a beam's sweep will stop, and must read at a glance)
               float k = pr < 1. ? .35 + .65 * pr : 1. - (pr - 1.) * .65;
-              float dm = abs(q.x) * 1.15 + abs(q.y) - .3;
+              vec2 qs = q / 1.35;
+              float dm = abs(qs.x) * 1.15 + abs(qs.y) - .3;
               float body = 1. - smoothstep(-.02, .02, dm);
               float rim = 1. - smoothstep(.0, .05, abs(dm + .035));
-              float pip = 1. - smoothstep(.05, .08, r);
+              float pip = 1. - smoothstep(.05, .08, r / 1.35);
               a = max(body, rim) * k;
               col = mix(mix(uGold * 1.05, uInk, rim), uInk, pip);
             } else if (live > .5) {

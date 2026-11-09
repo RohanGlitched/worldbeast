@@ -13,7 +13,7 @@ import { Bot } from "@/core/bot/bot";
 
 // The conductor: one synced clock, one titan, your run, everyone else's sparks, the page.
 
-export type Phase = "lobby" | "playing" | "down";
+export type Phase = "lobby" | "playing" | "down" | "replay";
 
 export interface Others {
   /** live hunters and echoes to draw (positions in arena units) */
@@ -200,6 +200,33 @@ export class Game {
     const h = this.hunt;
     return h && this.phase === "playing" ? this.summaryOf(h, this.stage, false) : null;
   }
+
+  /** play back a recorded run against the same titan at the same moments (ghost links) */
+  startReplay(r: { stage: Stage; startT: number; duration: number; path: number[]; sigil: number }) {
+    const t0 = performance.now();
+    const loop = r.duration + 2.5;
+    this.stageFn = () => r.stage;
+    this.clock = () => r.startT + ((performance.now() - t0) / 1000) % loop;
+    const n = r.path.length / 2;
+    const ghost = { x: 0, y: 3, kind: 0 as const, hue: r.sigil / 16, inv: 0, dash: 0, surge: 0, seed: 0.5 };
+    this.replayPos = (t: number) => {
+      const k = (t - r.startT) * 10;
+      if (k < 0 || k > n - 1) return null;
+      const i = Math.floor(k),
+        f = k - i;
+      const j = Math.min(n - 1, i + 1);
+      ghost.x = (r.path[i * 2] * (1 - f) + r.path[j * 2] * f) / 20;
+      ghost.y = (r.path[i * 2 + 1] * (1 - f) + r.path[j * 2 + 1] * f) / 20;
+      return ghost;
+    };
+    this.others = { list: (t: number) => {
+      const gpos = this.replayPos?.(t);
+      return gpos ? [gpos] : [];
+    } };
+    this.phase = "replay";
+    this.skipReveal();
+  }
+  replayPos: ((t: number) => { x: number; y: number } | null) | null = null;
 
   /** someone flew through your spark: rise again */
   revive() {
@@ -443,7 +470,8 @@ export class Game {
     const coreOpenArr = this.spec.cores.map((c) => coreOpen(c, beat, stage));
     for (let i = 0; i < this.coreHit.length; i++) this.coreHit[i] = Math.max(0, this.coreHit[i] - dt * 6);
     this.titanHurt = Math.max(0, this.titanHurt - dt * 2.5);
-    const me = h && this.phase === "playing" ? { x: h.x, y: h.y } : { x: 0, y: 4 };
+    const ghostNow = this.phase === "replay" ? this.replayPos?.(t) : null;
+    const me = h && this.phase === "playing" ? { x: h.x, y: h.y } : ghostNow ? { x: ghostNow.x, y: ghostNow.y } : { x: 0, y: 4 };
     const coreSoon = this.spec.cores.map((c, i) => !coreOpenArr[i] && t >= 0 && (coreOpen(c, beat + 1, stage) || coreOpen(c, beat + 2, stage)));
     const ctx: TitanCtx = { t, beat, player: me, cues, stage, crack: 1 - this.hpFrac, hurt: this.titanHurt, coreOpen: coreOpenArr, coreHit: this.coreHit, coreSoon };
     if (this.fallT >= 0) {
@@ -487,7 +515,7 @@ export class Game {
     this.fx.update(dt);
 
     // --- lean in on the fight while a run is live (landscape only); ease back out in the lobby
-    const wantFocus = this.view.spread && this.phase === "playing" && !this.falling ? 1 : 0;
+    const wantFocus = this.view.spread && (this.phase === "playing" || this.phase === "replay") && !this.falling ? 1 : 0;
     if (Math.abs(wantFocus - this.focus) > 0.001) {
       this.focus += (wantFocus - this.focus) * Math.min(1, dt * 3.2);
       if (Math.abs(wantFocus - this.focus) < 0.002) this.focus = wantFocus;

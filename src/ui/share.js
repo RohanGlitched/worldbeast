@@ -74,8 +74,8 @@ export async function makeCard({ spec, summary, profile, share }) {
 
 export async function shareRun(args) {
   const blob = await makeCard(args);
-  const url = location.origin + "/";
-  const text = `I struck ${Math.round(args.summary.damage).toLocaleString("en-US")} blows against ${args.spec.name}, the ${ORD(args.spec.number)} titan. Everyone online fights it at the same moment.`;
+  const url = args.link || location.origin + "/";
+  const text = `I struck ${Math.round(args.summary.damage).toLocaleString("en-US")} blows against ${args.spec.name}, the ${ORD(args.spec.number)} titan. Everyone online fights it at the same moment. Watch my run:`;
   const file = new File([blob], "worldbeast.png", { type: "image/png" });
   if (navigator.canShare?.({ files: [file] })) {
     try {

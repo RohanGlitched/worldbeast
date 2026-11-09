@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { makeTitan, ARCHETYPE_INFO } from "@/core/titan";
 import { hash32 } from "@/core/rng";
 import { portrait } from "@/game/portrait";
-import { listTitans, listHunters } from "./data";
+import { listTitans, listHunters, titanEchoes } from "./data";
+import { decodePath } from "@/net/pathcodec";
+import { replayUrl } from "./replay";
 import { Sigil } from "./sigils";
 import { Link } from "./router";
 import Footer from "./Footer";
@@ -22,6 +24,23 @@ const dur = (ms) => {
 function Plate({ t, live }) {
   const spec = useMemo(() => makeTitan(t.seed, t.number), [t.seed, t.number]);
   const [img, setImg] = useState(null);
+  const [ghosts, setGhosts] = useState([]);
+  useEffect(() => {
+    if (!t.number) return;
+    titanEchoes(t.number, 3).then((list) =>
+      setGhosts(
+        list
+          .map((e) => {
+            const path = decodePath(e.path || "");
+            if (!path) return null;
+            // an echo starts at a beat of the titan's repeating song: any loop of it holds the same attacks
+            const link = replayUrl({ seed: t.seed, number: t.number, stage: e.stage, startT: (e.loopBeat || 0) * spec.beat, damage: e.damage, sigil: e.sigil, name: e.name, aspect: e.aspect, path });
+            return link && { id: e.id, name: e.name, sigil: e.sigil, damage: e.damage, link: link.replace(location.origin, "") };
+          })
+          .filter(Boolean),
+      ),
+    );
+  }, [t.number, t.seed, spec.beat]);
   useEffect(() => {
     const id = requestIdleCallback ? requestIdleCallback(() => setImg(portrait(t.seed, t.number, { crack: t.status === "felled" ? 0.9 : 1 - (t.hp ?? t.hpMax) / (t.hpMax || 1) }))) : setTimeout(() => setImg(portrait(t.seed, t.number)), 30);
     return () => (cancelIdleCallback ? cancelIdleCallback(id) : clearTimeout(id));
@@ -65,6 +84,16 @@ function Plate({ t, live }) {
           )}
         </dl>
         {t.epitaph && <p className="epitaph">{t.epitaph}</p>}
+        {ghosts.length > 0 && (
+          <div className="ghosts">
+            <span className="rubric">Watch a ghost run</span>
+            {ghosts.map((g) => (
+              <a key={g.id} href={g.link}>
+                <Sigil id={g.sigil} size={14} /> {g.name} <span>{fmt(g.damage)}</span>
+              </a>
+            ))}
+          </div>
+        )}
         {t.topHunters?.length > 0 && (
           <ol className="top-hunters">
             {t.topHunters.slice(0, 3).map((h, i) => (

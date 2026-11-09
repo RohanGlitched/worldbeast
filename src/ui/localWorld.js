@@ -6,13 +6,13 @@ import { hash32 } from "@/core/rng";
 
 const BLOCK = 3 * 3600 * 1000;
 
-export function createLocalWorld(game) {
+export function createLocalWorld(game, opts = {}) {
   const q = new URLSearchParams(location.search);
   const now = Date.now();
   const block = Math.floor(now / BLOCK);
-  const seed = q.get("seed") ? Number(q.get("seed")) : hash32("local", block);
+  const seed = opts.seed ?? (q.get("seed") ? Number(q.get("seed")) : hash32("local", block));
   const wokeAt = q.get("t") ? now - Number(q.get("t")) * 1000 : block * BLOCK;
-  const number = q.get("n") ? Number(q.get("n")) : (block % 900) + 1;
+  const number = opts.number ?? (q.get("n") ? Number(q.get("n")) : (block % 900) + 1);
   const hpMax = 400000;
   const st = {
     spec: makeTitan(seed, number),

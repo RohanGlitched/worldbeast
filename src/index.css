@@ -1456,3 +1456,35 @@ button {
     padding-bottom: calc(110px + env(safe-area-inset-bottom));
   }
 }
+
+.replay-banner {
+  position: absolute;
+  pointer-events: auto;
+  font-size: calc(var(--u) * 0.5);
+  padding: 0.5em 0.8em;
+  background: radial-gradient(ellipse at center, rgba(239, 228, 204, 0.96) 60%, rgba(239, 228, 204, 0.6));
+  border-bottom: 1px solid rgba(35, 28, 23, 0.25);
+}
+.replay-sub {
+  font-style: italic;
+  color: var(--ink-3);
+  font-size: 0.85em;
+}
+
+.ghosts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: baseline;
+  margin-top: 8px;
+  font-size: 15px;
+}
+.ghosts a {
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 1px dotted var(--vermilion);
+}
+.ghosts a span {
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}

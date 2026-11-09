@@ -12,6 +12,7 @@ import Bookmarks from "./Bookmarks";
 import { shareRun } from "./share";
 import Cover from "./Cover";
 import { Floats, Labels } from "./Overlays";
+import { unpackReplay, replayUrl } from "./replay";
 import { Seal, SEALS, judgeSeals } from "./seals";
 
 const ORD = (n) => {
@@ -76,6 +77,10 @@ export default function Hunt() {
   const tipsSeen = useRef(new Set(profile.tips || []));
 
   const audioRef = useRef(null);
+  const [replay] = useState(() => {
+    const raw = new URLSearchParams(location.search).get("replay");
+    return raw ? unpackReplay(raw) : null;
+  });
   const runTimer = useRef(null);
   const pendingRun = useRef(null);
   const flushRun = () => {
@@ -106,7 +111,9 @@ export default function Hunt() {
     g.events.onSfx = (n, x, str) => audio?.sfx(n, x, str);
     // a dev/test titan can be pinned with ?seed=; otherwise the live Base44 world decides
     const q = new URLSearchParams(location.search);
-    const w = q.has("seed")
+    const w = replay
+      ? createLocalWorld(g, { seed: replay.seed, number: replay.number })
+      : q.has("seed")
       ? createLocalWorld(g)
       : createLiveWorld(g, audio, {
           onFelled: (end) => {
@@ -156,6 +163,7 @@ export default function Hunt() {
     document.title = "WORLDBEAST · one titan, everyone, right now";
     g.holdReveal = closedRef.current;
     w.start();
+    if (replay) g.startReplay(replay);
     g.run();
     setLayout(g.layout());
     const onHide = () => {
@@ -391,7 +399,7 @@ export default function Hunt() {
   const arena = L?.arena;
   return (
     <div className="stage" style={styleU}>
-      {phase !== "playing" && !closed && L?.spread && <Bookmarks />}
+      {phase !== "playing" && phase !== "replay" && !closed && L?.spread && <Bookmarks />}
       {closed && (
         <Cover
           rect={L ? (L.spread && L.left ? { x: L.left.x, y: L.left.y - 4, w: L.right.x + L.right.w - L.left.x, h: L.left.h + 8 } : null) : null}
@@ -414,7 +422,7 @@ export default function Hunt() {
         <div className="leaf" style={{ left: L.left.x, top: L.left.y, width: L.left.w, height: L.left.h }}>
           {leafBody}
           {phase === "playing" && tip && <div className="margin-note in-leaf" key={tip.id} dangerouslySetInnerHTML={{ __html: '<span class="manicule">☞</span> ' + tip.html }} />}
-          {phase === "playing" ? runStats : !summary && lobbyControls}
+          {phase === "playing" ? runStats : !summary && !replay && lobbyControls}
         </div>
       )}
 
@@ -428,7 +436,7 @@ export default function Hunt() {
             </span>
             <span>{world.online} online</span>
           </div>
-          {phase !== "playing" && !summary && (
+          {phase !== "playing" && phase !== "replay" && !summary && (
             <div className="sheet leaf" style={{ position: "absolute", "--u": "30px" }}>
               <div>
                 <h1>{spec.name}</h1>
@@ -521,7 +529,8 @@ export default function Hunt() {
               style={{ flex: 1 }}
               onClick={async () => {
                 setShareMsg("Engraving your card…");
-                const r = await shareRun({ spec, summary, profile, share: summary.worldShare });
+                const link = replayUrl({ seed: spec.seed, number: spec.number, stage: summary.stage, startT: summary.startT, damage: summary.damage, sigil: profile.sigil, name: profile.name, aspect: summary.aspect, path: summary.path });
+                const r = await shareRun({ spec, summary, profile, share: summary.worldShare, link });
                 setShareMsg(r === "shared" ? "Shared." : r === "saved+copied" ? "Card saved; link copied." : "Card saved.");
                 setTimeout(() => setShareMsg(null), 3000);
               }}
@@ -539,6 +548,17 @@ export default function Hunt() {
         <div className="margin-note" style={{ left: arena.x + arena.w * 0.06, width: arena.w * 0.88, top: arena.y + 4 }} key={tip.id} dangerouslySetInnerHTML={{ __html: tip.html }} />
       )}
 
+      {replay && arena && phase === "replay" && (
+        <div className="replay-banner" style={{ left: arena.x, top: arena.y + 6, width: arena.w }}>
+          <div>
+            <span className="rubric">A ghost run</span> <Sigil id={replay.sigil} size={u * 0.5} /> <b>{replay.name}</b> against {spec?.name}: {fmt(replay.damage)} blows, {replay.duration.toFixed(0)} s.
+          </div>
+          <div className="replay-sub">The very attacks they faced, replayed from the titan's seed and the moment they began. (Their hounds are not shown.)</div>
+          <a className="join" href="/" style={{ fontSize: "1.05em", marginTop: "0.4em", display: "inline-block", width: "auto", textDecoration: "none", padding: "0.2em 0.8em" }}>
+            Hunt the titan awake now
+          </a>
+        </div>
+      )}
       {felled && arena && (
         <div className="felled-stamp" style={{ left: arena.x, top: arena.y + arena.h * 0.12, width: arena.w }} role="status">
           <div className="felled-word">Felled</div>

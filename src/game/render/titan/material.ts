@@ -130,11 +130,14 @@ export function engraveMaterial(u: TitanUniforms, o: EngraveOpts = {}) {
           col = mix(col, mix(gold, uInk, lines * .7), gl);
         }
         // kintsugi: gold veins open across the body as the world wounds it
-        float cn = fbm(vObj.xy * .9 + vObj.z * .5 + 4.2);
-        float vein = 1. - smoothstep(.0, .012 + .03 * uCrack, abs(cn - .5));
-        float reveal = smoothstep(.2, .95, uCrack + (vnoise(vObj.xy * .6) - .5) * .5) * ${f3(cracks)};
-        vec3 crackCol = mix(uGold * 1.2, vec3(1., .86, .5), .5 + .5 * sin(uTime * 3. + vObj.y * 2.));
-        col = mix(col, crackCol, vein * reveal);
+        if (uCrack > .12) {
+          vec2 cq = vObj.xy * .9 + vObj.z * .5 + 4.2;
+          float cn = vnoise(cq) * .55 + vnoise(cq * 2.1 + 7.) * .3 + vnoise(cq * 4.3 + 3.) * .15;
+          float vein = 1. - smoothstep(.0, .014 + .03 * uCrack, abs(cn - .5));
+          float reveal = smoothstep(.2, .95, uCrack + (vnoise(vObj.xy * .6) - .5) * .5) * ${f3(cracks)};
+          vec3 crackCol = mix(uGold * 1.2, vec3(1., .86, .5), .5 + .5 * sin(uTime * 3. + vObj.y * 2.));
+          col = mix(col, crackCol, vein * reveal);
+        }
         col = mix(col, uAccent * .65, uWrath * .22 * smoothstep(.6, .1, tone));
         col = mix(col, vec3(1., .96, .82), uFlash);
         gl_FragColor = vec4(col, 1.);

@@ -415,6 +415,8 @@ export class Game {
     // --- camera shake
     this.shake = Math.max(0, this.shake - dt * 2.2);
     const s = this.reducedMotion ? 0 : this.shake * this.shake * 0.35;
+    this.view.camera.position.set(0, 0, 50);
+    this.page.bake(this.view.renderer, this.view.camera);
     this.view.camera.position.set((Math.random() - 0.5) * s, (Math.random() - 0.5) * s, 50);
     this.view.renderer.render(this.view.scene, this.view.camera);
 

@@ -54,7 +54,11 @@ async function openClient(browser, label, sigil, session = SESSION) {
       if (label) w.setIdentity({ name: label, sigil, aspect: "ember" });
       // fly: a circle until told otherwise
       window.__fly = { cx: sigil === 3 ? -3 : 3, cy: 6, r: 1.5, line: null, alive: true };
+      window.__jit = { last: performance.now(), max: 0 };
       window.__flyTimer = setInterval(() => {
+        const j = window.__jit, nowj = performance.now();
+        j.max = Math.max(j.max, nowj - j.last);
+        j.last = nowj;
         const f = window.__fly;
         const t = performance.now() / 1000;
         let x, y;
@@ -228,7 +232,7 @@ try {
   const revived = await waitFor(A, () => window.__revives.some((r) => r.me), 5000);
   const rv = await ev(A, () => window.__revives[0]);
   check("B flying through the spark revives A", revived, JSON.stringify(rv));
-  if (!revived) console.log("debug", spot, await ev(B, () => ({ fly: window.__fly, sparks: [...window.__w.sparks.values()], mode: window.__w.mode })));
+  if (!revived) console.log("debug", JSON.stringify({ spot, B: await ev(B, () => ({ fly: window.__fly, sparks: [...window.__w.sparks.values()], you: window.__w.you, revives: window.__revives })), A: await ev(A, () => ({ you: window.__w.you, revives: window.__revives, mode: window.__w.mode, jitter: window.__jit })) }));
   await ev(A, () => (window.__fly.alive = true));
   await ev(B, () => (window.__fly.line = null));
 
@@ -245,10 +249,13 @@ try {
   const landedA = await ev(A, () => window.__acks.reduce((s, a) => s + a.ok, 0));
   check("a run claiming 1,000,000 is clamped to what landed", run && run.clamped && run.damage <= landedA + 60, JSON.stringify(run) + ` landed ${landedA}`);
   check("the run's path is stored as an echo", run && run.echo === true);
-  await sleep(2500);
   const echoRows = await ev(A, async () => {
     const w = window.__w;
-    const rows = await window.__c.entities.Echo.filter({ titanSeed: w.titanSeed }, "-created_date", 10);
+    let rows = [];
+    for (let i = 0; i < 20 && !rows.length; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      rows = await window.__c.entities.Echo.filter({ titanSeed: w.titanSeed }, "-created_date", 10);
+    }
     return rows.map((r) => ({ phrase: r.phrase, loopBeat: r.loopBeat, stage: r.stage, duration: r.duration, len: r.path.length, name: r.name }));
   });
   check("the echo is readable anonymously from the Echo entity", echoRows.length > 0, JSON.stringify(echoRows[0] ?? null));

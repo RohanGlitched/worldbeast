@@ -6,7 +6,7 @@ import { PAGE } from "./stage";
 // The vellum leaf, its ruling and margins, and the dark desk beyond it.
 
 export class PageLayer {
-  mesh: THREE.Mesh;
+  mesh!: THREE.Mesh;
   mat: THREE.ShaderMaterial;
   constructor(scene: THREE.Scene) {
     this.mat = new THREE.ShaderMaterial({
@@ -81,12 +81,6 @@ export class PageLayer {
           float l2 = max(rule(fx - .32, .045) * frameV, rule(fy - .34, .045) * frameH);
           col = mix(col, uAccent2 * .9, l1 * .65);
           col = mix(col, uAccent * .95, l2 * .55);
-          // the arena darkens a touch with the titan's wrath; a soft pulse on the downbeat
-          col *= 1. - .05 * uStage * inA;
-          col += uGold * .035 * uPulse * inA;
-          // hurt flash: a vermilion wash at the edges
-          float vig = smoothstep(.0, 9., edge);
-          col = mix(col, uAccent, uHurt * (1. - vig) * .6);
           float pageEdge = smoothstep(.0, .06, -outside);
           vec3 outc = mix(desk, col, pageEdge);
           // page shadow on the desk
@@ -98,11 +92,71 @@ export class PageLayer {
       depthWrite: false,
       depthTest: false,
     });
+    // the expensive paper is baked once per layout; the live layer only adds the beat, wrath and hurt
     const geo = new THREE.PlaneGeometry(2, 2);
-    this.mesh = new THREE.Mesh(geo, this.mat);
+    this.bakeMesh = new THREE.Mesh(geo, this.mat);
+    this.bakeMesh.frustumCulled = false;
+    this.bakeScene.add(this.bakeMesh);
+    this.rt = new THREE.WebGLRenderTarget(4, 4, { depthBuffer: false });
+    this.live = new THREE.ShaderMaterial({
+      uniforms: {
+        uTex: { value: this.rt.texture },
+        uRes: { value: new THREE.Vector2(1, 1) },
+        uRect: this.mat.uniforms.uRect,
+        uArena: this.mat.uniforms.uArena,
+        uStage: { value: 0 },
+        uPulse: { value: 0 },
+        uHurt: { value: 0 },
+        uGold: this.mat.uniforms.uGold,
+        uAccent: this.mat.uniforms.uAccent,
+      },
+      vertexShader: /* glsl */ `
+        uniform vec4 uRect; varying vec2 vW;
+        void main(){ vec2 w = mix(uRect.xy, uRect.zw, position.xy * .5 + .5); vW = w; gl_Position = projectionMatrix * modelViewMatrix * vec4(w, -40., 1.); }
+      `,
+      fragmentShader: /* glsl */ `
+        precision highp float;
+        uniform sampler2D uTex; uniform vec2 uRes; uniform vec4 uArena;
+        uniform float uStage, uPulse, uHurt; uniform vec3 uGold, uAccent;
+        varying vec2 vW;
+        void main(){
+          vec3 col = texture2D(uTex, gl_FragCoord.xy / uRes).rgb;
+          float inA = step(uArena.x, vW.x) * step(vW.x, uArena.z) * step(uArena.y, vW.y) * step(vW.y, uArena.w);
+          col *= 1. - .05 * uStage * inA;
+          col += uGold * .03 * uPulse * inA;
+          float edge = min(min(vW.x - uArena.x, uArena.z - vW.x), min(vW.y - uArena.y, uArena.w - vW.y));
+          col = mix(col, uAccent, uHurt * (1. - smoothstep(.0, 7., edge)) * .5 * step(-.5, edge));
+          gl_FragColor = vec4(col, 1.);
+        }
+      `,
+      depthWrite: false,
+      depthTest: false,
+    });
+    this.mesh = new THREE.Mesh(geo, this.live);
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = -100;
     scene.add(this.mesh);
+  }
+  private bakeScene = new THREE.Scene();
+  private bakeMesh: THREE.Mesh;
+  private rt: THREE.WebGLRenderTarget;
+  private live: THREE.ShaderMaterial;
+  private dirty = true;
+  private key = "";
+
+  /** Re-bake the paper if the layout or the plate changed. */
+  bake(renderer: THREE.WebGLRenderer, camera: THREE.Camera) {
+    const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+    const u = this.mat.uniforms;
+    const k = [size.x, size.y, u.uRect.value.toArray().map((v: number) => v.toFixed(3)).join(","), u.uSpread.value, u.uVellum.value.getHexString(), u.uAccent.value.getHexString()].join("|");
+    if (!this.dirty && k === this.key) return;
+    this.key = k;
+    this.dirty = false;
+    if (this.rt.width !== size.x || this.rt.height !== size.y) this.rt.setSize(size.x, size.y);
+    (this.live.uniforms.uRes.value as THREE.Vector2).copy(size);
+    renderer.setRenderTarget(this.rt);
+    renderer.render(this.bakeScene, camera);
+    renderer.setRenderTarget(null);
   }
   setPlate(p: Plate) {
     const u = this.mat.uniforms;
@@ -111,6 +165,7 @@ export class PageLayer {
     u.uAccent.value.set(p.accent);
     u.uAccent2.value.set(p.accent2);
     u.uGold.value.set(p.gold);
+    this.dirty = true;
   }
   update(rect: { x0: number; y0: number; x1: number; y1: number }, time: number, stage: number, pulse: number, hurt: number, left: { x0: number; y0: number; x1: number; y1: number } | null = null) {
     const u = this.mat.uniforms;
@@ -118,8 +173,9 @@ export class PageLayer {
     if (left) u.uLeft.value.set(left.x0, left.y0, left.x1, left.y1);
     u.uRect.value.set(rect.x0, rect.y0, rect.x1, rect.y1);
     u.uTime.value = time;
-    u.uStage.value = stage;
-    u.uPulse.value = pulse;
-    u.uHurt.value = hurt;
+    const l = this.live.uniforms;
+    l.uStage.value = stage;
+    l.uPulse.value = pulse;
+    l.uHurt.value = hurt;
   }
 }

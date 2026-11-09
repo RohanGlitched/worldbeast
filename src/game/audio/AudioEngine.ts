@@ -121,6 +121,7 @@ export class AudioEngine {
   private g: Graph | null = null;
   private synth: Synth | null = null;
   private drone: Drone | null = null;
+  private conv: ConvolverNode | null = null;
   private spec: TitanSpec | null = null;
   private field: Field | null = null;
   private song: Song | null = null;
@@ -426,6 +427,8 @@ export class AudioEngine {
       solo?: string[];
       /** diagnostics: render without the cathedral */
       dry?: boolean;
+      /** diagnostics: remove parts of the graph to measure their CPU cost */
+      strip?: Array<"drone" | "notes" | "verb">;
     },
   ): Promise<AudioBuffer> {
     const sr = o.sampleRate ?? 44100;
@@ -435,8 +438,10 @@ export class AudioEngine {
     await eng.ready();
     if (o.solo) for (const [k, n] of Object.entries(eng.g!.ch)) if (!o.solo.includes(k)) (n as GainNode).gain.value = 0;
     if (o.dry) eng.g!.verbOut.gain.value = 0;
+    if (o.strip?.includes("drone")) eng.drone?.oscs.forEach((x) => x.stop(0));
+    if (o.strip?.includes("verb")) eng.conv?.disconnect();
     const a = performance.now();
-    eng.renderSchedule(o.t0, o.t0 + o.seconds, o.stage, o.hpFrac ?? [0.9, 0.5, 0.2][o.stage], o.playing ?? true);
+    eng.renderSchedule(o.t0, o.strip?.includes("notes") ? o.t0 : o.t0 + o.seconds, o.stage, o.hpFrac ?? [0.9, 0.5, 0.2][o.stage], o.playing ?? true);
     for (const s of o.sfx ?? []) eng.sfx(s.name, s.x ?? 0, s.strength ?? 1, s.at);
     const b = performance.now();
     const buf = await off.startRendering();
@@ -503,7 +508,7 @@ export class AudioEngine {
     mix.connect(hp).connect(glue).connect(makeup).connect(limiter).connect(trim).connect(pre).connect(ceil).connect(master).connect(ctx.destination);
 
     // reverb: one cathedral shared by music and sfx
-    const conv = ctx.createConvolver();
+    const conv = (this.conv = ctx.createConvolver());
     conv.normalize = false;
     conv.buffer = cathedralIR(ctx);
     nodes.push(conv);
@@ -966,7 +971,7 @@ export class AudioEngine {
       else if (crescendo && v === "low") vel = sib % 4 === 0 ? 0.6 + 0.1 * (bar - 12) : 0;
       else vel = fillBar && sib >= 8 ? song.fills[v][sib] : song.perc[v][stage][sib];
       if (vel <= 0) continue;
-      vel *= drive;
+      vel *= drive * [0.62, 0.85, 1][stage];
       const t = sib & 1 && vel < 0.5 ? swung : when;
       switch (v) {
         case "low":
@@ -1012,7 +1017,7 @@ export class AudioEngine {
         while (midi < 55) midi += 12;
         const dur = n.dur * stepDur;
         const t = sib & 1 ? swung : when;
-        const vel = n.vel * (0.75 + 0.25 * drive);
+        const vel = n.vel * (0.75 + 0.25 * drive) * [0.75, 0.9, 1][stage];
         if (n.bell) {
           sy.bell(ch.bell, t, midi, vel * 0.55, { partials: 6, decay: 3 });
           continue;
@@ -1021,7 +1026,7 @@ export class AudioEngine {
           sy.pluck(ch.mel, t, midi, vel * 0.55, { decay: 1.4, bright: 0.4, pan: 0.35 });
           continue;
         }
-        this.lead(tm.lead, t, midi, dur, vel * (stage === 0 ? 0.85 : 1), 0);
+        this.lead(tm.lead, t, midi, dur, vel, 0);
         if (stage >= 1) this.lead(tm.lead2, t, tm.lead2 === "bell" ? midi : midi - 12, dur, vel * 0.5, -0.3);
         if (stage === 2 && n.vel >= 0.9) sy.bell(ch.bell, t, midi + 12, vel * 0.32, { partials: 5, decay: 2.2, pan: 0.3 });
       }
@@ -1091,14 +1096,14 @@ export class AudioEngine {
     const v = e.v;
     const pan = panOf(e.x);
     const heavy = v.heavy || e.sig;
-    const vel = (heavy ? 1 : 0.72) * (1 + 0.08 * this.stage);
+    const vel = (heavy ? 1 : 0.72) * [0.62, 0.82, 1][this.stage];
     const m = (deg: number, oct: number) => this.midi(deg, oct);
     switch (e.type) {
       case "cue": {
         if (!this.playing) return;
         const deg = chord + CUE_DEG[v.kind];
         const fam = FAMILY[v.kind];
-        const cv = heavy ? 0.5 : 0.36;
+        const cv = (heavy ? 0.5 : 0.36) * [0.85, 0.92, 1][this.stage];
         if (fam === "shot") {
           sy.bell(ch.cue, when, m(deg, 3), cv, { partials: 3, decay: 0.8, pan, group: "cue", prio: 1 });
         } else if (fam === "ground") {

@@ -1109,12 +1109,12 @@ button {
   height: 118%;
   margin: -6% 0 0 -9%;
   object-fit: contain;
-  animation: medallionIn 1.6s ease both;
+  animation: medallionIn 1.2s ease both;
 }
+/* (no blur: the engraving inks in sharp, and the blank compass under it is gone once it has: .medallion.inked) */
 @keyframes medallionIn {
   from {
     opacity: 0;
-    filter: blur(6px);
   }
 }
 .cover-awake {
@@ -1169,6 +1169,15 @@ button {
   font-size: 14px;
   font-style: italic;
   opacity: 0.75;
+  text-align: center;
+  text-wrap: balance;
+  max-width: min(82%, 40em);
+}
+/* a phone: the line stays between the corner flourishes */
+@media (max-width: 560px) {
+  .cover-meta {
+    max-width: 54%;
+  }
 }
 .clasp {
   position: absolute;
@@ -1268,13 +1277,15 @@ button {
   clip: rect(0 0 0 0);
 }
 
-/* the felled ceremony */
+/* the felled ceremony, on the clock of Game FALL: the titan's death beat (1.6 s), then the stamp slams onto its
+   body, holds over the drained plate, and goes as the plate is torn away (5.6 s .. 6.8 s) */
 .felled-stamp {
   position: absolute;
   pointer-events: none;
   text-align: center;
   font-size: calc(var(--u) * 0.6);
-  animation: noteIn 0.6s cubic-bezier(0.2, 1.4, 0.4, 1) both;
+  transform: translateY(-50%);
+  animation: felledLift 1.1s ease-in 5.6s both;
 }
 .felled-word {
   display: inline-block;
@@ -1285,8 +1296,39 @@ button {
   border: 0.08em double var(--vermilion);
   padding: 0.05em 0.35em 0.12em;
   transform: rotate(-7deg);
-  background: rgba(239, 228, 204, 0.75);
-  animation: stampIn 0.55s cubic-bezier(0.2, 1.6, 0.4, 1) both;
+  background: rgba(239, 228, 204, 0.82);
+  box-shadow: 0 0 0 0.12em rgba(239, 228, 204, 0.5);
+  animation: stampSlam 0.36s cubic-bezier(0.55, 0, 0.6, 1.4) 1.42s both;
+}
+.felled-stamp .felled-line,
+.felled-stamp .felled-top {
+  animation: felledWords 0.5s ease-out 1.85s both;
+}
+@keyframes stampSlam {
+  0% {
+    opacity: 0;
+    transform: rotate(-11deg) scale(2.8);
+  }
+  70% {
+    opacity: 1;
+    transform: rotate(-6deg) scale(0.9);
+  }
+  100% {
+    opacity: 1;
+    transform: rotate(-7deg) scale(1);
+  }
+}
+@keyframes felledWords {
+  from {
+    opacity: 0;
+    transform: translateY(0.4em);
+  }
+}
+@keyframes felledLift {
+  to {
+    opacity: 0;
+    transform: translateY(-38%) rotate(1.5deg);
+  }
 }
 .felled-line {
   margin-top: 0.6em;

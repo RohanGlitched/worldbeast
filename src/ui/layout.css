@@ -58,8 +58,24 @@
   flex: 1;
   overflow: hidden;
   font-size: 0.92em;
-  -webkit-mask-image: linear-gradient(#000 70%, transparent);
-  mask-image: linear-gradient(#000 70%, transparent);
+  display: flex;
+  flex-direction: column;
+}
+/* the chronicle shows whole lines only: a line that does not fit wraps into a column off the leaf instead of
+   being cut mid-word (the box is clipped at its edge, never through a line) */
+.leaf.strip .strip-chronicle .chronicle,
+.leaf-chronicle .chronicle {
+  flex: 1 1 0;
+  min-height: 0;
+  flex-flow: column wrap;
+  align-content: flex-start;
+  column-gap: 2em;
+  mask-image: none;
+  -webkit-mask-image: none;
+}
+.leaf.strip .strip-chronicle .chronicle li,
+.leaf-chronicle .chronicle li {
+  width: 100%;
 }
 .leaf.strip .gauges {
   margin-top: auto;
@@ -145,9 +161,13 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  color: var(--vellum);
+  padding: 10px 12px 12px;
+  color: var(--ink);
   font-size: 14px;
   pointer-events: none;
+  background: linear-gradient(180deg, #f1e6cd, #e4d4b2);
+  border: 1.5px solid var(--ink);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45), inset 0 0 0 3px rgba(214, 165, 49, 0.45);
 }
 .hud-side-name {
   font-family: var(--display);
@@ -156,7 +176,7 @@
 }
 .hud-side .hp {
   height: 6px;
-  border: 1px solid var(--vellum);
+  border: 1px solid var(--ink);
   position: relative;
 }
 .hud-side .hp i {
@@ -179,7 +199,6 @@
   font-size: 15px;
   gap: 0.5em;
 }
-.hud-side .life,
 .hud-band .life {
   border-color: var(--vellum);
 }
@@ -191,10 +210,14 @@
 .hud-side .reso {
   flex: none;
 }
-.hud-side .dmg,
 .hud-band .dmg {
   color: var(--vellum);
   text-shadow: 0 1px 0 rgba(0, 0, 0, 0.6);
+  text-align: left;
+  font-size: 26px;
+}
+.hud-side .dmg {
+  color: var(--ink);
   text-align: left;
   font-size: 26px;
 }
@@ -203,9 +226,11 @@
   font-size: 22px;
   min-width: 3.2em;
 }
-.hud-side .dmg small,
 .hud-band .dmg small {
   color: rgba(239, 228, 204, 0.7);
+}
+.hud-side .dmg small {
+  color: var(--ink-3);
 }
 .dashbtn.side {
   width: 78px;
@@ -243,6 +268,13 @@
   border-radius: 20px;
   font-size: 17px;
 }
+/* a small phone: the host's badge sits at x 95+ along the bottom, so dash stays narrow beside it */
+@media (max-width: 359px) {
+  .dashbtn.band {
+    min-width: 72px;
+    padding: 0 14px;
+  }
+}
 
 /* ------------------------------------------------------------------ the cover medallion: blank vellum, faintly
    ruled, until the titan awake now is drawn (by the game's renderer, once its programs are linked); then that
@@ -252,6 +284,9 @@
 }
 .medallion img {
   background: transparent;
+}
+.medallion.inked {
+  background: radial-gradient(circle, #f3e9d3 56%, #e2d2ae);
 }
 
 /* ------------------------------------------------------------------ the open leaf in the lobby
@@ -267,9 +302,18 @@
   flex-direction: column;
   overflow: hidden;
 }
-.leaf-chronicle .chronicle {
-  flex: 1;
+/* a chronicle of one or two lines takes only their room: the lobby below keeps its how-to in view */
+.leaf-chronicle.few {
+  flex: 0 0 auto;
   min-height: 0;
+}
+.leaf-chronicle.few .chronicle {
+  flex: 0 0 auto;
+}
+/* the titan's own record, filling a thin live chronicle: told by the book, not by hunters */
+.chronicle .wb-titan-line {
+  font-style: italic;
+  color: var(--ink-3);
 }
 .lobby {
   display: flex;
@@ -308,17 +352,48 @@
 .leaf.open .aspect-line {
   min-height: 0;
 }
-.wb-rehearse-offer {
-  font-style: italic;
-  font-size: 0.95em;
-  color: var(--ink-2);
+/* nobody hunting this minute: a newcomer's way to see a titan fall, a gilt button under Join */
+.join-alt {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0 0.5em;
+  padding: 0.22em 0.8em 0.3em;
+  border: 1.5px solid var(--ink);
+  background: linear-gradient(180deg, #f0cf78, #d6a531 60%, #b8892a);
+  box-shadow: 0 0.1em 0 var(--ink), inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  color: var(--ink);
+  font-family: var(--display);
+  font-size: 1.15em;
+  line-height: 1.1;
   text-decoration: none;
-  border-bottom: 1px dotted var(--ink-3);
-  white-space: nowrap;
+  text-align: center;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
 }
-.wb-rehearse-offer:hover {
-  color: var(--vermilion);
-  border-bottom-color: var(--vermilion);
+.join-alt small {
+  font-family: var(--text);
+  font-style: italic;
+  font-size: max(11px, 0.62em);
+  color: var(--ink-2);
+}
+.join-alt:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 0.16em 0 var(--ink), inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 0 14px rgba(240, 207, 120, 0.5);
+}
+.join-alt:active {
+  transform: translateY(0.08em);
+  box-shadow: 0 0.02em 0 var(--ink);
+}
+/* Join's subtitle stays readable at every size (it was 0.42em: ~7 px on a laptop) and on one line */
+.join small {
+  font-size: max(11px, 0.42em);
+}
+.lobby > .join small {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* a phone's sheet (and a sideways phone's panel): the title and links, the choices (scrolling when short), Join */
@@ -328,11 +403,43 @@
 .sheet .lobby {
   flex: 1 1 auto;
 }
+/* a phone on its side: Join and the rehearsal offer side by side (the panel is wide and short) */
+.side-sheet .lobby {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+.side-sheet .lobby > .lobby-mid {
+  grid-column: 1 / -1;
+}
+.side-sheet .lobby > .join:last-child {
+  grid-column: 1 / -1;
+}
+.side-sheet .join-alt {
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
 
 /* ------------------------------------------------------------------ the folded strip: who is here, the chronicle,
    today's omen, then your lights and your hunt */
-.leaf.strip .strip-chronicle .rubric {
+.leaf.strip .strip-chronicle .rubric,
+.leaf.strip .strip-who {
   margin-bottom: 0.2em;
+}
+.leaf.strip .strip-who {
+  flex: none;
+}
+/* (room for the rubric and at least one whole line) */
+.leaf.strip .strip-chronicle {
+  min-height: 3em;
+}
+.strip-echoes {
+  margin-top: 0.3em;
+  font-style: italic;
+  color: var(--ink-3);
+  font-size: 0.92em;
 }
 .leaf.strip .strip-chronicle .strip-sub {
   margin-top: 0.6em;
@@ -344,6 +451,61 @@
   flex: none;
   font-size: 0.95em;
   padding: 0.3em 0.5em;
+}
+.omen-meter {
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  margin-top: 0.3em;
+  font-size: 0.92em;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+.omen-meter b {
+  color: var(--ink);
+}
+.omen-bar {
+  flex: 1;
+  height: 0.5em;
+  border: 1px solid rgba(35, 28, 23, 0.45);
+  position: relative;
+  overflow: hidden;
+}
+.omen-bar i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: linear-gradient(90deg, #b8892a, var(--gold-2));
+  transition: width 0.25s linear;
+}
+.strip-presence {
+  flex: none;
+}
+.strip-presence .rubric {
+  margin: 0 0 0.2em;
+}
+.strip-quiet {
+  margin: 0;
+  font-style: italic;
+  color: var(--ink-2);
+  font-size: 0.95em;
+}
+/* a laptop's strip has no spare band: the header already says no one is hunting, the gauges keep their room */
+@media (max-height: 900px) {
+  .strip-quiet {
+    display: none;
+  }
+}
+.strip-omen .omen-text .rubric {
+  display: inline;
+  margin: 0;
+}
+.omen-other {
+  color: var(--ink-3);
+  font-size: 0.92em;
+}
+.hunter-chip.wb-echo {
+  opacity: 0.75;
+  font-style: italic;
 }
 .leaf.strip .strip-omen .rubric {
   margin: 0;
@@ -358,14 +520,15 @@
 .margin-note.side-note {
   font-size: 13px;
 }
+/* (a vellum chip: dark words on the dark table could not be read) */
 .margin-note.side-note {
   text-align: left;
-  color: var(--vellum);
-  background: none;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
-}
-.margin-note.side-note b {
-  color: var(--gold-2);
+  color: var(--ink);
+  background: linear-gradient(180deg, #f1e6cd, #e4d4b2);
+  border: 1.5px solid var(--ink);
+  border-left: 3px solid var(--vermilion);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  padding: 0.45em 0.7em;
 }
 
 /* the lone-hunter rule, said quietly */
@@ -410,4 +573,11 @@
   .ribbon.here {
     transform: none;
   }
+}
+
+/* the first visit's how-to sits whole above Join (no inner scroll): its lines a touch closer */
+.leaf.open .howto,
+.sheet .howto {
+  gap: 0.16em;
+  line-height: 1.28;
 }

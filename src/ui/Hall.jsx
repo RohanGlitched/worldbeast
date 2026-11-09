@@ -42,8 +42,10 @@ function Plate({ t, live }) {
     );
   }, [t.number, t.seed, spec.beat]);
   useEffect(() => {
-    const id = requestIdleCallback ? requestIdleCallback(() => setImg(portrait(t.seed, t.number, { crack: t.status === "felled" ? 0.9 : 1 - (t.hp ?? t.hpMax) / (t.hpMax || 1) }))) : setTimeout(() => setImg(portrait(t.seed, t.number)), 30);
-    return () => (cancelIdleCallback ? cancelIdleCallback(id) : clearTimeout(id));
+    const ric = window.requestIdleCallback;
+    const cic = window.cancelIdleCallback;
+    const id = ric ? ric(() => setImg(portrait(t.seed, t.number, { crack: t.status === "felled" ? 0.9 : 1 - (t.hp ?? t.hpMax) / (t.hpMax || 1) }))) : setTimeout(() => setImg(portrait(t.seed, t.number)), 30);
+    return () => (cic ? cic(id) : clearTimeout(id));
   }, [t.seed, t.number, t.status, t.hp, t.hpMax]);
   const status = live ? "awake" : t.status;
   return (

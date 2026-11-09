@@ -204,7 +204,12 @@ export default function Hunt() {
   // keyboard: Enter starts / restarts
   useEffect(() => {
     const k = (e) => {
-      if (e.key === "Enter" && phase !== "playing" && document.activeElement?.tagName !== "INPUT") begin();
+      const el = document.activeElement;
+      const free = !el || el === document.body || el.tagName === "CANVAS"; // a focused Join clicks itself
+      if (e.key === "Enter" && phase !== "playing" && free && !e.defaultPrevented) {
+        e.preventDefault();
+        begin();
+      }
     };
     window.addEventListener("keydown", k);
     return () => window.removeEventListener("keydown", k);

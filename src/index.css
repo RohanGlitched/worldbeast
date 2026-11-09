@@ -43,6 +43,13 @@ button {
   inset: 0;
   overflow: hidden;
 }
+/* iOS Safari: fixed inset:0 can reach under the toolbar; size to the visible viewport */
+@supports (height: 100dvh) {
+  .stage {
+    bottom: auto;
+    height: 100dvh;
+  }
+}
 .stage > canvas {
   position: absolute;
   inset: 0;

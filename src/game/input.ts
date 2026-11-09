@@ -48,6 +48,9 @@ export class Input {
     const tg = e.target as HTMLElement | null;
     if (tg && (tg.tagName === "INPUT" || tg.tagName === "TEXTAREA" || tg.isContentEditable)) return;
     const k = e.key.toLowerCase();
+    // a focused button or link keeps Space/Enter for itself; the field takes them otherwise
+    const onControl = !!tg && (tg.tagName === "BUTTON" || tg.tagName === "A" || tg.tagName === "SELECT") && !tg.classList.contains("join");
+    if (onControl && (k === " " || k === "enter")) return;
     if (["arrowup", "arrowdown", "arrowleft", "arrowright", " "].includes(k)) e.preventDefault();
     if ((k === " " || k === "shift" || k === "k" || k === "x") && !this.keys.has(k)) this.dashQueued = true;
     this.keys.add(k);

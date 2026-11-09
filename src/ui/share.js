@@ -77,7 +77,9 @@ export async function shareRun(args) {
   const url = args.link || location.origin + "/";
   const text = `I struck ${Math.round(args.summary.damage).toLocaleString("en-US")} blows against ${args.spec.name}, the ${ORD(args.spec.number)} titan. Everyone online fights it at the same moment. Watch my run:`;
   const file = new File([blob], "worldbeast.png", { type: "image/png" });
-  if (navigator.canShare?.({ files: [file] })) {
+  // phones get the share sheet; desktops save the card and copy the link (the desktop sheet is slow and often empty)
+  const coarse = window.matchMedia?.("(pointer: coarse)").matches;
+  if (coarse && navigator.canShare?.({ files: [file] })) {
     try {
       await navigator.share({ files: [file], text, url });
       return "shared";

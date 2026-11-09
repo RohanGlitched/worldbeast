@@ -9,14 +9,20 @@ export const dayIndex = (now = Date.now()) => Math.floor(now / DAY);
 const ASPECT_NAMES = { ember: "Ember", lance: "Lance", bloom: "Bloom", mirror: "Mirror" };
 const fmt = (n) => n.toLocaleString("en-US");
 
+// Thresholds from measured runs (Nov 9, human-model harness: skilled + novice players, non-first hunts, Calm and
+// Wrath, the live Strider and four other titans): each tier is met by roughly 40-85% of single hunts, so a decent
+// hunter fulfils any omen within 1-5 tries. The old ones (45 s clean, 80 s alight, 16-graze chains) were met by
+// almost no one: R4's longest clean stretch in a non-first run was 20.5 s.
 const POOL = [
-  { id: "graze", ns: [20, 30, 40], text: (n) => `Graze ${n} attacks in one hunt`, test: (s, n) => s.grazes >= n },
-  { id: "time", ns: [40, 60, 80], text: (n) => `Stay alight for ${n} seconds`, test: (s, n) => s.time >= n },
-  { id: "blows", ns: [1200, 1800, 2500], text: (n) => `Strike ${fmt(n)} blows in one hunt`, test: (s, n) => s.damage >= n },
-  { id: "surge", ns: [2, 3], text: (n) => `Surge ${n} times in one hunt`, test: (s, n) => s.surges >= n },
-  { id: "clean", ns: [25, 35, 45], text: (n) => `Go ${n} seconds without being struck`, test: (s, n) => s.cleanTime >= n },
-  { id: "chain", ns: [8, 12, 16], text: (n) => `Chain ${n} grazes in a row`, test: (s, n) => s.bestCombo >= n },
+  { id: "graze", ns: [12, 16, 20], text: (n) => `Graze ${n} attacks in one hunt`, test: (s, n) => s.grazes >= n },
+  { id: "time", ns: [25, 35, 45], text: (n) => `Stay alight for ${n} seconds`, test: (s, n) => s.time >= n },
+  { id: "blows", ns: [1000, 1500, 2000], text: (n) => `Strike ${fmt(n)} blows in one hunt`, test: (s, n) => s.damage >= n },
+  { id: "surge", ns: [1, 2], text: (n) => (n === 1 ? "Surge in a hunt" : `Surge ${n} times in one hunt`), test: (s, n) => s.surges >= n },
+  { id: "clean", ns: [12, 16, 20], text: (n) => `Go ${n} seconds without being struck`, test: (s, n) => s.cleanTime >= n },
+  { id: "chain", ns: [4, 6, 7], text: (n) => `Chain ${n} grazes in a row`, test: (s, n) => s.bestCombo >= n },
 ];
+/** every omen's tiers, for tests and the How page */
+export const OMEN_POOL = POOL.map(({ id, ns }) => ({ id, ns: ns.slice() }));
 
 export function omenFor(day = dayIndex()) {
   const h = hash32("omen", day);

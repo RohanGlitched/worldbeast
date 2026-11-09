@@ -249,7 +249,7 @@ describe("world actor (in-process)", () => {
     expect(t.mockDb.Titan.rows).toHaveLength(0);
   });
 
-  it("past 40% of a titan's life, it shrugs off a lone hunter: blows land at a quarter, runs still count them", async () => {
+  it("a lone hunter in a quiet world is credited in full, past 40% of the titan's life (R5: they were capped and scolded)", async () => {
     const t: W = new (World as any)();
     await t.handleStart();
     await settle(t);
@@ -259,25 +259,112 @@ describe("world actor (in-process)", () => {
     await t.handleConnect(C);
     await send(t, C, { t: "hello", key: key("c"), name: "Cy", sigil: 2, aspect: "lance" });
     const hk = t.hunters.get("solo").key;
-    t.credits.set(hk, { name: "Cy", sigil: 2, dmg: 3_990 }); // 10 short of 40% of a 10,000 titan
+    t.credits.set(hk, { name: "Cy", sigil: 2, dmg: 6_000 }); // well past 40% of a 10,000 titan, alone
     const [core, beat] = openBeat(s, 4);
     vi.setSystemTime(t.titan.wokeAt + beat * s.beat * 1000);
     await send(t, C, { t: "pos", x: 0, y: 4, alive: true, flags: 0 });
+    const hp0 = t.titan.hp;
+    await send(t, C, { t: "hit", hits: [[core, 50, beat]], q: 7 });
+    expect(C.last("ack")).toMatchObject({ ok: 50, q: 7 });
+    expect(C.last("ack").rs).toBeUndefined();
+    expect(hp0 - t.titan.hp).toBe(50);
+  });
+
+  it("while others share the titan, past 40% of its life one hunter's blows land at a quarter; runs still count them", async () => {
+    const t: W = new (World as any)();
+    await t.handleStart();
+    await settle(t);
+    const s = makeTitan(t.titan.seed, 1);
+    const [C, D] = [new MockConn("solo"), new MockConn("two")];
+    for (const [c, ch, nm] of [[C, "c", "Cy"], [D, "d", "Di"]] as const) {
+      t.conns.push(c);
+      await t.handleConnect(c);
+      await send(t, c, { t: "hello", key: key(ch), name: nm, sigil: 2, aspect: "lance" });
+    }
+    const hk = t.hunters.get("solo").key;
+    const [core, beat] = openBeat(s, 4);
+    vi.setSystemTime(t.titan.wokeAt + beat * s.beat * 1000);
+    await send(t, C, { t: "pos", x: 0, y: 4, alive: true, flags: 0 });
+    await send(t, D, { t: "pos", x: 1, y: 4, alive: true, flags: 0 });
+    // Di strikes first (within the last 2 hours), so the titan is shared
+    await send(t, D, { t: "hit", hits: [[core, 50, beat]] });
+    expect(D.last("ack")).toMatchObject({ ok: 50 });
+    t.credits.set(hk, { name: "Cy", sigil: 2, dmg: 3_990 }); // 10 short of 40% of a 10,000 titan
     const hp0 = t.titan.hp;
     await send(t, C, { t: "hit", hits: [[core, 50, beat]] });
     expect(C.last("ack")).toMatchObject({ ok: 20, rs: 30 }); // 10 at full strength, 40 at a quarter
     expect(hp0 - t.titan.hp).toBe(20);
     expect(t.credits.get(hk).dmg).toBe(4_010);
     expect(t.hunters.get("solo").acc).toBe(50); // the run is bounded by what they landed, not what wounded it
-    // a second hunter is struck at full strength
-    const D = new MockConn("two");
-    t.conns.push(D);
-    await t.handleConnect(D);
-    await send(t, D, { t: "hello", key: key("d"), name: "Di", sigil: 4, aspect: "lance" });
-    await send(t, D, { t: "pos", x: 1, y: 4, alive: true, flags: 0 });
+    // Di, under 40%, is struck at full strength
     await send(t, D, { t: "hit", hits: [[core, 50, beat]] });
     expect(D.last("ack")).toMatchObject({ ok: 50 });
     expect(D.last("ack").rs).toBeUndefined();
+    // two hours after Di's last blow the world is quiet again: Cy is credited in full
+    t.strikes.set(t.hunters.get("two").key, Date.now() - 2 * 3600_000 - 1);
+    await send(t, C, { t: "hit", hits: [[core, 40, beat]] });
+    expect(C.last("ack")).toMatchObject({ ok: 40 });
+    expect(C.last("ack").rs).toBeUndefined();
+    // and who struck lately survives the session idling
+    await t.flush(true);
+    expect(new Map(t.storage.map.get("strikes")).has(hk)).toBe(true);
+    expect(new Map(t.storage.map.get("strikes")).has(t.hunters.get("two").key)).toBe(false);
+  });
+
+  it("a dropped socket that redials on the same id keeps its hunter: queued hits count, the run ledger survives", async () => {
+    const t: W = new (World as any)();
+    await t.handleStart();
+    await settle(t);
+    const s = makeTitan(t.titan.seed, 1);
+    let C = new MockConn("re");
+    t.conns.push(C);
+    await t.handleConnect(C);
+    await send(t, C, { t: "hello", key: key("e"), name: "Eo", sigil: 5, aspect: "ember" });
+    const [core, beat] = openBeat(s, 4);
+    vi.setSystemTime(t.titan.wokeAt + beat * s.beat * 1000);
+    await send(t, C, { t: "pos", x: 0, y: 4, alive: true, flags: 0 });
+    await send(t, C, { t: "hit", hits: [[core, 30, beat]] });
+    const num = t.hunters.get("re").num;
+    // the socket drops; the SDK redials on the same id and flushes the hits it queued before the hello goes out
+    t.conns.splice(t.conns.indexOf(C), 1);
+    await t.handleClose(C);
+    C = new MockConn("re");
+    t.conns.push(C);
+    await t.handleConnect(C);
+    expect(C.last("welcome").you).toBe(num);
+    await send(t, C, { t: "hit", hits: [[core, 20, beat]], q: 3 });
+    expect(C.last("ack")).toMatchObject({ ok: 20, q: 3 });
+    expect(t.hunters.get("re").acc).toBe(50);
+    // the new socket arrived before the old one's close: the close must not take the hunter away
+    const C2 = new MockConn("re");
+    t.conns.push(C2);
+    await t.handleConnect(C2);
+    t.conns.splice(t.conns.indexOf(C), 1);
+    await t.handleClose(C);
+    expect(t.hunters.get("re")?.key).toBeTruthy();
+  });
+
+  it("a connection that says bye leaves the world at once, even while its socket lingers", async () => {
+    const t: W = new (World as any)();
+    await t.handleStart();
+    await settle(t);
+    const [A1, A2, B1] = [new MockConn("a1"), new MockConn("a2"), new MockConn("b1")];
+    for (const c of [A1, A2, B1]) {
+      t.conns.push(c);
+      await t.handleConnect(c);
+    }
+    await send(t, A1, { t: "hello", key: key("a"), name: "Ana", sigil: 1, aspect: "ember" });
+    expect(B1.last("welcome").online).toBe(3);
+    const numA1 = t.hunters.get("a1").num;
+    await send(t, A1, { t: "bye" });
+    expect(B1.last("leave")).toMatchObject({ id: numA1 });
+    expect(t.hunters.has("a1")).toBe(false);
+    await send(t, A1, { t: "hello", key: key("a"), name: "Ana", sigil: 1, aspect: "ember" }); // ignored
+    expect(t.hunters.has("a1")).toBe(false);
+    vi.setSystemTime(Date.now() + 200);
+    t.dirty = true;
+    await t.handleTick();
+    expect(B1.last("s").c).toBe(2);
   });
 
   it("the next titan never has the body of the one just felled", async () => {

@@ -104,6 +104,12 @@ const PING_EVERY_MS = 2_000;
 const KEY_STORE = "worldbeast.hunterKey";
 const SLOW_RTT_MS = 160;
 const MAX_PROBES = 2;
+/** a route candidate that has not proved itself in this long is dropped */
+const CAND_MS = 8_000;
+/** and it wins only if its round trip is at least this much shorter */
+const CAND_GAIN_MS = 30;
+/** a batch refused for a missing hello (a socket that redialled) is sent again if it is younger than this */
+const RETRY_MS = 3_000;
 
 export class World {
   mode: WorldMode = "connecting";
@@ -147,7 +153,13 @@ export class World {
   private posSentAt = 0;
   private posSent = "";
   private hits: HitRow[] = [];
-  private remote = new Map<number, { s: Array<[number, number, number, number]>; sigil: number; seen: number }>();
+  /** hit batches sent and not yet acked, by sequence number (a batch refused for a missing hello is sent again) */
+  private inflight = new Map<number, { rows: HitRow[]; at: number; retry: boolean }>();
+  private retryRows: HitRow[] = [];
+  private hitSeq = 0;
+  /** a second connection trying a better route; the current one stays in use until this one is welcomed */
+  private cand: { conn: ActorConn; id: string; at: number; welcome: Extract<ToClient, { t: "welcome" }> | null; buf: ToClient[]; rtts: number[] } | null = null;
+  private remote =new Map<number, { s: Array<[number, number, number, number]>; sigil: number; seen: number }>();
   private remoteSeen = 0;
   private wokeFired = -1;
   private runWaiters: Array<(r: RunResult | null) => void> = [];
@@ -182,14 +194,28 @@ export class World {
     this.timers = [];
     if (this.offlineTimer) clearTimeout(this.offlineTimer);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    this.conn?.close();
+    this.dropCandidate();
+    // say goodbye first: the gateway can hold a closing socket open for a minute, counted as a watcher
+    this.farewell(this.conn);
     this.conn = null;
+  }
+
+  /** leave the world on this connection now (the actor drops it at once), then close it */
+  private farewell(c: ActorConn | null) {
+    if (!c) return;
+    try {
+      c.send({ t: "bye" });
+    } catch {
+      /* not open: nothing to say goodbye on */
+    }
+    c.close();
   }
 
   private open() {
     try {
-      this.conn = this.client.actors[WORLD_ACTOR](this.session).connect({ id: this.connId });
-      this.conn.subscribe((m) => this.onMessage(m as ToClient));
+      const c = this.client.actors[WORLD_ACTOR](this.session).connect({ id: this.connId });
+      this.conn = c;
+      c.subscribe((m) => this.route(c, m as ToClient));
       this.openedAt = performance.now();
     } catch {
       this.conn = null;
@@ -197,8 +223,16 @@ export class World {
     }
   }
 
+  /** messages from the connection in use go to the world; a route candidate's are held until it wins */
+  private route(c: ActorConn, m: ToClient) {
+    if (c === this.conn) this.onMessage(m);
+    else if (this.cand && c === this.cand.conn) this.onCandidate(this.cand, m);
+  }
+
   private scheduleReconnect() {
     if (this.reconnectTimer) return;
+    this.dropCandidate();
+    // (no "bye": the next socket redials on the same id, and the actor keeps this hunter for it)
     this.conn?.close();
     this.conn = null;
     this.reconnectTimer = setTimeout(() => {
@@ -224,6 +258,8 @@ export class World {
     if (!playing || Number.isNaN(this.smoothOffset) || Math.abs(this.clockOffset - this.smoothOffset) > 250) this.smoothOffset = this.clockOffset;
     else this.smoothOffset += Math.max(-4, Math.min(4, this.clockOffset - this.smoothOffset));
     if (this.mode === "online" && now - this.lastPingAt > PING_EVERY_MS) this.ping();
+    if (this.cand && now - this.cand.at > CAND_MS) this.dropCandidate();
+    for (const [q, b] of this.inflight) if (now - b.at > 10_000) this.inflight.delete(q);
     const silentSince = Math.max(this.lastMsgAt, this.openedAt);
     if (!this.reconnectTimer && this.conn && now - silentSince > SILENT_MS) {
       const playing = now - (this.pos?.at ?? -1e9) < 2000;
@@ -277,22 +313,74 @@ export class World {
     // Some sockets get a return path ~180 ms slower than the way in, which skews the clock by
     // half of that. Before the hunter starts playing, try up to two fresh sockets for a better route.
     const playing = performance.now() - (this.pos?.at ?? -1e9) < 2000;
-    if (this.pings.length >= 6 && this.rtt > SLOW_RTT_MS && this.probes < MAX_PROBES && !playing && this.mode === "online") {
+    if (this.pings.length >= 6 && this.rtt > SLOW_RTT_MS && this.probes < MAX_PROBES && !playing && this.mode === "online" && !this.cand) {
       this.probes++;
-      this.reroute();
+      this.probeRoute();
     }
   }
 
   /** the clock has had its pings (and any route probing is done) */
   get clockSettled(): boolean {
-    return this.mode !== "online" || (this.pings.length >= 6 && (this.rtt <= SLOW_RTT_MS || this.probes >= MAX_PROBES));
+    return this.mode !== "online" || (this.pings.length >= 6 && !this.cand && (this.rtt <= SLOW_RTT_MS || this.probes >= MAX_PROBES));
   }
 
-  private reroute() {
-    this.conn?.close();
-    this.conn = null;
-    this.connId = "wb-" + randomHex(8);
-    this.open();
+  /**
+   * Try a second connection for a better route, make-before-break: the connection in use carries everything
+   * until the candidate is welcomed and has six pings of its own. Only a clearly faster candidate wins; the
+   * loser says "bye" (so the actor drops it at once) and closes. R5: the old way closed the socket in use first,
+   * and the gateway held each closed socket half-open for 60 s, so one viewer showed as up to 3 watchers and every
+   * probe came back with a fresh welcome (the "socket recycles every ~61 s" the judges saw).
+   */
+  private probeRoute() {
+    if (this.cand) return;
+    const id = "wb-" + randomHex(8);
+    try {
+      const conn = this.client.actors[WORLD_ACTOR](this.session).connect({ id });
+      this.cand = { conn, id, at: performance.now(), welcome: null, buf: [], rtts: [] };
+      conn.subscribe((m) => this.route(conn, m as ToClient));
+    } catch {
+      this.cand = null;
+    }
+  }
+
+  private onCandidate(c: NonNullable<World["cand"]>, m: ToClient) {
+    if (!m || typeof m !== "object") return;
+    if (m.t === "welcome") {
+      c.welcome = m;
+      c.buf = [];
+      for (let i = 0; i < 8; i++) setTimeout(() => this.cand === c && c.conn.send({ t: "ping", c: performance.now() }), i * 150);
+      return;
+    }
+    if (m.t === "pong") {
+      const rtt = performance.now() - m.c;
+      if (rtt >= 0 && rtt < 10_000) c.rtts.push(rtt);
+      if (c.rtts.length >= 6) this.settleRoute(c);
+      return;
+    }
+    // everything else that happens meanwhile is kept, so the world is current if this route wins
+    if (c.welcome && c.buf.length < 400) c.buf.push(m);
+  }
+
+  private settleRoute(c: NonNullable<World["cand"]>) {
+    const playing = performance.now() - (this.pos?.at ?? -1e9) < 2000;
+    const better = median(c.rtts) < this.rtt - CAND_GAIN_MS;
+    // a run never changes connection: the actor bounds a run by the blows it saw on one connection
+    if (!better || playing || this.mode !== "online" || !this.conn || !c.welcome) return this.dropCandidate();
+    this.flushHits(); // anything queued goes out on the old route first, while it is still open
+    const old = this.conn;
+    this.cand = null;
+    this.conn = c.conn;
+    this.connId = c.id;
+    this.openedAt = performance.now();
+    this.farewell(old);
+    this.onMessage(c.welcome);
+    for (const m of c.buf) this.onMessage(m);
+  }
+
+  private dropCandidate() {
+    const c = this.cand;
+    this.cand = null;
+    if (c) this.farewell(c.conn);
   }
 
   // ------------------------------------------------------------ state
@@ -387,6 +475,16 @@ export class World {
           this.events.onRevive?.({ who: m.who, by: m.by, byName: m.byName, me: m.who === this.you });
           return;
         case "ack":
+          if (m.q != null) {
+            // a batch the actor refused only because this socket's hello had not landed yet (the SDK redialled
+            // it and flushed its queue first) goes out again behind the hello
+            const b = this.inflight.get(m.q);
+            this.inflight.delete(m.q);
+            if (b && m.why === "noHello" && !(m.ok > 0) && !b.retry && performance.now() - b.at < RETRY_MS && this.identity) {
+              if (this.retryRows.length < 256) this.retryRows.push(...b.rows);
+              return;
+            }
+          }
           if (!this.local) this.hp = Math.min(this.hp, m.hp);
           this.stats.ok += m.ok;
           this.stats.bad += m.bad;
@@ -568,14 +666,25 @@ export class World {
   }
 
   flushHits() {
+    if (this.retryRows.length && this.mode === "online") {
+      // (sent once more, after the hello that the redialled socket was missing)
+      const rows = this.retryRows.splice(0, 64);
+      this.sendHits(rows, true);
+    }
     if (!this.hits.length) return;
     if (this.mode !== "online") {
       this.hits.length = 0;
       return;
     }
     this.stats.hitsSent += this.hits.length;
-    this.send({ t: "hit", hits: this.hits });
+    this.sendHits(this.hits, false);
     this.hits = [];
+  }
+
+  private sendHits(rows: HitRow[], retry: boolean) {
+    const q = ++this.hitSeq;
+    this.inflight.set(q, { rows, at: performance.now(), retry });
+    this.send({ t: "hit", hits: rows, q });
   }
 
   sendDown(x: number, y: number) {

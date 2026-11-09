@@ -3,8 +3,9 @@ import { hash32 } from "./core/rng.ts";
 import { makeTitan, PHRASE_BEATS, Stage, stageFor, TitanSpec } from "./core/titan.ts";
 import {
   addDamage, breakThreshold, Bucket, checkHit, checkRun, clampPos, creditBlow, DmgBuckets, echoEviction, ESCAPE_MS, hashKey, hpMaxFor,
-  INTERLUDE_MS, HP_RULE, LIMITS, loopKey, MAX_HITS_PER_MSG, prepareEcho, AspectRate, REVIVE_R, sanitizeAspect, sanitizeName,
-  resizeTitan, sanitizeSigil, segDist, SPARK_MS, titanSeed, titanT, topHunters, validKey,
+  INTERLUDE_MS, HP_RULE, LIMITS, loopKey, MAX_HITS_PER_MSG, othersStriking, prepareEcho, AspectRate, RESUME_MS, REVIVE_R,
+  sanitizeAspect, sanitizeName, resizeTitan, sanitizeSigil, segDist, SHARED_MS, shareId, SPARK_MS, titanSeed, titanT, topHunters,
+  validKey,
 } from "./logic.ts";
 import type { FeedItem, HitWhy, HunterRow, RosterRow, RunMsg, SparkRow, TitanEnd, TitanInfo, ToClient, ToServer } from "./shared/types.ts";
 import { F_DOWN, HIT_SURGE, Q, WORLD_SESSION } from "./shared/types.ts";
@@ -30,6 +31,8 @@ interface TitanState extends TitanInfo {
 interface Hunter {
   num: number;
   key?: string; // hashed
+  /** who this hunter is for the sharing rule (logic.ts shareId): their account if signed in, else `key` */
+  who?: string;
   name: string;
   sigil: number;
   aspect: string;
@@ -69,6 +72,9 @@ const TITAN_RECORD_MS = 60_000;
 const CREDITS_KEEP = 300;
 const LANES = 4;
 
+/** a hit message's sequence number, echoed in its ack (types.ts) */
+const seq = (q: unknown): { q?: number } => (typeof q === "number" && Number.isInteger(q) && q >= 0 && q < 2 ** 31 ? { q } : {});
+
 export default class World extends Actor<ToServer, ToClient> {
   tickIntervalMs = TICK_MS;
 
@@ -84,8 +90,16 @@ export default class World extends Actor<ToServer, ToClient> {
   private hourKeys = new Set<string>();
   private hourKeysAt = -1;
   private credits = new Map<string, Credit>();
+  /** the awake titan's strikers (logic.ts shareId -> ms of their last wound): is it shared right now? */
+  private strikes = new Map<string, number>();
+  /** blows credited per sharing identity (a signed-in hunter's keys together; else the same as `credits`) */
+  private shareCredit = new Map<string, number>();
   private feed: FeedItem[] = [];
   private hunters = new Map<string, Hunter>();
+  /** hunters whose connection just dropped, kept for a reconnect on the same connection id (RESUME_MS) */
+  private parked = new Map<string, { h: Hunter; at: number }>();
+  /** connections that said "bye" (abandoned for a better route): out of the world even while their socket lingers */
+  private gone = new Set<string>();
   private rates = new Map<string, AspectRate>();
   private sparks = new Map<string, { x: number; y: number; until: number }>();
   private hunterCache = new Map<string, { id: string; damageTotal: number; runs: number; bestRun: number; titansFelled: number }>();
@@ -166,6 +180,7 @@ export default class World extends Actor<ToServer, ToClient> {
     this.lastStageAt = (await st.get<number[]>("lastStageAt")) ?? [];
     const credits = (await st.get<Array<[string, string, number, number]>>("credits")) ?? [];
     this.credits = new Map(credits.map(([k, name, sigil, dmg]) => [k, { name, sigil, dmg }]));
+    this.strikes = new Map((await st.get<Array<[string, number]>>("strikes")) ?? []);
     const titan = await st.get<TitanState>("titan");
     const now = Date.now();
     if (!titan) {
@@ -202,7 +217,16 @@ export default class World extends Actor<ToServer, ToClient> {
   async handleConnect(conn: Conn) {
     try {
       await this.ensureReady();
-      this.welcome(conn, Date.now());
+      const now = Date.now();
+      // a dropped connection coming back on the same id (the SDK's socket redials with it) is the same hunter:
+      // same key, number and run ledger, so hits it queued while the socket was down still count
+      const p = this.parked.get(conn.id);
+      this.parked.delete(conn.id);
+      if (p && now - p.at < RESUME_MS && !this.hunters.has(conn.id)) {
+        this.hunters.set(conn.id, p.h);
+        if (p.h.key) this.broadcast({ t: "join", n: now, r: [p.h.num, p.h.name, p.h.sigil, p.h.aspect] });
+      }
+      this.welcome(conn, now);
     } catch (e) {
       this.log("connect", e);
     }
@@ -210,11 +234,20 @@ export default class World extends Actor<ToServer, ToClient> {
 
   async handleClose(conn: Conn) {
     try {
+      const now = Date.now();
+      this.gone.delete(conn.id);
+      // the SDK redials a dropped socket on the same id; if the new socket is already in, this close is the old
+      // one's and the hunter is still here
+      if ((this.getConnections() as Conn[]).some((c) => c !== conn && c.id === conn.id)) return;
       const h = this.hunters.get(conn.id);
       this.hunters.delete(conn.id);
       this.sparks.delete(conn.id);
       if (h) {
-        this.broadcast({ t: "leave", n: Date.now(), id: h.num });
+        if (h.key) {
+          for (const [id, q] of this.parked) if (now - q.at >= RESUME_MS) this.parked.delete(id);
+          if (this.parked.size < 2000) this.parked.set(conn.id, { h, at: now });
+        }
+        this.broadcast({ t: "leave", n: now, id: h.num });
         this.dirty = true;
       }
       if (this.getConnections().length === 0) {
@@ -251,15 +284,17 @@ export default class World extends Actor<ToServer, ToClient> {
   async handleMessage(conn: Conn, msg: ToServer) {
     try {
       if (!msg || typeof msg !== "object" || typeof (msg as { t?: unknown }).t !== "string") return;
+      if (this.gone.has(conn.id)) return;
       await this.ensureReady();
       const now = Date.now();
+      if (msg.t === "bye") return this.onBye(conn, now);
       let h = this.hunters.get(conn.id);
       if (!h) h = this.addHunter(conn.id, now);
       if (!Object.prototype.hasOwnProperty.call(LIMITS, msg.t)) return;
       const lim = LIMITS[msg.t];
       const b = (h.buckets[msg.t] ??= new Bucket(lim[0], lim[1]));
       if (!b.take(now)) {
-        if (msg.t === "hit") conn.send({ t: "ack", n: now, ok: 0, bad: Array.isArray(msg.hits) ? msg.hits.length : 0, why: "rate", hp: this.titan.hp });
+        if (msg.t === "hit") conn.send({ t: "ack", n: now, ok: 0, bad: Array.isArray(msg.hits) ? msg.hits.length : 0, why: "rate", hp: this.titan.hp, ...seq(msg.q) });
         return;
       }
       switch (msg.t) {
@@ -267,11 +302,11 @@ export default class World extends Actor<ToServer, ToClient> {
           if (typeof msg.c === "number" && Number.isFinite(msg.c)) conn.send({ t: "pong", n: Date.now(), c: msg.c });
           return;
         case "hello":
-          return this.onHello(h, msg, now);
+          return this.onHello(conn, h, msg, now);
         case "pos":
           return this.onPos(conn.id, h, msg, now);
         case "hit":
-          return this.onHits(conn, h, msg.hits, now);
+          return this.onHits(conn, h, msg.hits, now, seq(msg.q));
         case "down":
           return this.onDown(conn.id, h, msg, now);
         case "run":
@@ -283,6 +318,29 @@ export default class World extends Actor<ToServer, ToClient> {
   }
 
   // ---------------------------------------------------------------- hunters
+
+  /**
+   * The browser is abandoning this connection for another (a better route). The gateway may keep the socket
+   * half-closed for up to a minute, so it leaves the world now: no ghost watcher in the head-count, no ghost
+   * hunter in the roster, and nothing more is read from it.
+   */
+  private onBye(conn: Conn, now: number) {
+    if (this.gone.size > 5000) this.gone.clear();
+    this.gone.add(conn.id);
+    const h = this.hunters.get(conn.id);
+    this.hunters.delete(conn.id);
+    this.sparks.delete(conn.id);
+    this.parked.delete(conn.id);
+    if (h) this.broadcast({ t: "leave", n: now, id: h.num });
+    this.dirty = true;
+  }
+
+  /** connected browsers, without the ones that said bye */
+  private onlineCount(): number {
+    let n = 0;
+    for (const c of this.getConnections() as Conn[]) if (!this.gone.has(c.id)) n++;
+    return n;
+  }
 
   private addHunter(id: string, now: number): Hunter {
     const h: Hunter = {
@@ -305,7 +363,7 @@ export default class World extends Actor<ToServer, ToClient> {
       hp: Math.max(0, Math.round(this.titan.hp)),
       stage: this.stage(),
       stageAt: this.titan.stageAt,
-      online: this.getConnections().length,
+      online: this.onlineCount(),
       feed: this.feed,
       roster,
       h: this.rows(now, null),
@@ -315,13 +373,14 @@ export default class World extends Actor<ToServer, ToClient> {
     this.dirty = true;
   }
 
-  private onHello(h: Hunter, m: Extract<ToServer, { t: "hello" }>, now: number) {
+  private onHello(conn: Conn, h: Hunter, m: Extract<ToServer, { t: "hello" }>, now: number) {
     if (!validKey(m.key)) return;
     const first = !h.key;
     const key = hashKey(m.key, this.salt);
     // one identity per connection: a second key cannot reset this connection's damage budget
     if (h.key && h.key !== key) return;
     h.key = key;
+    h.who = shareId(key, conn.identity?.userId);
     h.name = sanitizeName(m.name);
     h.sigil = sanitizeSigil(m.sigil);
     h.aspect = sanitizeAspect(m.aspect);
@@ -382,7 +441,7 @@ export default class World extends Actor<ToServer, ToClient> {
 
   // ---------------------------------------------------------------- damage
 
-  private onHits(conn: Conn, h: Hunter, hits: unknown, now: number) {
+  private onHits(conn: Conn, h: Hunter, hits: unknown, now: number, q: { q?: number }) {
     const n = Array.isArray(hits) ? hits.length : 0;
     let why: HitWhy | undefined;
     if (!Array.isArray(hits) || n === 0 || n > MAX_HITS_PER_MSG) why = "bad";
@@ -391,7 +450,7 @@ export default class World extends Actor<ToServer, ToClient> {
     else if (!h.alive && now - h.downAt > 1500) why = "down";
     if (why) {
       this.stats.rejected += n;
-      conn.send({ t: "ack", n: now, ok: 0, bad: n, why, hp: Math.round(this.titan.hp) });
+      conn.send({ t: "ack", n: now, ok: 0, bad: n, why, hp: Math.round(this.titan.hp), ...q });
       return;
     }
     const key = h.key!;
@@ -404,10 +463,13 @@ export default class World extends Actor<ToServer, ToClient> {
     const stage = this.stage();
     const ctx = { spec: this.spec, stage, nowMs: now, wokeAt: this.titan.wokeAt };
     const accBefore = h.acc;
-    // ok: what wounded the titan; raw: what this hunter landed (their runs are bounded by it); past
-    // SOLO_SHARE of the titan's life one hunter's blows wound it only at SOLO_RESIST (logic.ts creditBlow)
+    // ok: what wounded the titan; raw: what this hunter landed (their runs are bounded by it). While others are
+    // striking this titan too (within SHARED_MS), past SOLO_SHARE of its life one hunter's blows wound it only at
+    // SOLO_RESIST; in a quiet world every blow counts in full (logic.ts creditBlow)
     let ok = 0, raw = 0, resisted = 0, bad = 0, surge = false;
-    let credited = this.credits.get(key)?.dmg ?? 0;
+    const who = h.who ?? key;
+    const shared = othersStriking(this.strikes, who, now);
+    let credited = Math.max(this.credits.get(key)?.dmg ?? 0, this.shareCredit.get(who) ?? 0);
     for (const row of hits as unknown[]) {
       if (this.titan.hp <= 0) break;
       const c = checkHit(row, ctx);
@@ -423,7 +485,7 @@ export default class World extends Actor<ToServer, ToClient> {
         why = "rate";
         continue;
       }
-      const wound = creditBlow(c.dmg, credited, this.titan.hpMax);
+      const wound = creditBlow(c.dmg, credited, this.titan.hpMax, shared);
       resisted += c.dmg - wound;
       const dmg = Math.min(wound, this.titan.hp);
       credited += dmg;
@@ -450,6 +512,9 @@ export default class World extends Actor<ToServer, ToClient> {
       cr.sigil = h.sigil;
       cr.dmg += ok;
       this.credits.set(key, cr);
+      if (who !== key) this.shareCredit.set(who, (this.shareCredit.get(who) ?? 0) + ok);
+      if (this.strikes.size > 5000) for (const [k, at] of this.strikes) if (now - at >= SHARED_MS) this.strikes.delete(k);
+      this.strikes.set(who, now);
       const hour = Math.floor(now / 3_600_000);
       if (hour !== this.hourKeysAt) {
         this.hourKeysAt = hour;
@@ -466,7 +531,7 @@ export default class World extends Actor<ToServer, ToClient> {
       if (st > this.titan.stageAt.length && this.titan.hp > 0) this.enterStage(st, now);
     }
     const rs = Math.round(resisted);
-    conn.send({ t: "ack", n: now, ok: Math.round(ok * 100) / 100, bad, why: bad ? why : undefined, hp: Math.max(0, Math.round(this.titan.hp)), ...(rs > 0 ? { rs } : {}) });
+    conn.send({ t: "ack", n: now, ok: Math.round(ok * 100) / 100, bad, why: bad ? why : undefined, hp: Math.max(0, Math.round(this.titan.hp)), ...(rs > 0 ? { rs } : {}), ...q });
     if (this.titan.hp <= 0 && this.titan.status === "awake") void this.endTitan("felled", now, h);
   }
 
@@ -505,17 +570,21 @@ export default class World extends Actor<ToServer, ToClient> {
   private async wakeTitan(number: number, wokeAt: number) {
     const now = Date.now();
     const hpMax = hpMaxFor(this.dmg24, now);
-    // never the same body twice in a row: the titan that just ended (if any) is avoided
-    const seed = titanSeed(number, this.salt, number > 1 ? this.lastSpec?.archetype : null);
+    // never the same body or the same epithet twice in a row: the titan that just ended (if any) is avoided
+    const prev = number > 1 ? this.lastSpec : null;
+    const seed = titanSeed(number, this.salt, prev?.archetype, prev?.epithet);
     this.titan = { number, seed, wokeAt, hpMax, hp: hpMax, status: "awake", stageAt: [] };
     this.spec = makeTitan(seed, number);
     this.credits = new Map();
+    this.strikes = new Map();
+    this.shareCredit = new Map();
     this.coreDmg = [];
     this.corePhrase = -1;
     this.hpDirtyAt = this.bulkDirtyAt = now;
     await this.saveTitan();
     await this.storage.put("hp", hpMax);
     await this.storage.put("credits", []);
+    await this.storage.put("strikes", []);
     await this.storage.put("hpRule", HP_RULE); // sized under the current rule: no migration needed later
     await this.schedule("wake", wokeAt).catch((e) => this.log("schedule wake", e));
     await this.schedule("escape", wokeAt + ESCAPE_MS).catch((e) => this.log("schedule escape", e));
@@ -751,7 +820,7 @@ export default class World extends Actor<ToServer, ToClient> {
     const f = this.pendingFeed.length ? this.pendingFeed : undefined;
     this.pendingFeed = [];
     const hp = Math.max(0, Math.round(this.titan.hp));
-    const c = this.getConnections().length;
+    const c = this.onlineCount();
     let live = 0;
     for (const h of this.hunters.values()) if (h.key && now - h.posAt < IDLE_POS_MS) live++;
     if (live <= SHOW_MAX) {
@@ -794,6 +863,8 @@ export default class World extends Actor<ToServer, ToClient> {
         .slice(0, CREDITS_KEEP)
         .map(([k, c]) => [k, c.name, c.sigil, Math.round(c.dmg)]);
       await this.storage.put("credits", credits);
+      // who struck the awake titan lately (is it shared?): only the last SHARED_MS matters
+      await this.storage.put("strikes", [...this.strikes.entries()].filter(([, at]) => now - at < SHARED_MS).slice(-CREDITS_KEEP));
       await this.storage.put("dmg24", this.dmg24);
       await this.storage.put("feed", this.feed);
     }

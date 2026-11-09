@@ -77,10 +77,15 @@ export interface RunMsg {
 export type ToServer =
   | { t: "hello"; key: string; name: string; sigil: number; aspect: string }
   | { t: "pos"; x: number; y: number; alive: boolean; flags: number }
-  | { t: "hit"; hits: HitRow[] }
+  /** q: the batch's sequence number on this browser's connection, echoed in its ack (a batch refused for a
+   * missing hello after a reconnect is sent again once the hello is in) */
+  | { t: "hit"; hits: HitRow[]; q?: number }
   | { t: "down"; x: number; y: number }
   | RunMsg
-  | { t: "ping"; c: number };
+  | { t: "ping"; c: number }
+  /** this connection is being abandoned (the browser moved to a better route): drop it from the world now,
+   * not when its socket finally closes (the gateway can hold a closing socket open for 60 s) */
+  | { t: "bye" };
 
 /** Hit rejection reasons, for acks and the live check. */
 export type HitWhy = "noHello" | "asleep" | "bad" | "beat" | "closed" | "rate" | "down";
@@ -109,7 +114,8 @@ export type ToClient =
   | { t: "wake"; n: number; titan: TitanInfo; hp: number }
   | { t: "down"; n: number; id: number; x: number; y: number; until: number }
   | { t: "revive"; n: number; who: number; by: number; byName: string }
-  /** rs: blows the titan shrugged off (a lone hunter past SOLO_SHARE of its life: logic.ts creditBlow) */
-  | { t: "ack"; n: number; ok: number; bad: number; why?: HitWhy; hp: number; rs?: number }
+  /** rs: blows the titan shrugged off (a hunter past SOLO_SHARE of a titan others are fighting too: logic.ts
+   * creditBlow); q: the batch's sequence number, when the hit message carried one */
+  | { t: "ack"; n: number; ok: number; bad: number; why?: HitWhy; hp: number; rs?: number; q?: number }
   | { t: "runAck"; n: number; damage: number; echo: boolean; clamped: boolean }
   | { t: "pong"; n: number; c: number };

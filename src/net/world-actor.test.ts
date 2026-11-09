@@ -112,14 +112,14 @@ describe("world actor (in-process)", () => {
     expect(w.mockDb.Hunter.rows[0]).toMatchObject({ damageTotal: 160, runs: 1, bestRun: 160 });
     expect(w.mockDb.Echo.rows).toHaveLength(1);
     expect(w.mockDb.Echo.rows[0]).toMatchObject({ titanSeed: spec.seed, stage: 0, duration: 10, damage: 160 });
-    // same run again is ignored; a fresh one updates the totals
+    // the same run again changes nothing; a "fresh" run with no new accepted blows adds a run but no damage (no replays)
     await send(w, A, { t: "run", titan: 1, damage: 10, time: 10, grazes: 0, bestCombo: 0, surges: 0, aspect: "lance", startT, stage: 0, path });
     vi.setSystemTime(Date.now() + 6000);
     await send(w, A, { t: "run", titan: 1, damage: 10, time: 3, grazes: 0, bestCombo: 0, surges: 0, aspect: "lance", startT: startT + 1, stage: 0, path: "" });
     await settle(w);
     expect(w.mockDb.Run.rows).toHaveLength(2);
     expect(w.mockDb.Hunter.rows).toHaveLength(1);
-    expect(w.mockDb.Hunter.rows[0]).toMatchObject({ damageTotal: 170, runs: 2, bestRun: 160 });
+    expect(w.mockDb.Hunter.rows[0]).toMatchObject({ damageTotal: 160, runs: 2, bestRun: 160 });
   });
 
   it("persists hp (throttled) and restores everything after the session idles", async () => {

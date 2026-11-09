@@ -126,6 +126,9 @@ export class Game {
   private revealT = 0;
   /** 0 = the whole open book, 1 = leaning in on the fight (wide screens, during a run) */
   private focus = 0;
+  private qualityAt = 0;
+  /** shader programs are warm (the engraving waits for them, so the first frames don't hitch) */
+  private compiled = true;
   private fallT = -1;
   private ro: ResizeObserver;
 
@@ -159,8 +162,13 @@ export class Game {
     this.view.scene.add(this.titan.group);
     // warm every program off the main thread where the browser allows it (KHR_parallel_shader_compile)
     try {
-      void this.view.renderer.compileAsync(this.view.scene, this.view.camera);
-    } catch {}
+      this.compiled = false;
+      const done = () => (this.compiled = true);
+      this.view.renderer.compileAsync(this.view.scene, this.view.camera).then(done, done);
+      setTimeout(done, 2500); // never wait longer than this
+    } catch {
+      this.compiled = true;
+    }
     this.resize();
     const p = this.spec.plate;
     this.page.setPlate(p);
@@ -293,10 +301,14 @@ export class Game {
     // step down (1 → 0.75 → 0.5) when frames run long; step back up when there is headroom.
     // The first seconds (shader warm-up, the reveal) never count.
     if (this.revealT < 6) return;
+    const now = performance.now();
+    if (now - this.qualityAt < 6000) return; // give each step time to settle
     if (avg > 1 / 48 && this.quality > 0.5) {
+      this.qualityAt = now;
       this.quality = this.quality > 0.75 ? 0.75 : 0.5;
       this.resize();
     } else if (avg < 1 / 58 && this.quality < 1) {
+      this.qualityAt = now;
       this.quality = this.quality < 0.75 ? 0.75 : 1;
       this.resize();
     }
@@ -455,7 +467,7 @@ export class Game {
     }
     this.titan.update(ctx, dt);
     if (this.revealT < 6 && this.fallT < 0) {
-      if (!this.holdReveal) this.revealT += dt;
+      if (!this.holdReveal && this.compiled) this.revealT += dt;
       const r = this.revealT;
       // lines cut in over 2.6 s, colour bleeds in over 1.3 s, gold settles over 1 s
       this.titan.u.uReveal.value = r < 2.6 ? (r / 2.6) : r < 3.9 ? 1 + (r - 2.6) / 1.3 : Math.min(3, 2 + (r - 3.9));

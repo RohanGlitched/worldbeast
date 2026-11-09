@@ -139,7 +139,7 @@ export default function Hunt() {
       runTimer.current = setTimeout(() => {
         runTimer.current = null;
         pendingRun.current = null;
-        w.sendRun(s);
+        Promise.resolve(w.sendRun(s)).then((r) => r && setSummary((cur) => (cur && cur.startT === s.startT ? { ...cur, recorded: r.damage } : cur)));
       }, s.felled ? 0 : 8600);
       setProfile((p) => {
         const freshSeals = judgeSeals(p, s);
@@ -480,7 +480,10 @@ export default function Hunt() {
           {!summary.felled && summary.killer && <p className="tip-line">{killerOf(summary.killer)[1]}</p>}
           {!summary.felled && world && !world.local && world.online > 1 && <div className="rubric">Your spark lingers for 8 s: a hunter who flies through it rekindles you.</div>}
           <div className="big">{fmt(summary.damage)}</div>
-          <div style={{ fontStyle: "italic", color: "var(--ink-2)" }}>blows struck{summary.worldShare ? ` · ${summary.worldShare} of the world's today` : ""}</div>
+          <div style={{ fontStyle: "italic", color: "var(--ink-2)" }}>
+            blows struck{summary.worldShare ? ` · ${summary.worldShare} of the world's today` : ""}
+            {summary.recorded != null && Math.abs(summary.recorded - summary.damage) > 1 ? ` · ${fmt(summary.recorded)} reached the titan` : summary.recorded != null ? " · written in the Hall" : ""}
+          </div>
           <dl className="facts" style={{ marginTop: "0.7em" }}>
             <dt>Grazes</dt>
             <dd>{summary.grazes}</dd>

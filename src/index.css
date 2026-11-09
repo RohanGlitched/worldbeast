@@ -1450,3 +1450,9 @@ button {
   filter: grayscale(0.5);
   border-style: dashed;
 }
+
+@media (max-width: 360px) {
+  .sheet {
+    padding-bottom: calc(110px + env(safe-area-inset-bottom));
+  }
+}

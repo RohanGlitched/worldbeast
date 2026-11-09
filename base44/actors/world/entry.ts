@@ -45,6 +45,9 @@ interface Hunter {
   accLog: Array<[number, number, number]>; // [titanNumber, titanT, acc before that batch]
   lastSurgeAt: number;
   lastRunStart: number;
+  lastRunDamage?: number;
+  lastRunId?: string;
+  claimedAcc?: number; // accepted damage already credited to the hunter's totals
   dropped: number;
 }
 
@@ -567,7 +570,9 @@ export default class World extends Actor<ToServer, ToClient> {
   // ---------------------------------------------------------------- runs, hunters, echoes
 
   private onRun(conn: Conn, h: Hunter, m: RunMsg, now: number) {
-    if (!h.key || typeof m.startT !== "number" || m.startT === h.lastRunStart) return;
+    if (!h.key || typeof m.startT !== "number") return;
+    // a later report of the same run (sent after a tab switch, say) updates it rather than being dropped
+    const sameRun = m.startT === h.lastRunStart;
     // which titan the run belongs to: the current one, or the one that just ended (run sent in the interlude)
     let number = this.titan.number, wokeAt = this.titan.wokeAt, spec = this.spec, stageAt = this.titan.stageAt;
     let nowT = titanT(now, wokeAt);
@@ -588,7 +593,18 @@ export default class World extends Actor<ToServer, ToClient> {
       conn.send({ t: "runAck", n: now, damage: 0, echo: false, clamped: false });
       return;
     }
+    // only damage the actor accepted and has not already credited to this hunter counts toward their totals,
+    // so replaying a report (or shifting its start time) cannot claim the same blows twice
+    const claimable = Math.max(0, h.acc - (h.claimedAcc ?? 0));
+    if (sameRun && r.damage <= (h.lastRunDamage ?? 0)) {
+      conn.send({ t: "runAck", n: now, damage: h.lastRunDamage ?? 0, echo: false, clamped: r.clamped });
+      return;
+    }
+    const credit = Math.min(claimable, sameRun ? r.damage - (h.lastRunDamage ?? 0) : r.damage);
+    h.claimedAcc = (h.claimedAcc ?? 0) + Math.max(0, credit);
     h.lastRunStart = startT;
+    const prevRunId = sameRun ? h.lastRunId : undefined;
+    h.lastRunDamage = r.damage;
     const num = (v: unknown, max: number) => (typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.min(max, Math.round(v))) : 0);
     const key = h.key, name = h.name, sigil = h.sigil;
     const aspect = sanitizeAspect(m.aspect);
@@ -599,8 +615,13 @@ export default class World extends Actor<ToServer, ToClient> {
       stage: Math.min(2, Math.max(0, Math.round(Number(m.stage) || 0))), createdAt: now,
     };
     this.write(key, async () => {
-      await this.db.Run.create(runRec);
-      await this.upsertHunter(key, name, sigil, r.damage, true, 0);
+      if (sameRun && prevRunId) {
+        await this.db.Run.update(prevRunId, runRec);
+      } else {
+        const rec = await this.db.Run.create(runRec);
+        h.lastRunId = (rec as { id?: string } | undefined)?.id;
+      }
+      await this.upsertHunter(key, name, sigil, Math.max(0, credit), !sameRun, 0);
     });
     if (echo) {
       const { loopBeat, phrase } = loopKey(startT, spec.beat);

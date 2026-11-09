@@ -98,7 +98,7 @@ interface ActorConn {
 const LOCAL_BLOCK_MS = 3 * 3_600_000;
 const LOCAL_HP = 40_000;
 const INTERLUDE_MS = 20_000;
-const SILENT_MS = 8_000;
+const SILENT_MS = 4_500;
 const PING_EVERY_MS = 2_000;
 const KEY_STORE = "worldbeast.hunterKey";
 const SLOW_RTT_MS = 160;
@@ -171,7 +171,8 @@ export class World {
     this.timers.push(setInterval(() => this.flushHits(), 250));
     this.timers.push(setInterval(() => this.housekeep(), 250));
     this.offlineTimer = setTimeout(() => {
-      if (this.mode !== "online") this.startLocal();
+      const playing = performance.now() - (this.pos?.at ?? -1e9) < 2000;
+      if (this.mode !== "online" && !(playing && this.titan)) this.startLocal();
     }, this.offlineAfterMs);
   }
 
@@ -224,8 +225,11 @@ export class World {
     if (this.mode === "online" && now - this.lastPingAt > PING_EVERY_MS) this.ping();
     const silentSince = Math.max(this.lastMsgAt, this.openedAt);
     if (!this.reconnectTimer && this.conn && now - silentSince > SILENT_MS) {
+      const playing = now - (this.pos?.at ?? -1e9) < 2000;
       if (this.mode === "online") this.setMode(this.local ? "offline" : "connecting");
-      if (this.mode === "connecting" && !this.local) this.startLocal();
+      // mid-run, the last server titan and clock carry on (hits are held back, not sent into a dead socket);
+      // the local titan only takes over in the lobby
+      if (this.mode === "connecting" && !this.local && !(playing && this.titan)) this.startLocal();
       this.scheduleReconnect();
     }
     if (this.titan && this.serverNow() >= this.titan.wokeAt && this.wokeFired !== this.titan.number) {

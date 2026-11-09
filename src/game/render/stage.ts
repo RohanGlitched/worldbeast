@@ -40,7 +40,9 @@ export function createView(canvas: HTMLCanvasElement): View {
  * the view crops above the titan's shoulders so the arena is about a fifth larger.
  */
 export function resizeView(v: View, cssW: number, cssH: number, quality: number, focus = 0) {
-  const dpr = quality >= 1 ? Math.min(window.devicePixelRatio || 1, 2) : quality >= 0.75 ? Math.min(window.devicePixelRatio || 1, 1.25) : 0.8;
+  const native = window.devicePixelRatio || 1;
+  // a fraction of the screen's own density, never below 1 on high-density phones (no pixelated titans)
+  const dpr = quality >= 1 ? Math.min(native, 2) : Math.max(native >= 2 ? 1 : 0.75, Math.min(native, 2) * (quality >= 0.75 ? 0.75 : 0.6));
   v.dpr = dpr;
   v.renderer.setPixelRatio(dpr);
   v.renderer.setSize(cssW, cssH, false);

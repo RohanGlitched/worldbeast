@@ -10,6 +10,8 @@ export const enum P {
   Streak = 2,
   Ring = 3,
   Spore = 4,
+  /** ink bleeding down the page (a felled titan): a droplet drawn out along its fall */
+  Drip = 5,
 }
 
 interface Part {
@@ -77,8 +79,11 @@ export class FxLayer {
             c = mix(c, vec3(1., .95, .8), 1. - abs(p.y));
           } else if (type < 3.5) { // burst ring
             a = (1. - smoothstep(.0, .08, abs(r - .9))) * (1. - k);
-          } else { // drifting spore / dust
+          } else if (type < 4.5) { // drifting spore / dust
             a = (1. - smoothstep(.2, 1., r)) * .5 * sin(k * 3.14159);
+          } else { // a drip of ink: dark, a little glossy at its head, gone as it dries
+            a = (1. - smoothstep(.62, .86, r)) * (1. - k * k) * .92;
+            c = mix(c, vec3(.42, .36, .3), smoothstep(.1, -.6, p.x) * .25);
           }
           if (a < .01) discard;
           gl_FragColor = vec4(c, a);
@@ -142,6 +147,9 @@ export class FxLayer {
       if (p.type === P.Streak) {
         rot = Math.atan2(p.vy, p.vx);
         stretch = Math.min(6, Math.hypot(p.vx, p.vy) * 0.08);
+      } else if (p.type === P.Drip) {
+        rot = Math.atan2(p.vy, p.vx);
+        stretch = Math.min(3.5, Math.hypot(p.vx, p.vy) * 0.7);
       }
       if (p.type === P.Ring) size = p.size * (0.3 + k * 1.2);
       A[n * 4] = p.x;

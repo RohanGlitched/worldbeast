@@ -16,8 +16,17 @@ export const PLAY_Y0 = PAGE.Y0 + 0.15;
 export const PLAY_TOP = ARENA.TOP + 9.8;
 /** a throne titan sits taller: its face is higher on the page */
 export const PLAY_TOP_TALL = ARENA.TOP + 11.2;
-/** a phone on its side: a shorter screen, so the view stops at the titan's chin and mouth */
-export const SIDE_TOP = ARENA.TOP + 7.2;
+/**
+ * During a run the titan is lowered over the arena's top band (about 12% of it: the lanes its volleys leave
+ * from anyway), so the camera can frame the arena as large as R4's and still hold the titan's face.
+ * The titan is drawn lower only; the fight's geometry (wounds, mouths, attacks) is unchanged.
+ */
+export const RUN_DROP = 2.4;
+export const RUN_DROP_TALL = 3.6;
+/** a phone on its side: the arena fills the height, with the titan's wounds, mouth and chin lowered above it */
+export const SIDE_TOP = ARENA.TOP + 3.6;
+export const SIDE_DROP = 3;
+export const SIDE_DROP_TALL = 3.6;
 
 export interface Rect {
   x0: number;
@@ -62,6 +71,8 @@ export interface View {
   strip: Rect | null;
   /** [the whole book, leaning in on the fight] */
   cams: [Cam, Cam];
+  /** how far the titan is drawn below its place, for each camera (the run's view lowers it; see RUN_DROP) */
+  drop: [number, number];
   /** CSS pixels kept clear at the bottom of the screen (single mode) */
   reserve: number;
   dpr: number;
@@ -81,7 +92,7 @@ export function createView(canvas: HTMLCanvasElement): View {
   camera.position.set(0, 0, 50);
   camera.lookAt(0, 0, 0);
   const cam: Cam = { cx: 0, cy: 0, halfW: 10, halfH: 10 };
-  return { renderer, scene, camera, unitsPerPx: 0.02, rect: { x0: -10, x1: 10, y0: -10, y1: 10 }, portrait: false, mode: "single", spread: false, leftLeaf: null, strip: null, cams: [cam, { ...cam }], reserve: 0, dpr: 1, cssW: 1, cssH: 1 };
+  return { renderer, scene, camera, unitsPerPx: 0.02, rect: { x0: -10, x1: 10, y0: -10, y1: 10 }, portrait: false, mode: "single", spread: false, leftLeaf: null, strip: null, cams: [cam, { ...cam }], drop: [0, 0], reserve: 0, dpr: 1, cssW: 1, cssH: 1 };
 }
 
 /** The backing-store density for a quality step: never below 1 on high-density screens (no pixelated titans). */
@@ -129,8 +140,10 @@ export function layoutView(v: View, cssW: number, cssH: number, reserve = 0, tal
     // of its crown in frame (cropping at its shoulders took away the creature you are fighting)
     const x0 = leafX1 - stripW - 0.5,
       x1 = PAGE.W / 2 + 0.5;
-    const cam1 = fit(aspect, (x0 + x1) / 2, x1 - x0, PLAY_Y0, tall ? PLAY_TOP_TALL : PLAY_TOP, 1);
+    const drop = tall ? RUN_DROP_TALL : RUN_DROP;
+    const cam1 = fit(aspect, (x0 + x1) / 2, x1 - x0, PLAY_Y0, (tall ? PLAY_TOP_TALL : PLAY_TOP) - drop, 1);
     v.cams = [cam0, cam1];
+    v.drop = [0, drop];
   } else if (v.mode === "side") {
     // a phone on its side: the whole page down the left in the lobby (the side panel takes the right) …
     const top = PAGE.Y1 + 0.3,
@@ -139,8 +152,9 @@ export function layoutView(v: View, cssW: number, cssH: number, reserve = 0, tal
       halfW = halfH * aspect;
     const cam0 = { cx: -PAGE.W / 2 - 0.6 + halfW, cy: (top + bottom) / 2, halfW, halfH };
     // … and, during a run, the arena as tall as the screen with the titan's wounds, mouth and face above it
-    const cam1 = fit(aspect, 0, PAGE.W + 1, -0.55, SIDE_TOP + (tall ? 1.4 : 0), 1);
+    const cam1 = fit(aspect, 0, PAGE.W + 1, -0.55, SIDE_TOP, 1);
     v.cams = [cam0, cam1];
+    v.drop = [0, tall ? SIDE_DROP_TALL : SIDE_DROP];
   } else {
     // tall screens: the page fills the width, lifted clear of the bottom band
     const contentW = PAGE.W;
@@ -155,6 +169,7 @@ export function layoutView(v: View, cssW: number, cssH: number, reserve = 0, tal
     if (cy + halfH < ARENA.TOP + 6) cy = ARENA.TOP + 6 - halfH;
     const cam = { cx: 0, cy, halfW, halfH };
     v.cams = [cam, { ...cam }];
+    v.drop = [0, 0];
   }
 }
 

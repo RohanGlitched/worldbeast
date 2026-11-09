@@ -16,6 +16,18 @@ import { setPortraitHost } from "./portrait";
 
 export type Phase = "lobby" | "playing" | "down" | "replay";
 
+/**
+ * A titan's fall, in seconds from the killing blow: its death beat (it sags and shudders on the beat while ink
+ * bleeds down the page), the FELLED stamp slamming onto the body (SLAM, on the felled peal's chord), its colour
+ * draining to bare lines, the plate held under the stamp, then torn away (RELEASE..GONE) before the next titan
+ * is engraved in. The stamp in the DOM (Hunt.jsx, index.css .felled-stamp) keeps the same clock.
+ */
+export const FALL = { SLAM: 1.6, DRAIN: 1.1, RELEASE: 5.6, LIFT: 1.2, GONE: 6.8 };
+const fallReveal = (f: number) => (f < FALL.SLAM ? 3 : f < FALL.SLAM + FALL.DRAIN ? 3 - (2 * (f - FALL.SLAM)) / FALL.DRAIN : f < FALL.RELEASE ? 1 : Math.max(0, 1 - (f - FALL.RELEASE) / FALL.LIFT));
+/** after a frame gap this long during a run (a hitch: GC, a busy GPU, a notification) the light is spared a moment */
+const HITCH_S = 0.3;
+const HITCH_GRACE = 0.5;
+
 export interface Others {
   /** live hunters and echoes to draw (positions in arena units) */
   list(t: number): HunterDraw[];
@@ -38,6 +50,8 @@ export interface HudState {
   coresOpen: number;
   surges: number;
   bestCombo: number;
+  /** the longest stretch unstruck so far, s */
+  clean: number;
 }
 
 export interface GameEvents {
@@ -164,6 +178,12 @@ export class Game {
   /** Join was pressed while the titan was still being engraved: finish it quickly */
   private rushReveal = false;
   private fallT = -1;
+  /** how far the titan is drawn below its place now (the run's view lowers it; see stage.ts RUN_DROP) */
+  drop = 0;
+  /** each dart's distance to its wound when first drawn (to bend its streak onto the lowered titan) */
+  private dartFrom = new WeakMap<object, number>();
+  /** frames of the off-page warm-up draw done (see frame) */
+  private warmed = 0;
   private ro: ResizeObserver;
   private safeBottom = 0;
 
@@ -255,9 +275,11 @@ export class Game {
     // away for the new titan to build again
     let retired: Titan | null = null;
     if (this.titan) {
-      if (this.holdFelled && this.fallT >= 0 && !this.kept) {
-        // a rehearsal keeps its felled engraving on the page until you hunt again; the next is built behind it
+      if (this.fallT >= 0 && this.fallT < FALL.GONE && !this.kept) {
+        // a felled titan stays on the page through its death and the stamp (FALL), then its plate tears away
+        // and this one is engraved in; it is built and compiled behind it meanwhile
         this.kept = this.titan;
+        this.keptT = this.fallT;
       } else {
         this.view.scene.remove(this.titan.group);
         retired = this.titan;
@@ -271,7 +293,11 @@ export class Game {
     };
     this.spec = makeTitan(seed, number);
     this.field = new Field(this.spec);
-    this.titan = new Titan(this.spec);
+    // (built ahead in an idle moment after a fall when the world named the next titan: see prebuild)
+    const pre = this.prebuilt?.spec.seed === seed && this.prebuilt.spec.number === number ? this.prebuilt : null;
+    if (this.prebuilt && !pre) this.prebuilt.dispose();
+    this.prebuilt = null;
+    this.titan = pre ?? new Titan(this.spec);
     this.titan.u.uReveal.value = 0;
     this.revealT = 0;
     this.fallT = -1;
@@ -315,18 +341,25 @@ export class Game {
     this.events.onTitan?.(this.spec, this.field);
   }
 
-  /**
-   * A rehearsal keeps its felled titan on the page (drained to bare lines) until you hunt again, so the page
-   * and the run's summary tell of the same titan. The next titan is built and compiled behind it meanwhile.
-   */
-  holdFelled = false;
+  /** a felled titan kept on the page while the next one is built behind it, and how long since it fell */
   private kept: Titan | null = null;
-  /** a felled titan is being kept on the page */
+  private keptT = 0;
+  /** the next titan, built in an idle moment after a fall (setTitan takes it when the world names it) */
+  private prebuilt: Titan | null = null;
+  private prebuildTimer = 0;
+  /** a felled titan is on the page (its death, the stamp, the plate tearing away) */
   get keeping() {
-    return !!this.kept;
+    return !!this.kept || (this.fallT >= 0 && this.fallT < FALL.GONE);
   }
-  /** let the felled titan go: the next one is engraved in */
+  /** told when the felled titan has left the page (the next is being engraved) */
+  onFelledGone: (() => void) | null = null;
+  /** hurry the felled titan away (Hunt again, Rest): its plate tears now rather than after the stamp */
   releaseFelled() {
+    if (this.kept) this.keptT = Math.max(this.keptT, FALL.RELEASE);
+    else if (this.fallT >= 0 && this.fallT < FALL.RELEASE) this.fallT = FALL.RELEASE;
+  }
+  /** the felled plate is gone: dispose it, and engrave the next titan in */
+  private dropKept() {
     const k = this.kept;
     if (!k) return;
     this.kept = null;
@@ -337,6 +370,22 @@ export class Game {
       this.titan.u.uReveal.value = 0;
     }
     this.revealT = 0;
+    this.onFelledGone?.();
+  }
+  /**
+   * Build the next titan ahead, when the main thread is idle and the fall's death beat has played (its geometry
+   * is ~65 ms of work on a laptop, several times that on a busy phone: never inside the fall's own frames).
+   */
+  prebuild(seed: number, number: number) {
+    if (!Number.isFinite(seed) || this.spec?.seed === seed || this.prebuilt?.spec.seed === seed) return;
+    clearTimeout(this.prebuildTimer);
+    const build = () => {
+      if (this.spec?.seed === seed || this.prebuilt?.spec.seed === seed) return;
+      this.prebuilt?.dispose();
+      this.prebuilt = new Titan(makeTitan(seed, number));
+    };
+    const ric = (window as unknown as { requestIdleCallback?: (f: () => void, o?: { timeout: number }) => number }).requestIdleCallback;
+    this.prebuildTimer = window.setTimeout(() => (ric ? ric(build, { timeout: 1200 }) : build()), (FALL.SLAM + 0.5) * 1000);
   }
 
   /** the world felled the titan: it shudders, its seams flood with gold, then the engraving lifts away */
@@ -460,10 +509,17 @@ export class Game {
     this.last = performance.now();
     const loop = (now: number) => {
       this.raf = requestAnimationFrame(loop);
-      // (the quality judge sees the real frame time: a 1.9 s stall must count as one, not as 50 ms)
+      // (the quality judge sees the real frame time, to tell an isolated stall from a slow machine)
       const raw = Math.max(0, (now - this.last) / 1000);
       const dt = Math.min(0.05, raw);
       this.last = now;
+      // the world's clock ran on through the gap but your light did not move: spare it for a moment, so a
+      // hitch is never what kills you (a hidden tab's pause is not a hitch: the run is reported then)
+      if (raw > HITCH_S && raw < 3 && this.phase === "playing" && this.hunt?.alive) {
+        const h = this.hunt;
+        h.invuln = Math.max(h.invuln, HITCH_GRACE + dt);
+        this.fx.ring(h.x, h.y, 1.5, 4, HITCH_GRACE);
+      }
       this.primeStep();
       this.frame(dt);
       this.adaptQuality(raw);
@@ -520,12 +576,15 @@ export class Game {
   private applyCamera() {
     const v = this.view;
     applyCam(v, lerpCam(v.cams[0], v.cams[1], this.camAt));
-    if (this.titan) {
+    // the run's view lowers the titan over the arena's top band (stage.ts RUN_DROP), gliding with the camera
+    this.drop = v.drop[0] + (v.drop[1] - v.drop[0]) * this.camAt;
+    for (const t of [this.titan, this.kept]) {
+      if (!t) continue;
       // engraving lines: about one line every 4.5 device pixels, whatever the screen and the zoom
-      this.titan.u.uPx.value = v.unitsPerPx / v.dpr;
+      t.u.uPx.value = v.unitsPerPx / v.dpr;
       // in the open book the titan may spill onto the desk, but never across the gutter onto the text
-      this.titan.u.uClipX.value = v.spread ? -PAGE.W / 2 - 0.15 : -1e4;
-      this.titan.u.uClipX2.value = v.spread ? PAGE.W / 2 + 0.15 : 1e4;
+      t.u.uClipX.value = v.spread ? -PAGE.W / 2 - 0.15 : -1e4;
+      t.u.uClipX2.value = v.spread ? PAGE.W / 2 + 0.15 : 1e4;
     }
   }
 
@@ -570,41 +629,49 @@ export class Game {
     }
   }
 
-  private adaptQuality(dt: number) {
+  private adaptQuality(raw: number) {
     const now = performance.now();
     // the first seconds (shader warm-up, the engraving), camera glides and resizes never count
     // (a hidden tab's pause is not a stall)
-    if (!this.compiled || this.revealT < 6 || this.fz.t < 1 || now < this.quietUntil || dt > 3) {
+    if (!this.compiled || this.revealT < 6 || this.fz.t < 1 || now < this.quietUntil || raw > 3) {
       this.frameTimes.length = 0;
       return;
     }
-    this.frameTimes.push(dt);
+    this.frameTimes.push(raw);
     if (this.frameTimes.length < 90) return;
     const ft = this.frameTimes;
-    const avg = ft.reduce((a, b) => a + b, 0) / ft.length;
-    // the tail matters as much as the middle: a run of 33 ms frames, or stalls of 100 ms and more, is a
-    // stutter the median never shows (Ruin at 1920 once stalled for 1.9 s while its median looked healthy)
-    const sorted = ft.slice().sort((a, b) => a - b);
+    // the middle and the tail from frame times clamped at 50 ms (one long stall is one slow frame, not a slow
+    // second); stalls of 100 ms and more counted apart, except an isolated one over 250 ms among smooth frames
+    // (a GC, a notification, a screen recorder starting): that is the machine, not the page's load
+    const clamped = ft.map((x) => Math.min(0.05, x));
+    const avg = clamped.reduce((a, b) => a + b, 0) / clamped.length;
+    const sorted = clamped.slice().sort((a, b) => a - b);
     const p95 = sorted[Math.floor(sorted.length * 0.95)];
-    const stalls = ft.filter((x) => x > 0.1).length;
+    let stalls = 0;
+    for (let i = 0; i < ft.length; i++) {
+      if (ft[i] <= 0.1) continue;
+      if (ft[i] > 0.25) {
+        let isolated = true;
+        for (let j = Math.max(0, i - 10); j <= Math.min(ft.length - 1, i + 10) && isolated; j++) if (j !== i && ft[j] >= 0.02) isolated = false;
+        if (isolated) continue;
+      }
+      stalls++;
+    }
     ft.length = 0;
     if (now - this.qualityAt < 6000) return; // give each step time to settle
-    const slow = avg > 1 / 48 || p95 > 1 / 26 || stalls >= 2;
-    // step down (1 → 0.75 → 0.5) when frames run long; step back up when there is headroom
+    const slow = avg > 1 / 48 || p95 > 1 / 26 || stalls >= 3;
+    // step down (1 → 0.75 → 0.5) only when frames run long for two windows running, at every density: a
+    // passing hitch never softens the engraving; step back up when there is headroom
     if (slow && this.quality > 0.5) {
-      // a desktop at native density 1 keeps it unless it is truly slow: under 45 fps, a long tail or repeated
-      // stalls, for two windows running
-      if (this.quality >= 1 && (window.devicePixelRatio || 1) <= 1) {
-        this.slowWindows = avg > 1 / 45 || p95 > 1 / 24 || stalls >= 2 ? this.slowWindows + 1 : 0;
-        if (this.slowWindows < 2) return;
-      }
+      this.slowWindows++;
+      if (this.slowWindows < 2) return;
       this.slowWindows = 0;
       this.qualityAt = now;
       this.quality = this.quality > 0.75 ? 0.75 : 0.5;
       this.resize();
     } else {
       this.slowWindows = 0;
-      if (avg < 1 / 58 && p95 < 1 / 40 && stalls === 0 && this.quality < 1) {
+      if (!slow && avg < 1 / 58 && p95 < 1 / 40 && stalls === 0 && this.quality < 1) {
         this.qualityAt = now;
         this.quality = this.quality < 0.75 ? 0.75 : 1;
         this.resize();
@@ -708,15 +775,22 @@ export class Game {
           sum += e.dmg;
           this.coreHit[e.core] = 1;
           this.titanHurt = Math.min(1, this.titanHurt + (e.surge ? 0.12 : 0.05));
-          this.fx.burst(e.x, e.y, e.surge ? 6 : 3, { type: P.Fleck, size: 0.12, speed: 7, life: 0.6, g: -9 });
-          this.events.onFloat?.(String(e.dmg), e.x + (Math.random() - 0.5) * 1.4, e.y + 0.6, "dmg");
+          this.fx.burst(e.x, e.y - this.drop, e.surge ? 6 : 3, { type: P.Fleck, size: 0.12, speed: 7, life: 0.6, g: -9 });
+          this.events.onFloat?.(String(e.dmg), e.x + (Math.random() - 0.5) * 1.4, e.y + 0.6 - this.drop, "dmg");
           this.events.onHits?.(e.dmg, e.core, e.beat, e.surge);
         }
         this.events.onSfx?.("strike", h.events[0].x, Math.min(1, sum / 60));
         h.events.length = 0;
       }
       // dart streaks
-      for (const d of h.darts) this.fx.add({ x: d.x, y: d.y, vx: (d.tx - d.x) * 4, vy: (d.ty - d.y) * 4, type: P.Streak, col: d.surge ? 4 : 0, size: d.surge ? 0.16 : 0.11, max: 0.07, drag: 0 });
+      // (bent onto the titan where it is drawn: lowered by the run's view, its wounds with it)
+      for (const d of h.darts) {
+        const left = Math.hypot(d.tx - d.x, d.ty - d.y);
+        let from = this.dartFrom.get(d);
+        if (from === undefined) this.dartFrom.set(d, (from = Math.max(1e-3, left)));
+        const y = d.y - this.drop * Math.max(0, Math.min(1, 1 - left / from));
+        this.fx.add({ x: d.x, y, vx: (d.tx - d.x) * 4, vy: (d.ty - this.drop - y) * 4, type: P.Streak, col: d.surge ? 4 : 0, size: d.surge ? 0.16 : 0.11, max: 0.07, drag: 0 });
+      }
       // echo path
       this.pathAcc += dt;
       while (this.pathAcc >= 0.1) {
@@ -762,26 +836,26 @@ export class Game {
     const coreSoon = this.spec.cores.map((c, i) => !coreOpenArr[i] && t >= 0 && (coreOpen(c, beat + 1, stage) || coreOpen(c, beat + 2, stage)));
     const ctx: TitanCtx = { t, beat, player: me, cues, stage, crack: 1 - this.hpFrac, hurt: this.titanHurt, coreOpen: coreOpenArr, coreHit: this.coreHit, coreSoon };
     if (this.fallT >= 0) {
+      const f0 = this.fallT;
       this.fallT += dt;
-      const f = this.fallT;
-      ctx.hurt = Math.min(1, 0.6 + Math.sin(f * 40) * 0.4) * (f < 1.6 ? 1 : 0.3);
-      ctx.crack = 1;
-      ctx.stage = 2;
-      if (f < 1.6 && Math.random() < dt * 30) {
-        const x = (Math.random() - 0.5) * 16,
-          y = 20 + Math.random() * 11;
-        this.fx.burst(x, y, 6, { type: P.Fleck, size: 0.18, speed: 9, life: 1.4, g: -7 });
-      }
-      if (f > 1.6 && f - dt <= 1.6) {
-        for (let i = 0; i < 12; i++) this.fx.ring((Math.random() - 0.5) * 12, 21 + Math.random() * 9, 4 + Math.random() * 4, 0, 0.9);
-        this.fx.burst(0, 25, 160, { type: P.Fleck, size: 0.22, speed: 16, life: 2.2, g: -5 });
-        this.shake = 1.4;
-      }
-      // the engraving lifts away from the page, bottom to top
-      // (a felled titan kept on the page stops at bare lines: its colour drained, its form still there)
-      if (f > 1.6) this.titan.u.uReveal.value = Math.max(this.holdFelled ? 1 : 0, 1 - (f - 1.6) / 1.8);
+      this.fallBeat(f0, this.fallT, ctx);
+      this.titan.u.uReveal.value = fallReveal(this.fallT);
+      // (no successor yet, as in a slow live world: the page is empty once the plate has gone)
+      if (f0 < FALL.GONE && this.fallT >= FALL.GONE) this.onFelledGone?.();
     }
     this.titan.update(ctx, dt);
+    const k = this.kept;
+    if (k) {
+      // the felled titan kept on the page dies on, under its stamp, while the next waits hidden behind it
+      const f0 = this.keptT;
+      this.keptT += dt;
+      const none = k.spec.cores.map(() => false);
+      const kc: TitanCtx = { ...ctx, cues: [], coreOpen: none, coreSoon: none, coreHit: k.spec.cores.map(() => 0) };
+      this.fallBeat(f0, this.keptT, kc);
+      k.u.uReveal.value = fallReveal(this.keptT);
+      k.update(kc, dt);
+      if (this.keptT >= FALL.GONE) this.dropKept();
+    }
     if (this.revealT < 6 && this.fallT < 0 && !this.kept) {
       // (reduced motion: the plate is simply there, fully engraved)
       if (!this.holdReveal && this.compiled) this.revealT = this.reducedMotion ? 6 : this.revealT + dt * (this.rushReveal ? 6 : 1);
@@ -796,6 +870,8 @@ export class Game {
     this.hurtFlash = Math.max(0, this.hurtFlash - dt * 2.5);
     // (the camera for this frame: the lean-in glides here, before anything reads the view)
     this.stepFocus(dt);
+    this.poseTitan(this.titan, this.fallT);
+    if (this.kept) this.poseTitan(this.kept, this.keptT);
     const v = this.view;
     const crease = v.leftLeaf && v.strip ? v.leftLeaf.x0 + (v.strip.x0 - v.leftLeaf.x0) * Math.min(1, this.camAt * 1.15) : 0;
     this.page.update(v.rect, stage, pulse, this.hurtFlash, this.camAt, crease, v.spread ? v.leftLeaf : null);
@@ -803,7 +879,15 @@ export class Game {
     this.ink.uniforms.uShow.value = Math.min(1, Math.max(0, (this.revealT - 2.4) / 1.4));
     const draws: HunterDraw[] = this.others ? this.others.list(t) : [];
     if (h && this.phase === "playing") draws.push({ x: h.x, y: h.y, kind: 0, hue: 0.12, inv: h.invuln > 0 ? Math.min(1, h.invuln) : 0, dash: h.dashing ? 1 : 0, surge: h.surging ? 1 : 0, seed: 0.3, grace: h.inGrace ? h.invuln / h.graceMax : 0 });
-    this.hunters.update(draws, t, h && this.phase === "playing" ? { x: h.x, y: h.y, alive: h.alive } : null);
+    let mine = h && this.phase === "playing" ? { x: h.x, y: h.y, alive: h.alive } : null;
+    if (!mine && this.warmed < 3 && this.phase === "lobby" && this.compiled && this.revealT >= 6) {
+      // the hunters' layer and your light's trail are first drawn here, off the page, while nothing is at stake:
+      // a first draw builds the GPU's variants for them, and in the run's first seconds that was a hitch
+      draws.push({ x: 0, y: -60, kind: 0, hue: 0.12, inv: 0.5, dash: 1, surge: 1, seed: 0.3, grace: 0.5 });
+      mine = { x: 0, y: -60, alive: true };
+      this.warmed++;
+    }
+    this.hunters.update(draws, t, mine);
     if (Math.random() < dt * 6) this.fx.add({ x: (Math.random() - 0.5) * ARENA.W * 1.1, y: Math.random() * ARENA.TOP, vx: (Math.random() - 0.5) * 0.4, vy: 0.3 + Math.random() * 0.4, type: P.Spore, col: 0, size: 0.06 + Math.random() * 0.06, max: 4, drag: 0 });
     this.fx.update(dt);
 
@@ -846,8 +930,59 @@ export class Game {
         coresOpen: coreOpenArr.filter(Boolean).length,
         surges: h?.surges ?? 0,
         bestCombo: h?.bestCombo ?? 0,
+        clean: h?.cleanBest ?? 0,
       });
     }
+  }
+
+  /**
+   * The death beat and what follows, from f0 to f seconds after the killing blow: flecks shaken off the body,
+   * ink bleeding down the page, the slam (gold rings, a shake) as the stamp lands, and paper flecks as the plate
+   * tears away. A few dozen particles a second; the body's own motion is in poseTitan.
+   */
+  private fallBeat(f0: number, f: number, ctx: TitanCtx) {
+    const dy = this.drop;
+    ctx.crack = 1;
+    ctx.stage = 2;
+    ctx.hurt = f < FALL.SLAM ? Math.min(1, 0.6 + Math.sin(f * 40) * 0.4) : Math.max(0, 0.6 - (f - FALL.SLAM) * 0.8);
+    const dt = f - f0;
+    if (f < FALL.SLAM && Math.random() < dt * 18) this.fx.burst((Math.random() - 0.5) * 14, 20 + Math.random() * 10 - dy, 5, { type: P.Fleck, size: 0.18, speed: 8, life: 1.3, g: -7 });
+    // ink bleeding down the page from the wounds and the body
+    if (f > 0.25 && f < FALL.SLAM + 1.6) {
+      const n = Math.floor(dt * 46 + Math.random());
+      for (let i = 0; i < n; i++)
+        this.fx.add({ x: (Math.random() - 0.5) * 13, y: 20.4 + Math.random() * 7 - dy, vx: (Math.random() - 0.5) * 0.15, vy: -0.4 - Math.random() * 0.9, type: P.Drip, col: 3, size: 0.09 + Math.random() * 0.12, max: 1.5 + Math.random() * 1.2, drag: 0.5, g: -2.4 });
+    }
+    if (f0 < FALL.SLAM && f >= FALL.SLAM) {
+      for (let i = 0; i < 12; i++) this.fx.ring((Math.random() - 0.5) * 12, 21 + Math.random() * 7 - dy, 4 + Math.random() * 4, 0, 0.9);
+      this.fx.burst(0, 25 - dy, 140, { type: P.Fleck, size: 0.22, speed: 16, life: 2.2, g: -5 });
+      this.shake = 1.4;
+    }
+    // the plate tears away: vellum flecks along a ragged seam across the body
+    if (f0 < FALL.RELEASE && f >= FALL.RELEASE) {
+      for (let i = 0; i < 40; i++) {
+        const x = (Math.random() - 0.5) * 15;
+        this.fx.burst(x, 24 + Math.sin(x * 1.7) * 1.2 - dy, 1, { type: P.Fleck, col: 4, size: 0.16, speed: 3, life: 1.2, g: -3 });
+      }
+    }
+  }
+
+  /** where a titan is drawn: lowered by the run's view, and in its death sagging and shuddering on the beat */
+  private poseTitan(t: Titan | undefined, f: number) {
+    if (!t) return;
+    let x = 0,
+      sag = 0;
+    if (f >= 0 && !this.reducedMotion) {
+      const beat = t.spec.beat;
+      const env = f < FALL.SLAM ? 1 - (0.6 * f) / FALL.SLAM : 0;
+      x = Math.sin(f * 57) * 0.17 * Math.pow(1 - ((f / beat) % 1), 3) * env;
+      const k = Math.min(1, f / FALL.SLAM);
+      sag = 0.8 * (1 - Math.pow(1 - k, 3));
+      // the stamp's blow drives it down a little further, and it settles
+      if (f >= FALL.SLAM && f < FALL.SLAM + 0.3) sag += 0.3 * Math.sin(((f - FALL.SLAM) / 0.3) * Math.PI);
+      if (f > FALL.RELEASE) sag += 1.4 * Math.pow(Math.min(1, (f - FALL.RELEASE) / FALL.LIFT), 2);
+    }
+    t.group.position.set(x, -this.drop - sag, 0);
   }
 
   /**

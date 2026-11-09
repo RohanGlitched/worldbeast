@@ -34,7 +34,7 @@ export class Titan {
   anatomy = new THREE.Group();
   u: TitanUniforms = titanUniforms();
   private rig!: Rig;
-  private cores: Array<{ gem: THREE.Mesh; shell: THREE.Mesh[]; frame: THREE.Mesh; mat: THREE.ShaderMaterial; open: number }> = [];
+  private cores: Array<{ gem: THREE.Mesh; shell: THREE.Mesh[]; frame: THREE.Mesh; mat: THREE.ShaderMaterial; open: number; aura: THREE.Mesh }> = [];
   private eyes: Array<{ ball: THREE.Object3D; pupil: THREE.Object3D; r: number; lid: THREE.Object3D; look: number }> = [];
   private m: Record<string, THREE.ShaderMaterial> = {};
   private outlines: Record<number, THREE.ShaderMaterial> = {};
@@ -54,7 +54,7 @@ export class Titan {
     mk("body", { wash: 0.78 });
     mk("dark", { wash: 0.9, tone: -0.22 });
     mk("light", { wash: 0.32, tone: 0.1 });
-    mk("stone", { wash: 0.3, tone: -0.04, tint: "paper", cracks: 0.4 });
+    mk("stone", { wash: 0.35, tone: 0.12, tint: "paper", cracks: 0.4 });
     mk("gilt", { wash: 0.2, tone: 0.05, gilt: 0.9, cracks: 0 });
     mk("accent", { wash: 0.72, tint: "accent" });
     mk("scales", { wash: 0.8, scales: 1 });
@@ -155,7 +155,29 @@ export class Titan {
         shell.push(s);
       }
       this.group.add(gem);
-      this.cores.push({ gem, shell, frame, mat, open: 0 });
+      const aura = new THREE.Mesh(
+        new THREE.PlaneGeometry(5.2, 5.2),
+        new THREE.ShaderMaterial({
+          uniforms: { uTime: this.u.uTime, uGold: this.u.uGold, uOpen: { value: 0 }, uSeed: { value: c.id * 1.7 } },
+          transparent: true,
+          depthWrite: false,
+          vertexShader: `varying vec2 vUv; void main(){ vUv = uv * 2. - 1.; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.); }`,
+          fragmentShader: `
+            precision highp float; uniform float uTime, uOpen, uSeed; uniform vec3 uGold; varying vec2 vUv;
+            void main(){
+              float r = length(vUv); float a = atan(vUv.y, vUv.x);
+              float rays = pow(abs(sin(a * 8. + uTime * .6 + uSeed)), 6.) * smoothstep(1., .25, r);
+              float glow = pow(smoothstep(1., 0., r), 2.5);
+              float beat = .75 + .25 * sin(uTime * 7.);
+              float k = (glow * .75 + rays * .55) * uOpen * beat;
+              gl_FragColor = vec4(mix(uGold, vec3(1., .93, .7), glow), k);
+              #include <colorspace_fragment>
+            }`,
+        }),
+      );
+      aura.position.set(c.x, c.y, z - 0.6);
+      this.group.add(aura);
+      this.cores.push({ gem, shell, frame, mat, open: 0, aura });
     }
   }
 
@@ -692,6 +714,8 @@ export class Titan {
       const u = m.mat.uniforms as unknown as { uOpen: { value: number }; uHit: { value: number } };
       u.uOpen.value = m.open;
       u.uHit.value = c.coreHit[i] ?? 0;
+      (m.aura.material as THREE.ShaderMaterial).uniforms.uOpen.value = m.open;
+      m.aura.scale.setScalar(1 + (c.coreHit[i] ?? 0) * 0.25);
       const k = m.open;
       m.shell[0].position.x = core.x - k * 0.8;
       m.shell[1].position.x = core.x + k * 0.8;

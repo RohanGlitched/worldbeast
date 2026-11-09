@@ -14,6 +14,8 @@ export class PageLayer {
         uTime: { value: 0 },
         uRect: { value: new THREE.Vector4(-10, -10, 10, 10) },
         uPage: { value: new THREE.Vector4(-PAGE.W / 2, PAGE.Y0, PAGE.W / 2, PAGE.Y1) },
+        uLeft: { value: new THREE.Vector4(0, 0, 0, 0) },
+        uSpread: { value: 0 },
         uArena: { value: new THREE.Vector4(-ARENA.W / 2, 0, ARENA.W / 2, ARENA.TOP) },
         uVellum: { value: new THREE.Color("#efe4cc") },
         uInk: { value: new THREE.Color("#231c17") },
@@ -30,16 +32,23 @@ export class PageLayer {
       `,
       fragmentShader: /* glsl */ `
         precision highp float;
-        uniform float uTime, uStage, uPulse, uHurt; uniform vec4 uPage, uArena;
+        uniform float uTime, uStage, uPulse, uHurt, uSpread; uniform vec4 uPage, uArena, uLeft;
         uniform vec3 uVellum, uInk, uAccent, uAccent2, uGold;
         varying vec2 vW;
         ${NOISE}
         float rule(float v, float w){ float f = fwidth(v); return 1. - smoothstep(w - f, w + f, abs(v)); }
         void main(){
           vec2 p = vW;
-          // --- desk (outside the page)
+          // --- desk (outside the page or the open spread)
           vec2 dq = max(uPage.xy - p, p - uPage.zw);
           float outside = max(dq.x, dq.y);
+          if (uSpread > .5) {
+            vec2 lq = max(uLeft.xy - p, p - uLeft.zw);
+            float lo = max(lq.x, lq.y);
+            vec2 gq = max(vec2(uLeft.z, uPage.y) - p, p - vec2(uPage.x, uPage.w));
+            float go = max(gq.x, gq.y);
+            outside = min(outside, min(lo, go));
+          }
           float grain = fbm(vec2(p.x * .35, p.y * 3.2)) * .6 + fbm(p * 1.7) * .4;
           vec3 desk = mix(vec3(.10,.075,.055), vec3(.19,.13,.085), grain);
           desk *= .75 + .25 * smoothstep(30., 0., length(p - vec2(0., 15.)));
@@ -49,6 +58,17 @@ export class PageLayer {
           vec3 col = uVellum * (.93 + .1 * fib) - vec3(.06, .07, .09) * stain;
           // age toward the edges of the leaf
           float edge = min(min(p.x - uPage.x, uPage.z - p.x), min(p.y - uPage.y, uPage.w - p.y));
+          if (uSpread > .5) {
+            edge = min(min(p.x - uLeft.x, uPage.z - p.x), min(p.y - uPage.y, uPage.w - p.y));
+            // the spine: both leaves curve down into the gutter
+            float gx = (uLeft.z + uPage.x) * .5;
+            float d = abs(p.x - gx);
+            // leaves curl down into the binding: a soft shadow, a darker crease, a hint of thread
+            col *= .78 + .22 * smoothstep(0., 2.6, d);
+            col *= 1. - .22 * (1. - smoothstep(0., .5, d));
+            float thread = (1. - smoothstep(.02, .05, d)) * step(.5, fract(p.y * .9));
+            col = mix(col, uAccent * .8, thread * .25);
+          }
           col *= .80 + .2 * smoothstep(0., 2.2, edge + fbm(p * 1.3) * .8);
           // ruling: faint dry-point lines across the arena, a double frame in lapis and vermilion
           float inA = step(uArena.x, p.x) * step(p.x, uArena.z) * step(uArena.y, p.y) * step(p.y, uArena.w);
@@ -92,8 +112,10 @@ export class PageLayer {
     u.uAccent2.value.set(p.accent2);
     u.uGold.value.set(p.gold);
   }
-  update(rect: { x0: number; y0: number; x1: number; y1: number }, time: number, stage: number, pulse: number, hurt: number) {
+  update(rect: { x0: number; y0: number; x1: number; y1: number }, time: number, stage: number, pulse: number, hurt: number, left: { x0: number; y0: number; x1: number; y1: number } | null = null) {
     const u = this.mat.uniforms;
+    u.uSpread.value = left ? 1 : 0;
+    if (left) u.uLeft.value.set(left.x0, left.y0, left.x1, left.y1);
     u.uRect.value.set(rect.x0, rect.y0, rect.x1, rect.y1);
     u.uTime.value = time;
     u.uStage.value = stage;

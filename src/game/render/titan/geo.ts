@@ -91,7 +91,7 @@ export function gothicArch(w: number, h: number, depth: number, windows = 3) {
     uv[i * 2 + 1] = p.getY(i) / h;
   }
   g.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
-  return eng(g, w * 2.2, h * 2.4);
+  return eng(g, w * 1.1, h * 1.2);
 }
 
 /** A tube with a radius per point, rebuilt in place when the spine moves. */

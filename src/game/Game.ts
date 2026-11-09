@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { ARENA, coreOpen, makeTitan, PHRASE_BEATS, LOOP_PHRASES, Stage, stageFor, TitanSpec } from "@/core/titan";
 import { Field } from "@/core/field";
 import { AspectId, Hunt, MAX_HITS } from "@/core/hunt";
-import { createView, resizeView, toScreen, View } from "./render/stage";
+import { createView, PAGE, resizeView, toScreen, View } from "./render/stage";
 import { PageLayer } from "./render/page";
 import { InkLayer } from "./render/ink";
 import { Titan, TitanCtx } from "./render/titan/titan";
@@ -43,6 +43,17 @@ export interface GameEvents {
   onDown?(summary: RunSummary): void;
   onSfx?(name: string, x?: number, strength?: number): void;
   onFloat?(text: string, x: number, y: number, kind: "dmg" | "graze" | "info"): void;
+  onLayout?(l: Layout): void;
+}
+
+export interface Layout {
+  spread: boolean;
+  portrait: boolean;
+  pxPerUnit: number;
+  /** CSS-pixel rects of the leaves (left is null when not in spread mode) */
+  left: { x: number; y: number; w: number; h: number } | null;
+  right: { x: number; y: number; w: number; h: number };
+  arena: { x: number; y: number; w: number; h: number };
 }
 
 export interface RunSummary {
@@ -182,6 +193,7 @@ export class Game {
     this.cssW = Math.max(1, r.width);
     this.cssH = Math.max(1, r.height);
     resizeView(this.view, this.cssW, this.cssH, this.quality);
+    this.events.onLayout?.(this.layout());
     // engraving lines: about one line every 4.5 device pixels, whatever the screen
     if (this.titan) this.titan.u.uPx.value = this.view.unitsPerPx / this.view.dpr;
   };
@@ -198,6 +210,23 @@ export class Game {
       this.quality = 1;
       this.resize();
     }
+  }
+
+  layout(): Layout {
+    const v = this.view;
+    const rr = (x0: number, y0: number, x1: number, y1: number) => {
+      const a = this.screenOf(x0, y1),
+        b = this.screenOf(x1, y0);
+      return { x: a.x, y: a.y, w: b.x - a.x, h: b.y - a.y };
+    };
+    return {
+      spread: v.spread,
+      portrait: v.portrait,
+      pxPerUnit: 1 / v.unitsPerPx,
+      left: v.leftLeaf ? rr(v.leftLeaf.x0, v.leftLeaf.y0, v.leftLeaf.x1, v.leftLeaf.y1) : null,
+      right: rr(-PAGE.W / 2, PAGE.Y0, PAGE.W / 2, PAGE.Y1),
+      arena: rr(-ARENA.W / 2, 0, ARENA.W / 2, ARENA.H),
+    };
   }
 
   /** world -> css px, for DOM overlays (names, numbers) */
@@ -274,7 +303,7 @@ export class Game {
         h.events.length = 0;
       }
       // dart streaks
-      for (const d of h.darts) if (Math.random() < 0.6) this.fx.add({ x: d.x, y: d.y, vx: (d.tx - d.x) * 3, vy: (d.ty - d.y) * 3, type: P.Streak, col: 0, size: d.surge ? 0.09 : 0.06, max: 0.08, drag: 0 });
+      for (const d of h.darts) this.fx.add({ x: d.x, y: d.y, vx: (d.tx - d.x) * 4, vy: (d.ty - d.y) * 4, type: P.Streak, col: d.surge ? 4 : 0, size: d.surge ? 0.16 : 0.11, max: 0.07, drag: 0 });
       // echo path
       this.pathAcc += dt;
       while (this.pathAcc >= 0.1) {
@@ -313,7 +342,7 @@ export class Game {
     // --- page, ink, hunters, fx
     const pulse = Math.pow(1 - (beat % 1), 8) * (beatInt % 4 === 0 ? 1 : 0.4);
     this.hurtFlash = Math.max(0, this.hurtFlash - dt * 2.5);
-    this.page.update(this.view.rect, t, stage, pulse, this.hurtFlash);
+    this.page.update(this.view.rect, t, stage, pulse, this.hurtFlash, this.view.leftLeaf);
     this.ink.update(frame, t);
     const draws: HunterDraw[] = this.others ? this.others.list(t) : [];
     if (h && this.phase === "playing") draws.push({ x: h.x, y: h.y, kind: 0, hue: 0.12, inv: h.invuln > 0 ? Math.min(1, h.invuln) : 0, dash: h.dashing ? 1 : 0, surge: h.surging ? 1 : 0, seed: 0.3 });

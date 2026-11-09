@@ -44,7 +44,7 @@ export class HunterLayer {
       vertexShader: /* glsl */ `
         attribute vec4 hA; attribute vec4 hB; varying vec2 vUv; varying vec4 vA; varying vec4 vB;
         void main(){ vUv = position.xy; vA = hA; vB = hB;
-          float s = hA.z < .5 ? 1.9 : hA.z < 1.5 ? 1.15 : hA.z < 2.5 ? .95 : 1.3;
+          float s = hA.z < .5 ? 1.45 : hA.z < 1.5 ? 1.0 : hA.z < 2.5 ? .85 : 1.15;
           s *= 1. + hB.z * .5;
           gl_Position = projectionMatrix * modelViewMatrix * vec4(hA.xy + position.xy * s, 3., 1.); }
       `,
@@ -57,30 +57,40 @@ export class HunterLayer {
         void main(){
           vec2 p = vUv; float r = length(p); float ang = atan(p.y, p.x);
           float kind = vA.z; float seed = vB.w;
-          // a four-pointed illuminated star with a fine ring
-          float spin = uTime * (kind < .5 ? 1.2 : .6) + seed * 6.;
-          float star = abs(cos((ang + spin * .3) * 2.));
-          float star2 = abs(cos((ang - spin * .2) * 2. + .785));
-          float body = 1. - smoothstep(.0, .035, r - (.13 + .3 * pow(star, 8.)));
-          body = max(body, (1. - smoothstep(.0, .035, r - (.1 + .16 * pow(star2, 8.)))) * .9);
-          float ring = 1. - smoothstep(.008, .03, abs(r - .5 - .025 * sin(uTime * 4. + seed * 9.)));
-          float glow = pow(1. - smoothstep(0., 1., r), 2.) * .55;
-          vec3 tint = kind < .5 ? uGold : mix(uGold, hue2rgb(vA.w) * .85, .55);
-          vec3 col = mix(tint * 1.15, vec3(1., .96, .82), body * .6);
-          float a = max(body, ring * (kind < .5 ? .95 : .6));
-          a = max(a, glow * (kind < .5 ? 1. : .5));
-          col = mix(vec3(1., .94, .8), col, max(body, ring));
-          // ink outline so the spark reads on pale vellum
-          float outline = (1. - smoothstep(.0, .035, abs(r - (.18 + .3 * pow(star, 6.)) - .03))) * .9;
-          col = mix(col, uInk, outline * (1. - body));
-          a = max(a, outline);
+          // a gilded four-pointed star around a bright hitbox pip, inside a warm halo
+          float spin = uTime * (kind < .5 ? .9 : .5) + seed * 6.;
+          float a4 = ang + spin * .35;
+          float rays = pow(abs(cos(a4 * 2.)), 10.);
+          float rays2 = pow(abs(cos(a4 * 2. + .785)), 14.);
+          float starR = .16 + .38 * rays + .14 * rays2;
+          float sd = r - starR;
+          float star = 1. - smoothstep(-.012, .012, sd);
+          float edge = 1. - smoothstep(.0, .045, abs(sd));
+          float ring = 1. - smoothstep(.01, .03, abs(r - .66 - .02 * sin(uTime * 4. + seed * 9.)));
+          float halo = pow(1. - smoothstep(0., 1., r), 2.2);
+          vec3 tint = kind < .5 ? uGold : mix(uGold, hue2rgb(vA.w) * .9, .6);
+          vec3 leaf = mix(tint * .85, tint * 1.25 + .08, smoothstep(-.3, .3, p.x * cos(spin) + p.y * sin(spin)));
+          vec3 col = mix(vec3(1., .95, .82), leaf, star);
+          col = mix(col, uInk, edge * (1. - star * .55));
+          float a = max(star, edge);
+          a = max(a, ring * (kind < .5 ? .85 : .45));
+          col = mix(col, uInk * 1.2, ring * (1. - star) * .6);
+          a = max(a, halo * (kind < .5 ? .5 : .22));
+          if (kind < .5) {
+            // the hitbox: a white-hot pip ringed in ink, so you always know exactly where you are
+            float pip = 1. - smoothstep(.07, .095, r);
+            float pipRing = 1. - smoothstep(.0, .03, abs(r - .11));
+            col = mix(col, uInk, pipRing);
+            col = mix(col, vec3(1., .99, .94), pip);
+            a = max(a, max(pip, pipRing));
+          }
           if (kind > 1.5 && kind < 2.5) { // echo: pale, dotted ring, no glow
             float dots = step(.5, fract(ang / 6.28318 * 12. + uTime * .2));
-            a = max(body * .45, ring * dots * .5); col = mix(vec3(.55,.5,.45), uGold, .35);
+            a = max(star * .4, ring * dots * .45); col = mix(vec3(.55,.5,.45), uGold, .35);
           }
           if (kind > 2.5) { // downed spark: a flickering ember waiting for a hunter to pass through
             float fl = .5 + .5 * sin(uTime * 10. + seed * 30.);
-            a = max(body, ring) * (.35 + .4 * fl); col = mix(uGold, vec3(1.,.5,.3), .4);
+            a = max(star, ring) * (.35 + .4 * fl); col = mix(uGold, vec3(1.,.5,.3), .4);
           }
           // invulnerability blink and dash smear
           a *= 1. - vB.x * step(.5, fract(uTime * 12.)) * .65;

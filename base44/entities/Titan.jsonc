@@ -1,0 +1,28 @@
+// One record per titan, written only by the world actor. Read by the Hall of Titans and dossiers.
+{
+  "name": "Titan",
+  "type": "object",
+  "properties": {
+    "number": { "type": "number", "description": "the nth titan to wake" },
+    "seed": { "type": "number", "description": "uint32 seed; everything else derives from it (core/titan.ts)" },
+    "wokeAt": { "type": "number", "description": "server ms" },
+    "hpMax": { "type": "number" },
+    "hp": { "type": "number" },
+    "status": { "type": "string", "enum": ["awake", "felled", "escaped"] },
+    "felledAt": { "type": "number", "description": "server ms when it was felled or escaped" },
+    "finalBlowName": { "type": "string", "maxLength": 18 },
+    "finalBlowSigil": { "type": "number" },
+    "topHunters": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "properties": { "name": { "type": "string" }, "sigil": { "type": "number" }, "damage": { "type": "number" } }
+      }
+    },
+    "hunterCount": { "type": "number" },
+    "damageTotal": { "type": "number" }
+  },
+  "required": ["number", "seed", "wokeAt", "hpMax", "status"],
+  "rls": { "create": false, "read": true, "update": false, "delete": false }
+}

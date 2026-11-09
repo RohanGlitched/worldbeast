@@ -1,0 +1,20 @@
+// A recorded flight path that replays beside later hunters at the same point of the titan's loop.
+{
+  "name": "Echo",
+  "type": "object",
+  "properties": {
+    "titanSeed": { "type": "number" },
+    "titanNumber": { "type": "number" },
+    "phrase": { "type": "number", "description": "floor(loopBeat / 64), 0..7: the cap/query key" },
+    "loopBeat": { "type": "number", "description": "run start beat mod LOOP_BEATS (fractional)" },
+    "stage": { "type": "number" },
+    "aspect": { "type": "string" },
+    "name": { "type": "string", "maxLength": 18 },
+    "sigil": { "type": "number" },
+    "path": { "type": "string", "maxLength": 6000, "description": "src/net/pathcodec.ts, 10 Hz x*20,y*20" },
+    "duration": { "type": "number", "description": "seconds" },
+    "damage": { "type": "number" }
+  },
+  "required": ["titanSeed", "phrase", "loopBeat", "stage", "path", "duration"],
+  "rls": { "create": false, "read": true, "update": false, "delete": false }
+}

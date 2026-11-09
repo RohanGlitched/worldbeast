@@ -1,0 +1,22 @@
+// One record per finished run, after the actor checked it against the damage it actually accepted.
+{
+  "name": "Run",
+  "type": "object",
+  "properties": {
+    "titanNumber": { "type": "number" },
+    "hunterKey": { "type": "string", "maxLength": 32 },
+    "name": { "type": "string", "maxLength": 18 },
+    "sigil": { "type": "number" },
+    "aspect": { "type": "string", "enum": ["ember", "lance", "bloom", "mirror"] },
+    "damage": { "type": "number" },
+    "time": { "type": "number", "description": "seconds alive" },
+    "grazes": { "type": "number" },
+    "bestCombo": { "type": "number" },
+    "surges": { "type": "number" },
+    "startT": { "type": "number", "description": "titan seconds when the run began" },
+    "stage": { "type": "number" },
+    "createdAt": { "type": "number", "description": "server ms" }
+  },
+  "required": ["titanNumber", "hunterKey", "damage"],
+  "rls": { "create": false, "read": true, "update": false, "delete": false }
+}

@@ -1,0 +1,17 @@
+// Lifetime totals per hunter (no login: keyed by a salted hash of a random browser key). Actor-written.
+{
+  "name": "Hunter",
+  "type": "object",
+  "properties": {
+    "hunterKey": { "type": "string", "maxLength": 32, "description": "salted hash of the browser's secret key" },
+    "name": { "type": "string", "maxLength": 18 },
+    "sigil": { "type": "number" },
+    "damageTotal": { "type": "number" },
+    "runs": { "type": "number" },
+    "bestRun": { "type": "number" },
+    "titansFelled": { "type": "number", "description": "final blows landed" },
+    "lastSeen": { "type": "number", "description": "server ms" }
+  },
+  "required": ["hunterKey"],
+  "rls": { "create": false, "read": true, "update": false, "delete": false }
+}

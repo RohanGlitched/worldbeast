@@ -37,7 +37,7 @@ export class InkLayer {
     this.blotGeo.index = quad.index;
     this.blotGeo.setAttribute("position", quad.getAttribute("position"));
     this.aData = new THREE.InstancedBufferAttribute(new Float32Array(MAX_B * 4), 4).setUsage(THREE.DynamicDrawUsage);
-    this.aMeta = new THREE.InstancedBufferAttribute(new Float32Array(MAX_B * 2), 2).setUsage(THREE.DynamicDrawUsage);
+    this.aMeta = new THREE.InstancedBufferAttribute(new Float32Array(MAX_B * 4), 4).setUsage(THREE.DynamicDrawUsage);
     this.blotGeo.setAttribute("aData", this.aData);
     this.blotGeo.setAttribute("aMeta", this.aMeta);
     this.blotGeo.instanceCount = 0;
@@ -47,26 +47,40 @@ export class InkLayer {
       depthTest: false,
       depthWrite: false,
       vertexShader: /* glsl */ `
-        attribute vec4 aData; attribute vec2 aMeta;
-        varying vec2 vUv; varying float vInk; varying float vAlpha; varying float vSeed; varying float vR; varying vec2 vWp;
+        attribute vec4 aData; attribute vec4 aMeta;
+        varying vec2 vUv; varying float vInk; varying float vAlpha; varying float vSeed; varying float vR; varying vec2 vWp; varying float vTail;
         void main(){
-          vUv = position.xy; vInk = aData.w; vAlpha = aMeta.x; vSeed = aMeta.y; vR = aData.z;
+          vInk = aData.w; vAlpha = aMeta.x; vSeed = aMeta.y; vR = aData.z;
+          // orient the drop along its flight; the quad grows a tail behind it
+          vec2 vel = aMeta.zw; float sp = length(vel);
+          vec2 dir = sp > .01 ? vel / sp : vec2(0., -1.);
+          vec2 side = vec2(dir.y, -dir.x);
+          vTail = clamp(sp * .16, 0., 1.8);
           float s = aData.z * 1.55;
-          vec3 p = vec3(aData.xy + position.xy * s, 1.); vWp = p.xy;
+          vec2 lp = position.xy;
+          lp.y = lp.y < 0. ? lp.y * (1. + vTail) : lp.y;
+          vUv = lp;
+          vec2 w = aData.xy + (side * lp.x + dir * lp.y) * s;
+          vec3 p = vec3(w, 1.); vWp = p.xy;
           gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.);
         }
       `,
       fragmentShader: /* glsl */ `
         precision highp float;
         uniform vec3 uInk, uA, uB, uGold; uniform float uTime; uniform vec4 uPage;
-        varying vec2 vUv; varying float vInk; varying float vAlpha; varying float vSeed; varying float vR; varying vec2 vWp;
+        varying vec2 vUv; varying float vInk; varying float vAlpha; varying float vSeed; varying float vR; varying vec2 vWp; varying float vTail;
         ${NOISE}
         void main(){
           if (vWp.x < uPage.x || vWp.x > uPage.z || vWp.y < uPage.y || vWp.y > uPage.w) discard;
-          vec2 p = vUv * 1.55; // in units of radius
+          vec2 p = vUv * 1.55; // in units of radius; +y is the direction of flight
           float ang = atan(p.y, p.x);
           float wob = (vnoise(vec2(ang * 2.2 + vSeed * 7., vSeed)) - .5) * .16 + (vnoise(vec2(ang * 6. + vSeed, 3.)) - .5) * .06;
-          float d = length(p) - 1. - wob;
+          float head = length(p) - 1. - wob;
+          // the tail: a tapering stroke behind the drop, like ink flicked from a quill
+          float tl = vTail * 1.55;
+          float ty = clamp(-p.y / max(tl, .001), 0., 1.);
+          float tail = (p.y < 0. && tl > .05) ? abs(p.x) - (1. - ty) * .8 : 9.;
+          float d = min(head, tail);
           float aa = fwidth(d) * 1.2;
           float body = 1. - smoothstep(-aa, aa, d);
           if (body < .01 && d > .5) discard;
@@ -235,15 +249,17 @@ export class InkLayer {
       d[i * 4 + 1] = f.bullets[o + 1];
       d[i * 4 + 2] = f.bullets[o + 2];
       d[i * 4 + 3] = f.bullets[o + 3];
-      m[i * 2] = f.bullets[o + 4];
-      m[i * 2 + 1] = (f.bulletIds[i] % 977) / 977;
+      m[i * 4] = f.bullets[o + 4];
+      m[i * 4 + 1] = (f.bulletIds[i] % 977) / 977;
+      m[i * 4 + 2] = f.bullets[o + 6];
+      m[i * 4 + 3] = f.bullets[o + 7];
     }
     this.aData.needsUpdate = true;
     this.aMeta.needsUpdate = true;
     this.aData.clearUpdateRanges();
     this.aData.addUpdateRange(0, n * 4);
     this.aMeta.clearUpdateRanges();
-    this.aMeta.addUpdateRange(0, n * 2);
+    this.aMeta.addUpdateRange(0, n * 4);
     this.blotGeo.instanceCount = n;
 
     const A = this.sA.array as Float32Array,

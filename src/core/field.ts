@@ -192,7 +192,7 @@ function signature(spec: TitanSpec, r: Rng, beat: number, idx: number, phrase: n
 // Sampling: where is everything at time t?
 
 export interface FieldFrame {
-  // bullets: x, y, radius, ink (0/1/2 = gold seed), alpha
+  // bullets: x, y, radius, ink (0/1/2 = gold seed), alpha, kind, vx, vy
   bullets: Float32Array;
   bulletIds: Uint32Array;
   bulletCount: number;
@@ -210,7 +210,7 @@ export interface FieldFrame {
   markCount: number;
 }
 
-const B = 7,
+const B = 8,
   BM = 7,
   RG = 9,
   ZN = 5,
@@ -274,7 +274,7 @@ export class Field {
 let curKind = 0;
 export const KIND_LIST: Kind[] = ["ring", "spiral", "fan", "wall", "rain", "wave", "curve", "bloom", "beam", "slam", "glyph", "cross"];
 
-function pushBullet(f: FieldFrame, x: number, y: number, r: number, ink: number, alpha: number, id: number) {
+function pushBullet(f: FieldFrame, x: number, y: number, r: number, ink: number, alpha: number, id: number, vx = 0, vy = 0) {
   if (!inArena(x, y, r) || f.bulletCount * B >= f.bullets.length) return;
   const o = f.bulletCount * B;
   f.bullets[o] = x;
@@ -283,7 +283,8 @@ function pushBullet(f: FieldFrame, x: number, y: number, r: number, ink: number,
   f.bullets[o + 3] = ink;
   f.bullets[o + 4] = alpha;
   f.bullets[o + 5] = curKind;
-  f.bullets[o + 6] = 0;
+  f.bullets[o + 6] = vx;
+  f.bullets[o + 7] = vy;
   f.bulletIds[f.bulletCount] = id >>> 0;
   f.bulletCount++;
 }
@@ -356,7 +357,7 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
         for (let i = 0; i < n; i++) {
           const a = DOWN - p.arc / 2 + (p.arc * (i + 0.5)) / n + (e % 2 ? p.arc / n / 2 : 0) + Math.sin(p.a0) * 0.05;
           const d = p.speed * te;
-          pushBullet(f, p.ox + Math.cos(a) * d, p.oy + Math.sin(a) * d, p.rad, v.ink, 1, bid(pa, vid, e * 64 + i));
+          pushBullet(f, p.ox + Math.cos(a) * d, p.oy + Math.sin(a) * d, p.rad, v.ink, 1, bid(pa, vid, e * 64 + i), Math.cos(a) * p.speed, Math.sin(a) * p.speed);
         }
       }
       return;
@@ -377,7 +378,7 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
           // fold upward shots downward so nothing is wasted off the top of the page
           if (Math.sin(a) > 0.1) a = -a;
           const d = p.speed * te;
-          pushBullet(f, p.ox + Math.cos(a) * d, p.oy + Math.sin(a) * d, p.rad, v.ink, 1, bid(pa, vid, k * 256 + i));
+          pushBullet(f, p.ox + Math.cos(a) * d, p.oy + Math.sin(a) * d, p.rad, v.ink, 1, bid(pa, vid, k * 256 + i), Math.cos(a) * p.speed, Math.sin(a) * p.speed);
         }
       }
       return;
@@ -394,7 +395,7 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
         for (let i = 0; i < p.n; i++) {
           const a = base - p.spread / 2 + (p.spread * i) / Math.max(1, p.n - 1) + (w % 2 ? p.spread / (p.n - 1) / 2 : 0);
           const d = p.speed * te;
-          pushBullet(f, p.ox + Math.cos(a) * d, p.oy + Math.sin(a) * d, p.rad, v.ink, 1, bid(pa, vid, w * 32 + i));
+          pushBullet(f, p.ox + Math.cos(a) * d, p.oy + Math.sin(a) * d, p.rad, v.ink, 1, bid(pa, vid, w * 32 + i), Math.cos(a) * p.speed, Math.sin(a) * p.speed);
         }
       }
       return;
@@ -416,7 +417,7 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
         let i = 0;
         for (let x = -W / 2; x <= W / 2; x += p.spacing, i++) {
           if (Math.abs(x - gx) < p.gapW / 2) continue;
-          pushBullet(f, x, y, p.rad, v.ink, 1, bid(pa, vid, row * 128 + i));
+          pushBullet(f, x, y, p.rad, v.ink, 1, bid(pa, vid, row * 128 + i), 0, -p.speed);
         }
       }
       return;
@@ -433,7 +434,7 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
         for (let d = 0; d < p.drops; d++) {
           const te = tSec - (d * p.every + (c % 2) * 0.5) * beatLen;
           if (te < 0) continue;
-          pushBullet(f, x, ARENA.TOP + 0.5 - p.speed * te, p.rad, v.ink, 1, bid(pa, vid, c * 16 + d));
+          pushBullet(f, x, ARENA.TOP + 0.5 - p.speed * te, p.rad, v.ink, 1, bid(pa, vid, c * 16 + d), 0, -p.speed);
         }
       });
       return;
@@ -448,7 +449,7 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
         if (te < 0) break;
         const y = p.oy - p.speed * te;
         const x = p.ox + Math.sin(p.phase + te * p.freq * TAU) * p.amp + Math.sin(i * 1.7) * 0.4;
-        pushBullet(f, x, y, p.rad, v.ink, 1, bid(pa, vid, i));
+        pushBullet(f, x, y, p.rad, v.ink, 1, bid(pa, vid, i), Math.cos(p.phase + te * p.freq * TAU) * p.amp * p.freq * TAU, -p.speed);
       }
       return;
     }
@@ -463,7 +464,7 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
         const R = p.speed / w;
         const x = p.ox + R * (Math.sin(a0 + w * tSec) - Math.sin(a0));
         const y = p.oy - R * (Math.cos(a0 + w * tSec) - Math.cos(a0));
-        pushBullet(f, x, y, p.rad, v.ink, 1, bid(pa, vid, i));
+        pushBullet(f, x, y, p.rad, v.ink, 1, bid(pa, vid, i), p.speed * Math.cos(a0 + w * tSec), p.speed * Math.sin(a0 + w * tSec));
       }
       return;
     }
@@ -476,7 +477,7 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
       if (tSec < travel) {
         const k = tSec / travel;
         const e = 1 - (1 - k) * (1 - k);
-        pushBullet(f, p.ox + (p.tx - p.ox) * e, p.oy + (p.ty - p.oy) * e, p.seedRad, 2, 1, bid(pa, vid, 4000));
+        pushBullet(f, p.ox + (p.tx - p.ox) * e, p.oy + (p.ty - p.oy) * e, p.seedRad, 2, 1, bid(pa, vid, 4000), ((p.tx - p.ox) * 2 * (1 - k)) / travel, ((p.ty - p.oy) * 2 * (1 - k)) / travel);
         pushZone(f, p.tx, p.ty, 0.9, k * 0.999, v.ink);
         return;
       }
@@ -484,7 +485,7 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
       for (let i = 0; i < p.n; i++) {
         const a = (TAU * i) / p.n + p.tx;
         const d = p.speed * te;
-        pushBullet(f, p.tx + Math.cos(a) * d, p.ty + Math.sin(a) * d, p.rad, v.ink, 1, bid(pa, vid, i));
+        pushBullet(f, p.tx + Math.cos(a) * d, p.ty + Math.sin(a) * d, p.rad, v.ink, 1, bid(pa, vid, i), Math.cos(a) * p.speed, Math.sin(a) * p.speed);
       }
       return;
     }
@@ -545,7 +546,7 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
           const x0 = side * (ARENA.W / 2) - side * i * p.spacing * 0.5 + side * 2;
           const y0 = ARENA.TOP + 0.5 + i * p.spacing * 0.85;
           const d = p.speed * te;
-          pushBullet(f, x0 + (dirx / L) * d, y0 + (diry / L) * d, p.rad, v.ink, 1, bid(pa, vid, row * 64 + i));
+          pushBullet(f, x0 + (dirx / L) * d, y0 + (diry / L) * d, p.rad, v.ink, 1, bid(pa, vid, row * 64 + i), (dirx / L) * p.speed, (diry / L) * p.speed);
         }
       }
       return;

@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { ARENA, coreOpen, makeTitan, PHRASE_BEATS, LOOP_PHRASES, Stage, stageFor, TitanSpec } from "@/core/titan";
-import { Field } from "@/core/field";
+import { Field, newFrame } from "@/core/field";
 import { AspectId, Hunt, MAX_HITS } from "@/core/hunt";
 import { createView, PAGE, resizeView, toScreen, View } from "./render/stage";
 import { PageLayer } from "./render/page";
@@ -443,10 +443,8 @@ export class Game {
     }
   }
 
-  private lobbyFrame = (() => {
-    // separate frame buffer for when no run is active
-    return { bullets: new Float32Array(4096 * 7), bulletIds: new Uint32Array(4096), bulletCount: 0, beams: new Float32Array(64 * 7), beamCount: 0, rings: new Float32Array(64 * 9), ringCount: 0, zones: new Float32Array(128 * 5), zoneCount: 0, marks: new Float32Array(256 * 4), markCount: 0 };
-  })();
+  /** separate frame buffer for when no run is active */
+  private lobbyFrame = newFrame();
 
   /** Upcoming attacks for the titan's wind-up animations. */
   private cuesAt(beat: number, stage: Stage) {

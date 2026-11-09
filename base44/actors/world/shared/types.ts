@@ -110,6 +110,7 @@ export type ToClient =
   | { t: "wake"; n: number; titan: TitanInfo; hp: number }
   | { t: "down"; n: number; id: number; x: number; y: number; until: number }
   | { t: "revive"; n: number; who: number; by: number; byName: string }
-  | { t: "ack"; n: number; ok: number; bad: number; why?: HitWhy; hp: number }
+  /** rs: blows the titan shrugged off (a lone hunter past SOLO_SHARE of its life: logic.ts creditBlow) */
+  | { t: "ack"; n: number; ok: number; bad: number; why?: HitWhy; hp: number; rs?: number }
   | { t: "runAck"; n: number; damage: number; echo: boolean; clamped: boolean }
   | { t: "pong"; n: number; c: number };

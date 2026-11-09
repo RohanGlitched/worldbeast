@@ -2,7 +2,7 @@ import { Actor } from "base44:runtime/actors";
 import { hash32 } from "./core/rng.ts";
 import { makeTitan, PHRASE_BEATS, Stage, stageFor, TitanSpec } from "./core/titan.ts";
 import {
-  addDamage, breakThreshold, Bucket, checkHit, checkRun, clampPos, DmgBuckets, echoEviction, ESCAPE_MS, hashKey, hpMaxFor,
+  addDamage, breakThreshold, Bucket, checkHit, checkRun, clampPos, creditBlow, DmgBuckets, echoEviction, ESCAPE_MS, hashKey, hpMaxFor,
   INTERLUDE_MS, HP_RULE, LIMITS, loopKey, MAX_HITS_PER_MSG, prepareEcho, AspectRate, REVIVE_R, sanitizeAspect, sanitizeName,
   resizeTitan, sanitizeSigil, segDist, SPARK_MS, titanSeed, titanT, topHunters, validKey,
 } from "./logic.ts";
@@ -402,7 +402,10 @@ export default class World extends Actor<ToServer, ToClient> {
     const stage = this.stage();
     const ctx = { spec: this.spec, stage, nowMs: now, wokeAt: this.titan.wokeAt };
     const accBefore = h.acc;
-    let ok = 0, bad = 0, surge = false;
+    // ok: what wounded the titan; raw: what this hunter landed (their runs are bounded by it); past
+    // SOLO_SHARE of the titan's life one hunter's blows wound it only at SOLO_RESIST (logic.ts creditBlow)
+    let ok = 0, raw = 0, resisted = 0, bad = 0, surge = false;
+    let credited = this.credits.get(key)?.dmg ?? 0;
     for (const row of hits as unknown[]) {
       if (this.titan.hp <= 0) break;
       const c = checkHit(row, ctx);
@@ -418,8 +421,12 @@ export default class World extends Actor<ToServer, ToClient> {
         why = "rate";
         continue;
       }
-      const dmg = Math.min(c.dmg, this.titan.hp);
+      const wound = creditBlow(c.dmg, credited, this.titan.hpMax);
+      resisted += c.dmg - wound;
+      const dmg = Math.min(wound, this.titan.hp);
+      credited += dmg;
       ok += dmg;
+      raw += c.dmg;
       if (c.flags & HIT_SURGE) surge = true;
       this.titan.hp -= dmg;
       this.trackCore(h, c.core, c.beat, dmg, now);
@@ -428,7 +435,7 @@ export default class World extends Actor<ToServer, ToClient> {
     this.stats.accepted += ok;
     this.stats.rejected += bad;
     if (ok > 0) {
-      h.acc += ok;
+      h.acc += raw;
       h.accLog.push([this.titan.number, titanT(now, this.titan.wokeAt), accBefore]);
       if (h.accLog.length > 2400) h.accLog.splice(0, 400);
       const cr = this.credits.get(key) ?? { name: h.name, sigil: h.sigil, dmg: 0 };
@@ -451,7 +458,8 @@ export default class World extends Actor<ToServer, ToClient> {
       const st = stageFor(this.titan.hp / this.titan.hpMax);
       if (st > this.titan.stageAt.length && this.titan.hp > 0) this.enterStage(st, now);
     }
-    conn.send({ t: "ack", n: now, ok, bad, why: bad ? why : undefined, hp: Math.max(0, Math.round(this.titan.hp)) });
+    const rs = Math.round(resisted);
+    conn.send({ t: "ack", n: now, ok: Math.round(ok * 100) / 100, bad, why: bad ? why : undefined, hp: Math.max(0, Math.round(this.titan.hp)), ...(rs > 0 ? { rs } : {}) });
     if (this.titan.hp <= 0 && this.titan.status === "awake") void this.endTitan("felled", now, h);
   }
 
@@ -490,7 +498,8 @@ export default class World extends Actor<ToServer, ToClient> {
   private async wakeTitan(number: number, wokeAt: number) {
     const now = Date.now();
     const hpMax = hpMaxFor(this.dmg24, now);
-    const seed = titanSeed(number, this.salt);
+    // never the same body twice in a row: the titan that just ended (if any) is avoided
+    const seed = titanSeed(number, this.salt, number > 1 ? this.lastSpec?.archetype : null);
     this.titan = { number, seed, wokeAt, hpMax, hp: hpMax, status: "awake", stageAt: [] };
     this.spec = makeTitan(seed, number);
     this.credits = new Map();

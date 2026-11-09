@@ -79,7 +79,8 @@ export interface WorldEvents {
   onRevive?(e: { who: number; by: number; byName: string; me: boolean }): void;
   onFeed?(items: FeedItem[], all: FeedItem[]): void;
   onHunters?(roster: RosterEntry[]): void;
-  onAck?(ok: number, bad: number, why: HitWhy | undefined): void;
+  /** `resisted`: blows the titan shrugged off because this hunter already struck SOLO_SHARE of its life alone */
+  onAck?(ok: number, bad: number, why: HitWhy | undefined, resisted: number): void;
 }
 
 export interface WorldOptions {
@@ -122,7 +123,7 @@ export class World {
   last: TitanEnd | null = null;
   roster = new Map<number, RosterEntry>();
   sparks = new Map<number, Spark>();
-  stats = { hitsSent: 0, ok: 0, bad: 0, lastWhy: undefined as HitWhy | undefined };
+  stats = { hitsSent: 0, ok: 0, bad: 0, resisted: 0, lastWhy: undefined as HitWhy | undefined };
 
   private client: NonNullable<WorldOptions["client"]>;
   private session: string;
@@ -390,7 +391,8 @@ export class World {
           this.stats.ok += m.ok;
           this.stats.bad += m.bad;
           if (m.why) this.stats.lastWhy = m.why;
-          this.events.onAck?.(m.ok, m.bad, m.why);
+          if (m.rs) this.stats.resisted += m.rs;
+          this.events.onAck?.(m.ok, m.bad, m.why, m.rs ?? 0);
           return;
         case "runAck":
           this.runWaiters.shift()?.({ damage: m.damage, echo: m.echo, clamped: m.clamped });

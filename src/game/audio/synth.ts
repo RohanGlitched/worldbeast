@@ -12,8 +12,8 @@
 export const mtof = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
 const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
 
-export type Group = "perc" | "bass" | "mel" | "bell" | "cue" | "impact" | "sfx" | "fx";
-const CAPS: Record<Group, number> = { perc: 14, bass: 4, mel: 10, bell: 8, cue: 8, impact: 12, sfx: 14, fx: 6 };
+export type Group = "perc" | "bass" | "mel" | "bell" | "cue" | "impact" | "sfx" | "fx" | "mark";
+const CAPS: Record<Group, number> = { perc: 14, bass: 4, mel: 10, bell: 8, cue: 8, impact: 12, sfx: 14, fx: 6, mark: 6 };
 
 /** Reference pitches rendered into the bank; playback shifts at most half an octave. */
 export const BELL_REFS = [48, 60, 72, 84, 96];
@@ -487,6 +487,27 @@ export class Synth {
     this.noiseSrc(when).connect(nf).connect(ng).connect(env);
     env.connect(this.out(dest, o));
     this.commit("sfx", when, when + 0.36, env, 1);
+  }
+
+  /**
+   * Landing tick: the crisp click of an attack arriving on its beat. Very short and bright (2-6 kHz),
+   * so it cuts through laptop and phone speakers where the drums and drone cannot.
+   */
+  mark(dest: AudioNode, when: number, midi: number, vel: number, o: Pan = {}) {
+    if (!this.admit("mark", when, 0)) return;
+    const env = this.gain(1);
+    const nf = this.filter("bandpass", 4300, 1.3);
+    const ng = this.gain();
+    this.perc(ng.gain, when, vel * (this.quiet ? 0.25 : 0.42), 0.035, 0.0004);
+    this.noiseSrc(when).connect(nf).connect(ng).connect(env);
+    let f = mtof(midi);
+    while (f < 1800) f *= 2;
+    while (f > 3600) f /= 2;
+    const tg = this.gain();
+    this.perc(tg.gain, when, vel * 0.16, 0.07, 0.0006);
+    this.osc("triangle", f, when, 0).connect(tg).connect(env);
+    env.connect(this.out(dest, o));
+    this.commit("mark", when, when + 0.09, env, 0);
   }
 
   // ---------------------------------------------------------------------------- sustained / swept voices (live)

@@ -51,6 +51,10 @@ export interface AudioStats extends SynthStats {
 }
 
 const RESYNC_AT = 0.06; // seconds of disagreement that forces a hard resync
+/** gain after the glue compressor: sets the integrated loudness (about -14 LUFS in a hunt) */
+const MAKEUP = 1.2;
+/** Ruin piles up drums, sub and doublings: trim it so the stages land within about a decibel */
+const STAGE_TRIM = [1.08, 1, 0.88];
 const SMOOTH = 0.04; // per-update offset smoothing
 
 const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
@@ -345,6 +349,12 @@ export class AudioEngine {
         sy.bell(out, now + 0.36, m(14, 2), 0.45, { partials: 5, decay: 2.2, pan, group: "sfx" });
         sy.jingle(out, now + 0.36, 0.6, { long: true, pan, group: "sfx" });
         return;
+      case "relight":
+        // thirty clean seconds give a light back: a rising peal and a breath of choir
+        [0, 4, 7, 11, 14].forEach((d, i) => sy.bell(out, now + i * 0.09, m(d, 3), 0.34 + i * 0.04, { partials: 4, decay: 1.4, pan, group: "sfx", prio: 1 }));
+        sy.jingle(out, now + 0.4, 0.6, { long: true, pan, group: "sfx" });
+        this.choirSwell(now, 1.5, 1.6);
+        return;
       case "core-open":
         sy.bell(out, now, m(4, 3), 0.32, { partials: 4, decay: 1.3, pan, group: "sfx" });
         sy.bell(out, now + 0.11, m(7, 3), 0.28, { partials: 4, decay: 1.5, pan, group: "sfx" });
@@ -508,17 +518,23 @@ export class AudioEngine {
       return n;
     };
     const mix = G(1);
+    // laptop and phone speakers cannot play the floor of the cathedral: high-pass it, and shelve the
+    // rest of the low end down so the compressors stop pumping the bells and the tells on it
     const hp = ctx.createBiquadFilter();
     hp.type = "highpass";
-    hp.frequency.value = 28;
-    hp.Q.value = 0.6;
+    hp.frequency.value = 50;
+    hp.Q.value = 0.7;
+    const shelf = ctx.createBiquadFilter();
+    shelf.type = "lowshelf";
+    shelf.frequency.value = 130;
+    shelf.gain.value = -7;
     const glue = ctx.createDynamicsCompressor();
     glue.threshold.value = -20;
     glue.knee.value = 12;
     glue.ratio.value = 2.6;
     glue.attack.value = 0.012;
     glue.release.value = 0.28;
-    const makeup = G(1.2);
+    const makeup = G(MAKEUP);
     const limiter = ctx.createDynamicsCompressor();
     limiter.threshold.value = -5;
     limiter.knee.value = 0;
@@ -531,8 +547,8 @@ export class AudioEngine {
     ceil.curve = ceilingCurve();
     ceil.oversample = "none";
     const master = G(0.9);
-    nodes.push(hp, glue, limiter, ceil);
-    mix.connect(hp).connect(glue).connect(makeup).connect(limiter).connect(trim).connect(pre).connect(ceil).connect(master).connect(ctx.destination);
+    nodes.push(hp, shelf, glue, limiter, ceil);
+    mix.connect(hp).connect(shelf).connect(glue).connect(makeup).connect(limiter).connect(trim).connect(pre).connect(ceil).connect(master).connect(ctx.destination);
 
     // reverb: one cathedral shared by music and sfx
     const conv = (this.conv = ctx.createConvolver());
@@ -564,9 +580,21 @@ export class AudioEngine {
     const titanSfx = G(1);
     titanSfx.connect(sfxVol);
 
-    const chan = (level: number, to: AudioNode, send: number, verb: AudioNode) => {
+    // channel tone: a presence lift (2-3 kHz) on the voices that carry the song and the tells,
+    // a high-pass on the drone and the bass
+    const eq = (type: BiquadFilterType, f: number, gain: number, q: number) => {
+      const b = ctx.createBiquadFilter();
+      b.type = type;
+      b.frequency.value = f;
+      b.gain.value = gain;
+      b.Q.value = q;
+      nodes.push(b);
+      return b;
+    };
+    const chan = (level: number, to: AudioNode, send: number, verb: AudioNode, tone?: BiquadFilterNode) => {
       const c = G(level);
-      c.connect(to);
+      if (tone) c.connect(tone).connect(to);
+      else c.connect(to);
       if (send > 0) {
         const s = G(send);
         c.connect(s).connect(verb);
@@ -575,14 +603,14 @@ export class AudioEngine {
     };
     const ch: Channels = {
       perc: chan(0.27, musicSum, 0.2, verbMusic),
-      bass: chan(0.5, musicSum, 0.06, verbMusic),
-      mel: chan(0.5, musicSum, 0.42, verbMusic),
-      bell: chan(0.8, musicSum, 0.6, verbMusic),
+      bass: chan(0.5, musicSum, 0.06, verbMusic, eq("highpass", 55, 0, 0.7)),
+      mel: chan(0.5, musicSum, 0.42, verbMusic, eq("peaking", 2600, 5.5, 0.8)),
+      bell: chan(0.8, musicSum, 0.6, verbMusic, eq("peaking", 2400, 5, 0.8)),
       choir: chan(0.7, musicSum, 0.7, verbMusic),
-      bourdon: chan(1, musicSum, 0.3, verbMusic),
-      cue: chan(0.6, titanSfx, 0.3, verbSfx),
-      impact: chan(0.55, titanSfx, 0.32, verbSfx),
-      sfx: chan(0.7, sfxVol, 0.3, verbSfx),
+      bourdon: chan(1, musicSum, 0.3, verbMusic, eq("highpass", 90, 0, 0.6)),
+      cue: chan(0.6, titanSfx, 0.3, verbSfx, eq("peaking", 2800, 4.5, 0.9)),
+      impact: chan(0.55, titanSfx, 0.32, verbSfx, eq("peaking", 3000, 3, 0.9)),
+      sfx: chan(0.7, sfxVol, 0.3, verbSfx, eq("peaking", 2600, 2.5, 0.9)),
     };
     this.persistent = nodes.length;
     this.chainLatency = 512 / ctx.sampleRate;
@@ -757,7 +785,7 @@ export class AudioEngine {
     g.verbMusic.to(this.vol.music, now, T);
     g.sfxVol.to(this.vol.sfx, now, T);
     g.verbSfx.to(this.vol.sfx, now, T);
-    g.trim.to(this.quiet ? 0.8 : 1, now, T);
+    g.trim.to(this.trimLevel(), now, T);
     g.glue.threshold.setValueAtTime(this.quiet ? -26 : -20, now);
   }
 
@@ -831,7 +859,13 @@ export class AudioEngine {
     }
   }
 
+  /** quiet mode, and a stage trim that keeps Calm and Ruin at about the same loudness */
+  private trimLevel() {
+    return (this.quiet ? 0.8 : 1) * STAGE_TRIM[this.stage];
+  }
+
   private applyStage(when: number, immediate: boolean) {
+    this.g?.trim.to(this.trimLevel(), when, immediate ? 0.001 : 2);
     const d = this.drone;
     if (!d || !this.song) return;
     const tm = this.song.timbre;
@@ -1140,6 +1174,13 @@ export class AudioEngine {
       }
       case "swell": {
         const end = when + e.durBeats * beatSec;
+        if (v.kind === "beam" && this.playing) {
+          // a beam's own warning: two high strikes as its guide is drawn, and a thin whistle
+          // rising through the whole telegraph to the moment it fires
+          sy.bell(ch.cue, when, m(chord + 7, 3), 0.42, { partials: 3, decay: 0.6, pan, group: "cue", prio: 1 });
+          sy.bell(ch.cue, when + beatSec * 0.5, m(chord + 7, 3), 0.3, { partials: 3, decay: 0.5, pan, group: "cue" });
+          sy.air(ch.cue, when, end - when, 1800, 5200, 0.2, { pan, q: 6, attack: (end - when) * 0.92, group: "cue", prio: 1 });
+        }
         sy.bowed(ch.impact, when, end, m(chord + (e.sig ? 0 : 4), e.sig ? 2 : 3), e.sig ? 1 : 0.7, { pan, ring: 0.25, group: "fx", prio: e.sig ? 1 : 0 });
         if (e.sig) {
           sy.bell(ch.bell, when, m(0, 1) + 12, 0.7, { partials: 8, decay: 4, prio: 1 });
@@ -1150,6 +1191,8 @@ export class AudioEngine {
       case "impact":
       case "echo": {
         const ev = e.type === "echo" ? vel * 0.7 : vel;
+        // the landing tick: you hear exactly when it arrives, on the beat
+        if (this.playing) sy.mark(ch.cue, when, m(chord + CUE_DEG[v.kind], 4), (heavy ? 1 : 0.8) * (e.type === "echo" ? 0.7 : 1), { pan });
         if (heavy && e.type === "impact") this.duckMusic(when, 0.72, 0.18);
         if (e.sig && e.type === "impact") {
           sy.gong(ch.impact, when, mtof(song.root + 12) * 0.75, 1, { decay: 6 });

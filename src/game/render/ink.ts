@@ -15,6 +15,7 @@ function colorUniforms() {
     uGold: { value: new THREE.Color("#d6a531") },
     uTime: { value: 0 },
     uPage: { value: new THREE.Vector4(-8.6, -0.9, 8.6, 34.4) },
+    uShow: { value: 1 },
   };
 }
 
@@ -67,7 +68,7 @@ export class InkLayer {
       `,
       fragmentShader: /* glsl */ `
         precision highp float;
-        uniform vec3 uInk, uA, uB, uGold; uniform float uTime; uniform vec4 uPage;
+        uniform vec3 uInk, uA, uB, uGold; uniform float uTime, uShow; uniform vec4 uPage;
         varying vec2 vUv; varying float vInk; varying float vAlpha; varying float vSeed; varying float vR; varying vec2 vWp; varying float vTail;
         ${NOISE}
         void main(){
@@ -93,7 +94,7 @@ export class InkLayer {
           if (vInk > 1.5) col += uGold * .4 * (.5 + .5 * sin(uTime * 9. + vSeed * 20.));
           // soft halo so attacks read against busy ink
           float halo = (1. - smoothstep(0., .45, d)) * step(0., d) * .28;
-          float a = max(body, halo) * vAlpha;
+          float a = max(body, halo) * vAlpha * uShow;
           vec3 outc = mix(vec3(1.,.96,.88), col, body);
           gl_FragColor = vec4(outc, a);
           #include <colorspace_fragment>
@@ -143,7 +144,7 @@ export class InkLayer {
       `,
       fragmentShader: /* glsl */ `
         precision highp float;
-        uniform vec3 uInk, uA, uB, uGold; uniform float uTime; uniform vec4 uPage;
+        uniform vec3 uInk, uA, uB, uGold; uniform float uTime, uShow; uniform vec4 uPage;
         varying vec2 vW; varying vec4 vA; varying vec4 vB; varying vec4 vC;
         ${NOISE}
         float sdSeg(vec2 p, vec2 a, vec2 b){ vec2 pa = p - a, ba = b - a; float h = clamp(dot(pa,ba)/dot(ba,ba), 0., 1.); return length(pa - ba*h); }
@@ -160,9 +161,9 @@ export class InkLayer {
             if (live < .5) {
               // telegraph: a dashed dry-point guide that thickens as the strike nears
               vec2 dir = normalize(p2 - p1); float s = dot(vW - p1, dir);
-              float dash = step(.5, fract(s * .9 - uTime * 2.));
-              a = (1. - smoothstep(.04, .07, d)) * dash * .85;
-              col = uInk;
+              float dash = step(.55, fract(s * 1.6 - uTime * 2.));
+              a = (1. - smoothstep(.025, .05, d)) * dash * .5;
+              col = mix(uInk, c, .5);
             } else {
               float edge = (vnoise(vec2(dot(vW, vec2(1.3, .7)) * 3., uTime * 2.)) - .5) * .12;
               float body = 1. - smoothstep(w * .5 - .03 + edge, w * .5 + .03 + edge, d);
@@ -218,6 +219,7 @@ export class InkLayer {
             a = max(line * .55, tick * .7) * (.25 + .75 * pr);
             col = c;
           }
+          a *= uShow;
           if (a < .005) discard;
           gl_FragColor = vec4(col, a);
           #include <colorspace_fragment>

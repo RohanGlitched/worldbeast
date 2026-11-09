@@ -664,6 +664,20 @@ export class Titan {
     const heart = this.part(orb(44, 30, r.range(0, 9), 0.16, 64, 40), "accent", A, 0.12);
     heart.scale.set(3.3, 3.5, 2.6);
     heart.position.set(0, 26, -0.5);
+    // meridian bands and rivets: an iron-bound heart
+    for (let i = 0; i < 7; i++) {
+      const band = this.torus(1, 0.035, i % 2 ? "gilt" : "dark", heart, Math.PI * 2, 0.012);
+      band.rotation.y = (i / 7) * Math.PI;
+      band.scale.setScalar(1.02);
+    }
+    const ring = this.torus(1, 0.05, "gilt", heart, Math.PI * 2, 0.015);
+    ring.rotation.x = Math.PI / 2;
+    ring.scale.setScalar(1.03);
+    for (let i = 0; i < 14; i++) {
+      const a = (i / 14) * Math.PI * 2;
+      const rv = this.orbPart(0.06, 0.06, 0.06, V(Math.cos(a) * 1.02, 0, Math.sin(a) * 1.02), "gilt", heart, 0, 0.01);
+      void rv;
+    }
     const veins: Sweep[] = [];
     for (let i = 0; i < 6; i++) {
       const sw = new Sweep(14, 6, 5, 18);

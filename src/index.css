@@ -1022,6 +1022,8 @@ button {
   position: absolute;
   inset: 0;
   transform-origin: 0% 50%;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
   transition: transform 1.25s cubic-bezier(0.55, 0, 0.25, 1), filter 1.25s;
   background:
     radial-gradient(ellipse at 30% 20%, rgba(255, 255, 255, 0.07), transparent 55%),
@@ -1075,6 +1077,7 @@ button {
 }
 .medallion {
   position: relative;
+  background-image: repeating-linear-gradient(-35deg, rgba(35, 28, 23, 0.07) 0 1px, transparent 1px 5px), radial-gradient(circle, #f3e9d3 58%, #e2d2ae);
   width: min(34vh, 300px);
   height: min(34vh, 300px);
   border-radius: 50%;
@@ -1395,4 +1398,53 @@ button {
   border-left: 2px solid var(--vermilion);
   padding-left: 10px;
   margin: 10px 0 0;
+}
+
+@media (max-width: 760px) {
+  .ribbon {
+    font-size: 11px;
+    padding: 3px 7px 11px;
+  }
+  .ribbons {
+    gap: 4px;
+  }
+}
+
+.ledger {
+  margin-top: auto;
+  border-top: 1px solid rgba(35, 28, 23, 0.25);
+  padding-top: 0.6em;
+}
+.ledger-big {
+  font-weight: 800;
+  font-size: 2.6em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.ledger-big small {
+  display: block;
+  font-size: 0.32em;
+  font-weight: 400;
+  font-style: italic;
+  color: var(--ink-3);
+  margin-top: 0.3em;
+}
+.ledger-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3em 1.1em;
+  margin-top: 0.6em;
+  color: var(--ink-2);
+  font-size: 0.92em;
+}
+.ledger-row b {
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  font-size: 1.15em;
+}
+
+.plate.ghost {
+  opacity: 0.55;
+  filter: grayscale(0.5);
+  border-style: dashed;
 }

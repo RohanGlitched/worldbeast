@@ -20,6 +20,7 @@ export interface TitanUniforms {
   uPx: THREE.IUniform<number>; // world units per device pixel (line weight stays crisp at any size)
   uReveal: THREE.IUniform<number>; // 0..3: lines engrave in (0-1), wash bleeds in (1-2), gold settles (2-3)
   uClipX: THREE.IUniform<number>; // nothing of the titan is drawn left of this x (the open book's left leaf)
+  uClipX2: THREE.IUniform<number>; // ...or right of this x (the outer edge of the page)
 }
 
 export function titanUniforms(): TitanUniforms {
@@ -37,6 +38,7 @@ export function titanUniforms(): TitanUniforms {
     uPx: { value: 0.03 },
     uReveal: { value: 3 },
     uClipX: { value: -1e4 },
+    uClipX2: { value: 1e4 },
   };
 }
 
@@ -73,7 +75,7 @@ export function engraveMaterial(u: TitanUniforms, o: EngraveOpts = {}) {
     `,
     fragmentShader: /* glsl */ `
       precision highp float;
-      uniform float uTime, uCrack, uFlash, uWrath, uPx, uReveal, uClipX;
+      uniform float uTime, uCrack, uFlash, uWrath, uPx, uReveal, uClipX, uClipX2;
       uniform vec3 uInk, uBody, uVellum, uGold, uAccent, uLight;
       varying vec3 vN; varying vec3 vObj; varying vec2 vUv; varying vec2 vL; varying vec3 vWorld;
       ${NOISE}
@@ -84,7 +86,7 @@ export function engraveMaterial(u: TitanUniforms, o: EngraveOpts = {}) {
         return 1. - smoothstep(width - w, width + w, f);
       }
       void main(){
-        if (vWorld.x < uClipX) discard;
+        if (vWorld.x < uClipX || vWorld.x > uClipX2) discard;
         vec3 n = normalize(vN);
         vec3 L = normalize(uLight);
         float key = max(dot(n, L), 0.);
@@ -166,10 +168,10 @@ export function outlineMaterial(u: TitanUniforms, width = 0.07) {
       }
     `,
     fragmentShader: /* glsl */ `
-      uniform vec3 uInk; uniform float uReveal, uClipX;
+      uniform vec3 uInk; uniform float uReveal, uClipX, uClipX2;
       varying float vY; varying float vX;
       void main(){
-        if (vX < uClipX) discard;
+        if (vX < uClipX || vX > uClipX2) discard;
         float frontY = mix(36., 17., clamp(uReveal, 0., 1.));
         if (vY < frontY) discard;
         gl_FragColor = vec4(uInk, 1.);

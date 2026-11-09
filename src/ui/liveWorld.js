@@ -100,7 +100,13 @@ export function createLiveWorld(game, audio, hooks = {}) {
       };
       world.events.onStage = () => w.emit();
       world.events.onFeed = (_items, all) => {
-        st.feed = all.slice(-30).map((f) => ({ id: f.n + ":" + f.k + ":" + (f.name || "") + ":" + feedId++, html: feedHtml(f, st.spec) }));
+        const seenJoin = new Set();
+        const deduped = all
+          .slice(-40)
+          .reverse()
+          .filter((f) => (f.k === "join" ? !seenJoin.has(f.name) && seenJoin.add(f.name) : true))
+          .reverse();
+        st.feed = deduped.slice(-30).map((f) => ({ id: f.n + ":" + f.k + ":" + (f.name || "") + ":" + feedId++, html: feedHtml(f, st.spec) }));
         w.emit();
       };
       world.events.onHunters = (roster) => {

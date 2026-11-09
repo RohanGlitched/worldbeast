@@ -35,7 +35,11 @@ export function createView(canvas: HTMLCanvasElement): View {
 }
 
 /** Fit the page (or the open spread) into the canvas. */
-export function resizeView(v: View, cssW: number, cssH: number, quality: number) {
+/**
+ * Fit the page (or the open spread) into the canvas. `focus` (0..1) leans in on the fight during a run:
+ * the view crops above the titan's shoulders so the arena is about a fifth larger.
+ */
+export function resizeView(v: View, cssW: number, cssH: number, quality: number, focus = 0) {
   const dpr = quality >= 1 ? Math.min(window.devicePixelRatio || 1, 2) : quality >= 0.75 ? Math.min(window.devicePixelRatio || 1, 1.25) : 0.8;
   v.dpr = dpr;
   v.renderer.setPixelRatio(dpr);
@@ -49,10 +53,12 @@ export function resizeView(v: View, cssW: number, cssH: number, quality: number)
   let halfH: number, halfW: number, cy: number;
   const margin = v.spread ? 1.04 : 1.0;
   const headroom = v.spread ? 1.6 : 0; // room above the page for crowns and halos
-  if (aspect >= contentW / (pageH + headroom)) {
-    halfH = ((pageH + headroom) * margin) / 2;
+  const top = PAGE.Y1 + headroom + (ARENA.TOP + 9.6 - (PAGE.Y1 + headroom)) * focus;
+  const visH = top - PAGE.Y0;
+  if (aspect >= contentW / visH) {
+    halfH = (visH * (margin - 0.03 * focus)) / 2;
     halfW = halfH * aspect;
-    cy = (PAGE.Y0 + PAGE.Y1 + headroom) / 2;
+    cy = (PAGE.Y0 + top) / 2 - 0.25 * focus;
   } else {
     halfW = (contentW * margin) / 2;
     halfH = halfW / aspect;

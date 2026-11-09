@@ -35,6 +35,8 @@ export interface HudState {
   phrase: number;
   time: number;
   coresOpen: number;
+  surges: number;
+  bestCombo: number;
 }
 
 export interface GameEvents {
@@ -122,6 +124,8 @@ export class Game {
   private cssH = 1;
   /** seconds since this titan was first drawn: drives the engraving-in sequence */
   private revealT = 0;
+  /** 0 = the whole open book, 1 = leaning in on the fight (wide screens, during a run) */
+  private focus = 0;
   private fallT = -1;
   private ro: ResizeObserver;
 
@@ -210,7 +214,7 @@ export class Game {
   }
 
   get revealing() {
-    return this.revealT < 4.9;
+    return this.revealT < 3.8;
   }
   skipReveal() {
     this.revealT = 6;
@@ -266,13 +270,14 @@ export class Game {
     const r = this.canvas.getBoundingClientRect();
     this.cssW = Math.max(1, r.width);
     this.cssH = Math.max(1, r.height);
-    resizeView(this.view, this.cssW, this.cssH, this.quality);
+    resizeView(this.view, this.cssW, this.cssH, this.quality, this.focus);
     this.events.onLayout?.(this.layout());
     // engraving lines: about one line every 4.5 device pixels, whatever the screen
     if (this.titan) {
       this.titan.u.uPx.value = this.view.unitsPerPx / this.view.dpr;
       // in the open book the titan may spill onto the desk, but never across the gutter onto the text
       this.titan.u.uClipX.value = this.view.spread ? -PAGE.W / 2 - 0.15 : -1e4;
+      this.titan.u.uClipX2.value = this.view.spread ? PAGE.W / 2 + 0.15 : 1e4;
     }
   };
 
@@ -304,7 +309,7 @@ export class Game {
       spread: v.spread,
       portrait: v.portrait,
       pxPerUnit: 1 / v.unitsPerPx,
-      left: v.leftLeaf ? rr(v.leftLeaf.x0, v.leftLeaf.y0, v.leftLeaf.x1, v.leftLeaf.y1) : null,
+      left: v.leftLeaf ? rr(v.leftLeaf.x0, Math.max(v.leftLeaf.y0, v.rect.y0), v.leftLeaf.x1, Math.min(v.leftLeaf.y1, v.rect.y1 - 0.4)) : null,
       right: rr(-PAGE.W / 2, PAGE.Y0, PAGE.W / 2, PAGE.Y1),
       arena: rr(-ARENA.W / 2, 0, ARENA.W / 2, ARENA.H),
     };
@@ -458,11 +463,20 @@ export class Game {
     this.hurtFlash = Math.max(0, this.hurtFlash - dt * 2.5);
     this.page.update(this.view.rect, t, stage, pulse, this.hurtFlash, this.view.leftLeaf);
     this.ink.update(frame, t);
+    this.ink.uniforms.uShow.value = Math.min(1, Math.max(0, (this.revealT - 2.4) / 1.4));
     const draws: HunterDraw[] = this.others ? this.others.list(t) : [];
     if (h && this.phase === "playing") draws.push({ x: h.x, y: h.y, kind: 0, hue: 0.12, inv: h.invuln > 0 ? Math.min(1, h.invuln) : 0, dash: h.dashing ? 1 : 0, surge: h.surging ? 1 : 0, seed: 0.3 });
     this.hunters.update(draws, t, h && this.phase === "playing" ? { x: h.x, y: h.y, alive: h.alive } : null);
     if (Math.random() < dt * 6) this.fx.add({ x: (Math.random() - 0.5) * ARENA.W * 1.1, y: Math.random() * ARENA.TOP, vx: (Math.random() - 0.5) * 0.4, vy: 0.3 + Math.random() * 0.4, type: P.Spore, col: 0, size: 0.06 + Math.random() * 0.06, max: 4, drag: 0 });
     this.fx.update(dt);
+
+    // --- lean in on the fight while a run is live (landscape only); ease back out in the lobby
+    const wantFocus = this.view.spread && this.phase === "playing" && !this.falling ? 1 : 0;
+    if (Math.abs(wantFocus - this.focus) > 0.001) {
+      this.focus += (wantFocus - this.focus) * Math.min(1, dt * 3.2);
+      if (Math.abs(wantFocus - this.focus) < 0.002) this.focus = wantFocus;
+      this.resize();
+    }
 
     // --- camera shake
     this.shake = Math.max(0, this.shake - dt * 2.2);
@@ -491,6 +505,8 @@ export class Game {
         phrase: Math.floor(beat / PHRASE_BEATS) % LOOP_PHRASES,
         time: h?.time ?? 0,
         coresOpen: coreOpenArr.filter(Boolean).length,
+        surges: h?.surges ?? 0,
+        bestCombo: h?.bestCombo ?? 0,
       });
     }
   }

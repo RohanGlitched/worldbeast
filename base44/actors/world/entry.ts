@@ -3,7 +3,7 @@ import { hash32 } from "./core/rng.ts";
 import { makeTitan, PHRASE_BEATS, Stage, stageFor, TitanSpec } from "./core/titan.ts";
 import {
   addDamage, breakThreshold, Bucket, checkHit, checkRun, clampPos, DmgBuckets, echoEviction, ESCAPE_MS, hashKey, hpMaxFor,
-  INTERLUDE_MS, LIMITS, loopKey, MAX_HITS_PER_MSG, prepareEcho, AspectRate, REVIVE_R, sanitizeAspect, sanitizeName,
+  INTERLUDE_MS, HP_FLOOR, LIMITS, loopKey, MAX_HITS_PER_MSG, prepareEcho, AspectRate, REVIVE_R, sanitizeAspect, sanitizeName,
   sanitizeSigil, segDist, SPARK_MS, titanSeed, titanT, topHunters, validKey,
 } from "./logic.ts";
 import type { FeedItem, HitWhy, HunterRow, RosterRow, RunMsg, SparkRow, TitanEnd, TitanInfo, ToClient, ToServer } from "./shared/types.ts";
@@ -125,6 +125,15 @@ export default class World extends Actor<ToServer, ToClient> {
       this.titan = titan;
       const hp = await st.get<number>("hp");
       if (typeof hp === "number") this.titan.hp = hp;
+      // one-time: titans woken under the old 150k floor take the new size, keeping every wound already dealt
+      if (this.titan.status === "awake" && this.titan.hpMax === 150_000 && HP_FLOOR < 150_000) {
+        const dealt = this.titan.hpMax - this.titan.hp;
+        const hpMax = Math.max(HP_FLOOR, Math.round((dealt + 12_000) / 1000) * 1000);
+        this.titan.hpMax = hpMax;
+        this.titan.hp = Math.max(1, hpMax - dealt);
+        await st.put("titan", this.titan);
+        await st.put("hp", this.titan.hp);
+      }
       this.spec = makeTitan(titan.seed, titan.number);
       if (this.last) this.lastSpec = makeTitan(this.last.seed, this.last.number);
       this.announcedWake = now >= titan.wokeAt ? titan.number : 0;

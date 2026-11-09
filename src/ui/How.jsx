@@ -98,9 +98,9 @@ export default function How() {
               <rect x="20" y="240" width="100" height="44" />
               <text x="70" y="266">your browser</text>
               <rect x="160" y="240" width="100" height="44" />
-              <text x="210" y="266">a hunter in Lima</text>
+              <text x="210" y="266">a hunter, Lima</text>
               <rect x="300" y="240" width="100" height="44" />
-              <text x="350" y="266">one in Osaka</text>
+              <text x="350" y="266">one, Osaka</text>
             </g>
           </svg>
           <figcaption>Only the clock, the wounds and the hunters' positions travel over the network. The attacks are computed, not sent.</figcaption>

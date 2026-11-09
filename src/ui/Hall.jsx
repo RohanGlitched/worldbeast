@@ -79,6 +79,26 @@ function Plate({ t, live }) {
   );
 }
 
+function GhostPlate({ seed, label }) {
+  const [img, setImg] = useState(null);
+  useEffect(() => {
+    const id = setTimeout(() => setImg(portrait(seed, 1)), 120);
+    return () => clearTimeout(id);
+  }, [seed]);
+  return (
+    <article className="plate ghost" aria-label={`A plate yet to be filled: a ${label} may wake one day`}>
+      <div className="plate-art">{img ? <img src={img} alt="" /> : <div className="plate-ph" />}</div>
+      <div className="plate-text">
+        <div className="folio">
+          <span>A plate yet to be filled</span>
+          <span>{ARCHETYPE_INFO[label].label}</span>
+        </div>
+        <p className="lore">{ARCHETYPE_INFO[label].blurb} One may wake when the titan now awake is felled.</p>
+      </div>
+    </article>
+  );
+}
+
 export default function Hall() {
   const [titans, setTitans] = useState(null);
   const [hunters, setHunters] = useState([]);
@@ -110,6 +130,9 @@ export default function Hall() {
         {rest.map((t) => (
           <Plate key={t.number} t={t} />
         ))}
+        {titans !== null &&
+          rest.length < 3 &&
+          [[1, "throne"], [2, "coil"], [7, "strider"], [10, "bloom"]].slice(0, 3 - rest.length).map(([seed, label]) => <GhostPlate key={label} seed={seed} label={label} />)}
         {titans !== null && rest.length < 2 && (
           <article className="plate empty">
             <div className="plate-text">

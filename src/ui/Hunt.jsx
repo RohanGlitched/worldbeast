@@ -195,7 +195,7 @@ export default function Hunt() {
 
   const begin = useCallback(() => {
     const g = gameRef.current;
-    if (g.falling || (world && world.interlude > 0)) return;
+    if (g.falling || g.revealing || (world && world.interlude > 0)) return;
     audioRef.current?.unlock().catch(() => {});
     // the previous run's report goes now if its spark was still waiting
     flushRun();
@@ -369,22 +369,36 @@ export default function Hunt() {
           </li>
         </ul>
       )}
-      <button className="join" onClick={begin} disabled={!!world?.interlude}>
-        {world?.interlude ? `The next titan stirs… ${world.interlude}` : "Join the hunt"}
+      <button className="join" onClick={begin} disabled={!!world?.interlude || !!gameRef.current?.revealing}>
+        {world?.interlude ? `The next titan stirs… ${world.interlude}` : gameRef.current?.revealing ? "The titan is being engraved…" : "Join the hunt"}
         <small>{world?.mode === "offline" ? "The world is out of reach: you hunt this titan alone for now" : world?.online > 1 ? `${world.online - 1} ${world.online - 1 === 1 ? "other is" : "others are"} watching or fighting it now` : "Your echo will fly with the hunters after you"}</small>
       </button>
     </section>
   );
 
+  // during a hunt the lower half of the leaf becomes your ledger
   const runStats = hud && phase === "playing" && (
-    <dl className="facts">
-      <dt>Your blows</dt>
-      <dd>{fmt(hud.damage)}</dd>
-      <dt>Grazes</dt>
-      <dd>{hud.grazes}</dd>
-      <dt>Light</dt>
-      <dd>{ASPECTS[profile.aspect].name}</dd>
-    </dl>
+    <section className="ledger" aria-label="Your hunt">
+      <div className="rubric">Your hunt, in {ASPECTS[profile.aspect].name}</div>
+      <div className="ledger-big">
+        {fmt(hud.damage)}
+        <small>blows struck{world && world.hpMax > 1 ? ` · ${((hud.damage / world.hpMax) * 100).toFixed(2)}% of its life` : ""}</small>
+      </div>
+      <div className="ledger-row">
+        <span>
+          <b>{hud.time.toFixed(0)}</b> s alight
+        </span>
+        <span>
+          <b>{hud.grazes}</b> grazes
+        </span>
+        <span>
+          <b>{hud.bestCombo}</b> best chain
+        </span>
+        <span>
+          <b>{hud.surges}</b> surges
+        </span>
+      </div>
+    </section>
   );
 
   const L = layout;
@@ -462,7 +476,7 @@ export default function Hunt() {
             </div>
           </div>
           {L && !L.spread && (
-            <button className="dashbtn" style={{ right: u * 0.5, bottom: u * 1.6 }} onPointerDown={(e) => (e.preventDefault(), gameRef.current.input.queueDash())}>
+            <button className="dashbtn" style={{ right: u * 0.5, bottom: 70 + u * 1.5 }} onPointerDown={(e) => (e.preventDefault(), gameRef.current.input.queueDash())}>
               dash
             </button>
           )}

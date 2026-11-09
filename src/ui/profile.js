@@ -11,9 +11,13 @@ function randomKey() {
 }
 
 export function suggestName() {
-  const a = NAMES_A[Math.floor(Math.random() * NAMES_A.length)];
-  const b = NAMES_B[Math.floor(Math.random() * NAMES_B.length)];
-  return (a + " " + b).slice(0, 18);
+  for (let i = 0; i < 40; i++) {
+    const a = NAMES_A[Math.floor(Math.random() * NAMES_A.length)];
+    const b = NAMES_B[Math.floor(Math.random() * NAMES_B.length)];
+    const n = a + " " + b;
+    if (n.length <= 18) return n;
+  }
+  return "Hale the Wary";
 }
 
 export function loadProfile() {

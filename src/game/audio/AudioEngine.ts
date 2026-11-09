@@ -92,7 +92,6 @@ interface Drone {
   bourdonOut: GainNode;
   buzz: GainNode; // chuffed per eighth
   buzzOut: GainNode;
-  vib: GainNode; // reed vibrato depth (cents), fed by an LFO
   oscs: OscillatorNode[];
   nodes: AudioNode[];
 }
@@ -636,16 +635,13 @@ export class AudioEngine {
     }
 
     // --- choir: four voices of paired detuned saws through a vowel's formants
+    // (static detune only: modulating detune forces a per-sample exp2 in the oscillator)
     const choirSum = G(1);
-    const lfo = O("sine", 0.21);
-    const lfoDepth = G(7); // cents of slow pitch drift
-    lfo.connect(lfoDepth);
     const choirVoices: Drone["choirVoices"] = [];
     for (let i = 0; i < 4; i++) {
       const f = mtof(degToMidi(song, [0, 2, 4, 7][i], 1));
       const a = O("sawtooth", f, -9 + i);
       const b = O("sawtooth", f, 8 - i);
-      lfoDepth.connect(a.detune);
       const gv = G(0);
       a.connect(gv);
       b.connect(gv);
@@ -701,12 +697,7 @@ export class AudioEngine {
 
     bourdonOut.connect(bourdonFade).connect(g.ch.bourdon);
 
-    // reed vibrato source
-    const vibLfo = O("sine", 5.1);
-    const vib = G(13);
-    vibLfo.connect(vib);
-
-    this.drone = { fades: [choirFade, bourdonFade], choirVoices, choirOut, choirLP, bourdonOut, buzz, buzzOut, vib, oscs, nodes };
+    this.drone = { fades: [choirFade, bourdonFade], choirVoices, choirOut, choirLP, bourdonOut, buzz, buzzOut, oscs, nodes };
     this.applyStage(now, true);
   }
 
@@ -1062,7 +1053,7 @@ export class AudioEngine {
         sy.pluck(ch.mel, when, midi, vel, { decay: 1.6 + dur, pan });
         break;
       case "reed":
-        sy.reed(ch.mel, when, midi, Math.max(0.08, dur * 0.92), vel, this.drone?.vib, { pan });
+        sy.reed(ch.mel, when, midi, Math.max(0.08, dur * 0.92), vel, { pan });
         break;
       case "glass":
         sy.glass(ch.mel, when, midi, Math.max(0.1, dur), vel, { pan });

@@ -146,7 +146,7 @@ export class Synth {
     v.end = t + 0.08;
   }
 
-  private commit(group: Group, when: number, end: number, env: GainNode, prio: number, after?: () => void) {
+  private commit(group: Group, when: number, end: number, env: GainNode, prio: number) {
     const nodes = this.cur.nodes;
     const srcs = this.cur.srcs;
     this.groups.get(group)!.push({ start: when, end, env, srcs, nodes, prio });
@@ -154,7 +154,6 @@ export class Synth {
     let pending = srcs.length;
     const done = () => {
       if (--pending > 0) return;
-      after?.();
       for (const n of nodes) n.disconnect();
       this.stats.live -= nodes.length;
     };
@@ -486,25 +485,16 @@ export class Synth {
 
   // ---------------------------------------------------------------------------- sustained / swept voices (live)
 
-  /** Shawm / hurdy-gurdy chanter: a nasal reed; vibrato from a shared LFO. */
-  reed(dest: AudioNode, when: number, midi: number, dur: number, vel: number, vib?: AudioNode, o: Pan & { group?: Group } = {}) {
+  /** Shawm / hurdy-gurdy chanter: a straight-toned nasal reed with a breathy onset. */
+  reed(dest: AudioNode, when: number, midi: number, dur: number, vel: number, o: Pan & { group?: Group } = {}) {
     const group = o.group ?? "mel";
     if (!this.admit(group, when, 0)) return;
     const env = this.gain();
-    const a = this.osc(this.waves.reed, mtof(midi), when, 2);
-    if (vib) vib.connect(a.detune);
-    a.connect(env);
+    this.osc(this.waves.reed, mtof(midi), when, 2).connect(env);
     const rel = 0.14;
     this.ahr(env.gain, when, vel * 0.13, 0.035, Math.max(0.02, dur - 0.035), rel);
     env.connect(this.out(dest, o));
-    this.commit(group, when, when + dur + rel, env, 0, () => {
-      if (vib)
-        try {
-          vib.disconnect(a.detune);
-        } catch {
-          /* gone */
-        }
-    });
+    this.commit(group, when, when + dur + rel, env, 0);
   }
 
   /** Positive organ: steady flue pipes. */

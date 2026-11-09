@@ -97,7 +97,7 @@ export class PageLayer {
     this.bakeMesh = new THREE.Mesh(geo, this.mat);
     this.bakeMesh.frustumCulled = false;
     this.bakeScene.add(this.bakeMesh);
-    this.rt = new THREE.WebGLRenderTarget(4, 4, { depthBuffer: false });
+    this.rt = new THREE.WebGLRenderTarget(4, 4, { depthBuffer: false, type: THREE.HalfFloatType });
     this.live = new THREE.ShaderMaterial({
       uniforms: {
         uTex: { value: this.rt.texture },
@@ -127,6 +127,7 @@ export class PageLayer {
           float edge = min(min(vW.x - uArena.x, uArena.z - vW.x), min(vW.y - uArena.y, uArena.w - vW.y));
           col = mix(col, uAccent, uHurt * (1. - smoothstep(.0, 7., edge)) * .5 * step(-.5, edge));
           gl_FragColor = vec4(col, 1.);
+          #include <colorspace_fragment>
         }
       `,
       depthWrite: false,

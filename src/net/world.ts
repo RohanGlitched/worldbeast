@@ -263,6 +263,26 @@ export class World {
     const good = this.pings.filter((p) => p.rtt <= minRtt * 1.5 + 10); // queueing delay makes the rest lopsided
     this.clockOffset = median(good.map((p) => p.off));
     this.rtt = median(this.pings.map((p) => p.rtt));
+    this.hadClock = true;
+    // Some sockets get a return path ~180 ms slower than the way in, which skews the clock by
+    // half of that. Before the hunter starts playing, try up to two fresh sockets for a better route.
+    const playing = performance.now() - (this.pos?.at ?? -1e9) < 2000;
+    if (this.pings.length >= 6 && this.rtt > SLOW_RTT_MS && this.probes < MAX_PROBES && !playing && this.mode === "online") {
+      this.probes++;
+      this.reroute();
+    }
+  }
+
+  /** the clock has had its pings (and any route probing is done) */
+  get clockSettled(): boolean {
+    return this.mode !== "online" || (this.pings.length >= 6 && (this.rtt <= SLOW_RTT_MS || this.probes >= MAX_PROBES));
+  }
+
+  private reroute() {
+    this.conn?.close();
+    this.conn = null;
+    this.connId = "wb-" + randomHex(8);
+    this.open();
   }
 
   // ------------------------------------------------------------ state

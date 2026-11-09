@@ -160,7 +160,7 @@ export function presence({ online = 1, hunters = [], watching = 0, echoes = 0 })
   const othersWatching = Math.max(0, W - (meIn ? 0 : 1));
   const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
   const header = [H ? `${plural(H, "hunter", "hunters")} in the hunt` : "No one is hunting this minute", W ? `${W} watching` : null, echoes ? plural(echoes, "echo", "echoes") : null].filter(Boolean).join(" · ");
-  const join = others > 0 ? `${plural(others, "other hunter is", "other hunters are")} in the hunt now${othersWatching ? ` · ${othersWatching} watching` : ""}` : "You are the first hunter here right now — your echo will fly for the next";
+  const join = others > 0 ? `${plural(others, "other hunter is", "other hunters are")} in the hunt now${othersWatching ? ` · ${othersWatching} watching` : ""}` : "You are the first hunter here right now — your echo will fly for the next hunter to arrive";
   const cover = H > 0 ? `${H} hunting right now${othersWatching ? ` · ${othersWatching} reading the codex` : ""}` : othersWatching > 0 ? `${plural(othersWatching, "other", "others")} reading the codex · no one hunting this minute` : "A living bestiary";
   const topbar = H > 0 ? `${H} hunting` : Math.max(1, online) > 1 ? `${W} watching` : "only you here";
   return { header, join, cover, topbar, others, othersWatching, alone: others === 0 };

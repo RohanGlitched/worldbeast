@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 import { coreOpen, PHRASE_BEATS, LOOP_PHRASES } from "@/core/titan";
 
 // The titan's song written as plainchant: a four-line red staff, square neumes for each attack
@@ -8,14 +8,25 @@ const PITCH = { ring: 5, spiral: 6, fan: 3, wall: 1, rain: 7, wave: 4, curve: 4,
 const AHEAD = 18;
 const BEHIND = 4;
 
-export default function Canticle({ game, height = 110 }) {
+// (memo: the codex re-renders around it; the staff redraws itself, at most 30 times a second, only while seen)
+function Canticle({ game, height = 110 }) {
   const ref = useRef(null);
   useEffect(() => {
     let raf = 0;
+    let lastAt = 0;
+    let seen = true;
     const cv = ref.current;
     const ctx = cv.getContext("2d");
-    const draw = () => {
+    // nothing to draw while the staff is off screen (under the cover, a folded leaf) or the tab is hidden
+    let io = null;
+    try {
+      io = new IntersectionObserver((e) => (seen = e[e.length - 1].isIntersecting));
+      io.observe(cv);
+    } catch {}
+    const draw = (now) => {
       raf = requestAnimationFrame(draw);
+      if (!seen || document.hidden || now - lastAt < 31) return;
+      lastAt = now;
       const g = game;
       if (!g?.spec || !g.field) return;
       const dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -118,8 +129,13 @@ export default function Canticle({ game, height = 110 }) {
       ctx.lineTo(x0, staffY(0) - gap * 0.5 + 7);
       ctx.fill();
     };
-    draw();
-    return () => cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(draw);
+    return () => {
+      cancelAnimationFrame(raf);
+      io?.disconnect();
+    };
   }, [game]);
   return <canvas ref={ref} style={{ width: "100%", height, display: "block" }} aria-label="The titan's song: upcoming attacks as notes on a staff; gold bars mark when its wounds are open." />;
 }
+
+export default memo(Canticle);

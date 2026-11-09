@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Game } from "@/game/Game";
 import { ARCHETYPE_INFO, STAGE_NAMES, stageFor } from "@/core/titan";
 import { ASPECTS } from "@/core/hunt";
@@ -44,6 +44,101 @@ const KILLERS = {
 };
 const killerOf = (k) => KILLERS[k] ?? ["the titan's ink", "Every attack is warned a beat early: watch the marks on its body and the guides on the page."];
 
+/** "12.3" of the titan's life struck: rounded down, so never "100.0" while a wound remains, never "0.0" after a blow */
+function struckText(hpFrac) {
+  const p = (1 - hpFrac) * 100;
+  if (hpFrac <= 0) return "100";
+  if (p <= 0) return "0.0";
+  if (p < 0.1) return "<0.1";
+  return (Math.floor(p * 10) / 10).toFixed(1);
+}
+
+// The run's numbers change ten times a second. They live in a small store that only the few leaves showing
+// them subscribe to, so the codex around them is not re-rendered at 10 Hz (that cost a phone ~10 ms a frame).
+function createHudStore() {
+  let h = null;
+  const subs = new Set();
+  return {
+    get: () => h,
+    set(v) {
+      h = v;
+      for (const f of subs) f();
+    },
+    sub(f) {
+      subs.add(f);
+      return () => subs.delete(f);
+    },
+  };
+}
+const useHud = (store) => useSyncExternalStore(store.sub, store.get);
+
+const Phrase = memo(function Phrase({ store, prefix = "" }) {
+  const h = useHud(store);
+  return (
+    <span style={{ color: "var(--ink-3)", fontStyle: "italic" }}>
+      {prefix}
+      {(h?.phrase ?? 0) + 1} of 8
+    </span>
+  );
+});
+
+const Ledger = memo(function Ledger({ store, aspectName, hpMax }) {
+  const h = useHud(store);
+  if (!h) return null;
+  return (
+    <section className="ledger" aria-label="Your hunt">
+      <div className="rubric">Your hunt, in {aspectName}</div>
+      <div className="ledger-big">
+        {fmt(h.damage)}
+        <small>blows struck{hpMax > 1 ? ` · ${((h.damage / hpMax) * 100).toFixed(2)}% of its life` : ""}</small>
+      </div>
+      <div className="ledger-row">
+        <span>
+          <b>{h.time.toFixed(0)}</b> s alight
+        </span>
+        <span>
+          <b>{h.grazes}</b> grazes
+        </span>
+        <span>
+          <b>{h.bestCombo}</b> best chain
+        </span>
+        <span>
+          <b>{h.surges}</b> surges
+        </span>
+      </div>
+    </section>
+  );
+});
+
+// your lights and Resonance: kept outside the arena, where nothing is ever thrown
+const Gauges = memo(function Gauges({ store }) {
+  const h = useHud(store);
+  if (!h) return null;
+  return (
+    <div className="gauges">
+      <div className="lives" aria-label={`${h.maxHits - h.hits} of ${h.maxHits} lights left`}>
+        {Array.from({ length: h.maxHits }, (_, i) => (
+          <span key={i} className={"life" + (i < h.maxHits - h.hits ? "" : " lost")} />
+        ))}
+      </div>
+      <span className={"reso" + (h.resonance >= 99 || h.surging ? " full" : "")} aria-label="Resonance">
+        <i style={{ width: (h.surging ? 100 : h.resonance) + "%" }} />
+        <em>{h.surging ? "Surge!" : h.combo > 1 ? `×${h.combo}` : "Resonance"}</em>
+      </span>
+    </div>
+  );
+});
+
+const Blows = memo(function Blows({ store }) {
+  const h = useHud(store);
+  return (
+    <div className="dmg">
+      {fmt(h?.damage ?? 0)}
+      <small> blows</small>
+    </div>
+  );
+});
+
 const ASPECT_ICON = {
   ember: "M12 2c1 4 6 6.2 6 11.6A6 6 0 0 1 6 13.6c0-2.6 1.4-4.2 2.6-5.2.2 2 1 3.4 2.4 3.8C10 8.6 10.6 5 12 2z",
   lance: "M12 1.5l2 4.5-1.2 1V21h-1.6V7L10 6zM8.5 16h7",
@@ -60,8 +155,13 @@ export default function Hunt() {
   const worldRef = useRef(null);
   const [profile, setProfile] = useState(loadProfile);
   const [layout, setLayout] = useState(null);
-  const [hud, setHud] = useState(null);
+  const layoutRef = useRef(null);
+  layoutRef.current = layout;
+  const [hudStore] = useState(createHudStore);
   const [phase, setPhase] = useState("lobby");
+  // Join pressed while the next titan still sleeps (or is still being engraved): the run starts as it wakes
+  const [queued, setQueued] = useState(false);
+  const lastRun = useRef(null);
   const [summary, setSummary] = useState(null);
   const [world, setWorld] = useState(null);
   const pushFloat = useRef(() => {});
@@ -104,7 +204,11 @@ export default function Hunt() {
   useEffect(() => {
     const g = new Game(canvasRef.current);
     gameRef.current = g;
-    window.__game = g;
+    const q = new URLSearchParams(location.search);
+    // the console handle (autopilot, probes) exists only in dev builds or with ?debug=1, never by default on
+    // the live world: one line there would run a bot against everyone's titan
+    const debug = !!import.meta.env?.DEV || q.get("debug") === "1";
+    if (debug) window.__game = g;
     let audio = null;
     try {
       audio = new AudioEngine({ lite: (navigator.hardwareConcurrency || 8) <= 4 });
@@ -112,16 +216,18 @@ export default function Hunt() {
       audio = null;
     }
     audioRef.current = audio;
-    window.__audio = audio;
+    if (debug) window.__audio = audio;
     // (the song is composed in its own task, not inside the titan's first frame: a quarter-second less freeze)
     g.events.onTitan = (spec, field) => setTimeout(() => audio?.setTitan(spec, field), 0);
     g.events.onFrame = (t, stage, hp, playing, danger) => audio?.update(t, stage, hp, { playing, nearDanger: danger });
     g.events.onSfx = (n, x, str) => audio?.sfx(n, x, str);
     // a dev/test titan can be pinned with ?seed=, ?rehearse opens a rehearsal against a near-dead titan of
     // your own, a ghost link replays its run; otherwise the live Base44 world decides
-    const q = new URLSearchParams(location.search);
     const hooks = {
       onFelled: (end) => {
+        // on this page the caption counts the same blows as the run's summary (not the ones the wounds absorbed)
+        const run = lastRun.current;
+        if (end?.local && end.top?.[0] && run?.felled) end = { ...end, top: [{ ...end.top[0], damage: Math.round(run.damage) }, ...end.top.slice(1)] };
         setFelled(end);
         setTimeout(() => setFelled(null), 9000);
       },
@@ -142,7 +248,20 @@ export default function Hunt() {
       ? createLocalWorld(g, { audio }, hooks)
       : createLiveWorld(g, audio, hooks);
     worldRef.current = w;
-    w.onChange = (s) => setWorld({ ...s });
+    // a rehearsal's felled titan stays on the page until you hunt again (Game.holdFelled)
+    g.holdFelled = q.has("rehearse");
+    // the world's state reaches the codex at most five times a second (a busy live world emits far more)
+    let worldTimer = 0,
+      worldAt = 0;
+    w.onChange = (s) => {
+      if (worldTimer) return;
+      const wait = Math.max(0, 200 - (performance.now() - worldAt));
+      worldTimer = setTimeout(() => {
+        worldTimer = 0;
+        worldAt = performance.now();
+        setWorld({ ...s });
+      }, wait);
+    };
     g.events.onLayout = setLayout;
     g.events.onCamera = (m) => {
       const el = layerRef.current;
@@ -152,11 +271,13 @@ export default function Hunt() {
       el.classList.toggle("unfolding", m.dir < 0);
     };
     g.events.onHud = (h) => {
-      setHud(h);
+      hudStore.set(h);
       setPhase(h.phase);
+      if (h.phase === "playing") tipsFor.current(h);
     };
     g.events.onHits = (dmg, core, beat, surge) => w.addHit(core, dmg, beat, surge);
     g.events.onDown = (s) => {
+      lastRun.current = s;
       const h = g.hunt;
       if (!s.felled && h && w.down) w.down(h.x, h.y);
       // a passing hunter may still rekindle this light: report the run once the spark has gone out
@@ -202,6 +323,7 @@ export default function Hunt() {
     return () => {
       document.removeEventListener("visibilitychange", onHide);
       clearTimeout(runTimer.current);
+      clearTimeout(worldTimer);
       w.stop();
       g.stop();
       audio?.dispose();
@@ -216,20 +338,43 @@ export default function Hunt() {
     el.classList.remove("folding", "unfolding");
   }, [layout]);
 
-  const begin = useCallback(() => {
+  const begin = useCallback(
+    (fromQueue = false) => {
+      const g = gameRef.current;
+      if (!g || g.phase === "playing") return;
+      // a rehearsal's felled titan leaves the page now, and the next one is engraved in
+      g.releaseFelled();
+      audioRef.current?.unlock().catch(() => {});
+      // the next titan still sleeps, or is still being engraved: join it the moment it can be hunted
+      // (pressing again while waiting stands down)
+      if (g.falling || !g.ready || worldRef.current?.state?.interlude > 0) {
+        setSummary(null);
+        setQueued((v) => (fromQueue ? v : !v));
+        return;
+      }
+      setQueued(false);
+      // the previous run's report goes now if its spark was still waiting
+      flushRun();
+      worldRef.current?.identify?.(profile);
+      runMark.current = worldRef.current?.runMark?.() ?? null;
+      setSummary(null);
+      // a first hunt starts half-charged, so the first Surge comes early
+      g.start(profile.aspect, { resonance: (profile.runs || 0) === 0 ? 55 : 0, gentle: (profile.runs || 0) < 2 });
+      canvasRef.current?.focus();
+    },
+    [profile],
+  );
+  // a queued run starts as soon as the titan can be hunted
+  useEffect(() => {
+    if (!queued) return;
     const g = gameRef.current;
-    // (joining while the titan is still being engraved finishes the engraving at once)
-    if (g.falling || !g.ready || (world && world.interlude > 0)) return;
-    audioRef.current?.unlock().catch(() => {});
-    // the previous run's report goes now if its spark was still waiting
-    flushRun();
-    worldRef.current?.identify?.(profile);
-    runMark.current = worldRef.current?.runMark?.() ?? null;
-    setSummary(null);
-    // a first hunt starts half-charged, so the first Surge comes early
-    g.start(profile.aspect, { resonance: (profile.runs || 0) === 0 ? 55 : 0, gentle: (profile.runs || 0) < 2 });
-    canvasRef.current?.focus();
-  }, [profile, world]);
+    if (phase === "playing") return setQueued(false);
+    if (g && !g.falling && g.ready && !(world?.interlude > 0)) begin(true);
+  }, [queued, world, phase, begin]);
+  // the summary put away (Rest, Hunt again): a felled rehearsal titan kept on the page goes with it
+  useEffect(() => {
+    if (!summary) gameRef.current?.releaseFelled();
+  }, [summary]);
 
   // keyboard: Enter starts / restarts
   useEffect(() => {
@@ -257,16 +402,20 @@ export default function Hunt() {
       return n;
     });
   }, []);
-  useEffect(() => {
-    if (!hud || phase !== "playing") return;
-    const touch = layout && !layout.spread;
+  // (called from the game's 10 Hz HUD tick, not from a render)
+  const tipsFor = useRef(() => {});
+  tipsFor.current = (hud) => {
+    const L = layoutRef.current;
+    // never while the leaf is still folding (the note would hang over the desk): only once the run's layout is in
+    if (!L || (L.spread && !L.focus)) return;
+    const touch = !L.spread;
     if (hud.time < 6) showTip("move", touch ? "Drag anywhere to fly. Only the bright pip at your star's heart can be struck." : "Fly with <b>WASD</b> or the arrows. Only the bright pip at your star's heart can be struck.");
     else if (hud.coresOpen > 0) showTip("wound", "A <b>gold wound</b> is open. Your light strikes open wounds by itself; fly nearer the titan to strike harder.");
     if (gameRef.current?.hunt?.houndWarned) showTip("hound", "<b>Hounds</b>: dark drops thrown at where you stand. Their dotted line shows the aim: keep moving.");
     if (hud.grazes >= 3) showTip("graze", "<b>Grazing</b> an attack fills Resonance. Fill it and your light Surges.");
     if (hud.time > 14) showTip("dash", touch ? "Tap <b>dash</b> or double-tap to pass clean through an attack." : "<b>Space</b> dashes you clean through an attack.");
     if (hud.time > 24) showTip("song", "Every attack lands on the beat. Read what comes next in <b>the Canticle</b>.");
-  }, [hud, phase, layout, showTip]);
+  };
 
   const update = (patch) =>
     setProfile((p) => {
@@ -275,21 +424,33 @@ export default function Hunt() {
       return n;
     });
 
-  const spec = world?.spec;
-  const hpFrac = world ? Math.max(0, world.hp / world.hpMax) : 1;
-  const stage = gameRef.current?.stage ?? stageFor(hpFrac);
-  const u = layout ? layout.pxPerUnit : 26;
-  const styleU = { "--u": u + "px" };
-
+  const g0 = gameRef.current;
   // what kind of world this page shows, so nothing reads as live that isn't
   const rehearsal = !!world?.rehearsal;
   const recorded = world?.replay ?? null;
   const pinned = !!world?.pinned;
   const live = !!world && !world.local;
+  const offline = world?.mode === "offline";
   const who = world ? presence(world) : null;
+  // a rehearsal's felled titan stays on the leaf (and the page) beside its summary until you hunt again
+  const heldSpec = rehearsal && summary?.felled && summary.titanSpec ? summary.titanSpec : null;
+  const spec = heldSpec ?? world?.spec;
+  const hpFrac = heldSpec ? 0 : world ? Math.max(0, world.hp / world.hpMax) : 1;
+  const stage = g0?.stage ?? stageFor(hpFrac);
+  const u = layout ? layout.pxPerUnit : 26;
+  const styleU = { "--u": u + "px" };
   const struckPct = (1 - hpFrac) * 100;
-  // never "100.0% struck" while wounds remain, never "0.0%" once a blow has landed
-  const struckTxt = hpFrac > 0 && struckPct > 99.9 ? ">99.9" : struckPct > 0 && struckPct < 0.1 ? "<0.1" : struckPct.toFixed(1);
+  const struckTxt = struckText(hpFrac);
+  const interlude = world?.interlude ?? 0;
+  const runs = profile.runs || 0;
+  // alone in the live world (or out of its reach): offer the 30-second rehearsal, where a judge can see a fall
+  const offerRehearse = !recorded && !rehearsal && !pinned && ((live && world.hunters.length === 0) || offline);
+  const presenceLine = rehearsal ? "Only you · a rehearsal" : pinned ? "Only you · a titan pinned to this page" : offline ? "Out of reach of the world · only you" : who?.header;
+
+  const today = dayIndex();
+  const omen = omenFor(today);
+  const omenDone = profile.omenDay === today;
+  const streak = liveStreak(profile, today);
 
   const leafBody = spec && (
     <>
@@ -310,6 +471,8 @@ export default function Hunt() {
           <>
             It sings at {spec.bpm} beats a minute in {NOTE[spec.root % 12]} {spec.mode}. What you see is a recorded run against it, recomputed from its seed: not the live world.
           </>
+        ) : heldSpec ? (
+          <>Felled by your blows, in a rehearsal: nothing here is written in the Hall. The next titan stirs behind it.</>
         ) : rehearsal ? (
           <>
             This one is yours alone, woken near death so you can see a titan fall: only your blows wound it and nothing here is written in the Hall. <a href="/">The live titan</a> is fought by everyone online.
@@ -341,7 +504,7 @@ export default function Hunt() {
           </div>
           <div className="caption">
             <span>
-              {world.interlude ? `Wakes in ${world.interlude} s · ${fmt(world.hpMax)} to strike` : `${struckTxt}% struck · ${fmt(world.hp)} of ${fmt(world.hpMax)} left`}
+              {heldSpec ? `Felled · the next titan wakes in ${interlude || "a moment"}${interlude ? " s" : ""}` : interlude ? `Wakes in ${interlude} s · ${fmt(world.hpMax)} to strike` : `${struckTxt}% struck · ${fmt(world.hp)} of ${fmt(world.hpMax)} left`}
             </span>
             <span className={"stage-name stage-" + stage}>{STAGE_NAMES[stage]}</span>
           </div>
@@ -350,21 +513,21 @@ export default function Hunt() {
       <section aria-label="The Canticle">
         <div className="rubric" style={{ display: "flex", justifyContent: "space-between" }}>
           <span>The Canticle</span>
-          <span style={{ color: "var(--ink-3)", fontStyle: "italic" }}>
-            phrase {(hud?.phrase ?? 0) + 1} of 8
-          </span>
+          <Phrase store={hudStore} prefix="phrase " />
         </div>
-        <Canticle game={gameRef.current} height={u * 3.1} />
+        <Canticle game={g0} height={u * 2.8} />
       </section>
-      <section hidden={!!recorded}>
+      <section hidden={!!recorded} className="presence">
         <div className="rubric">
-          {rehearsal
-            ? "Only you · a rehearsal"
-            : pinned
-            ? "Only you · a titan pinned to this page"
-            : world.mode === "offline"
-            ? "Out of reach of the world · only you"
-            : who.header}
+          {presenceLine}
+          {offerRehearse && (
+            <>
+              {" "}
+              <a className="wb-rehearse-offer" href="/?rehearse=1">
+                See a titan fall (30 s rehearsal)
+              </a>
+            </>
+          )}
         </div>
         {live && world.hunters.length > 0 && (
           <div className="hunters">
@@ -377,7 +540,7 @@ export default function Hunt() {
           </div>
         )}
       </section>
-      <section style={{ minHeight: 0, flex: 1, display: "flex", flexDirection: "column" }}>
+      <section className="leaf-chronicle" aria-label="The chronicle">
         <div className="rubric">The chronicle</div>
         <ul className="chronicle">
           {world.feed.slice(-7).reverse().map((f) => (
@@ -392,10 +555,6 @@ export default function Hunt() {
     </>
   );
 
-  const today = dayIndex();
-  const omen = omenFor(today);
-  const omenDone = profile.omenDay === today;
-  const streak = liveStreak(profile, today);
   const omenBox = (
     <div className={"omen" + (omenDone ? " done" : "")} aria-label="Today's omen">
       <div className="omen-head">
@@ -422,162 +581,166 @@ export default function Hunt() {
     </div>
   );
 
+  const ready = !!g0?.ready;
+  const joinLabel = queued
+    ? interlude
+      ? `You join as it wakes… ${interlude}`
+      : "You join in a moment…"
+    : interlude
+    ? `The next titan stirs… ${interlude}`
+    : !ready
+    ? "The titan is being engraved…"
+    : "Join the hunt";
+  const joinSub = queued
+    ? "Press again to wait instead"
+    : interlude || !ready
+    ? "Press to join the moment it can be hunted"
+    : offline
+    ? "The world is out of reach: you hunt this titan alone for now"
+    : rehearsal
+    ? "A rehearsal against a titan of your own: nothing here is written in the Hall"
+    : pinned
+    ? "A titan pinned to this page: only your blows count, nothing is sent"
+    : who?.join ?? "";
+
+  // the lobby: the choices may scroll on a short page, but Join is pinned below them and is never clipped
   const lobbyControls = (
-    <section aria-label="Join the hunt" style={{ display: "flex", flexDirection: "column", gap: "0.5em" }}>
-      {(profile.runs || 0) > 0 && omenBox}
-      {(() => {
-        const next = SEALS.find((x) => !(profile.seals || []).includes(x.id) && x.id !== "first");
-        return next && (profile.runs || 0) > 0 ? (
-          <div className="next-seal">
-            Next seal: <b>{next.name}</b>. {next.line}
+    <section className="lobby" aria-label="Join the hunt">
+      <div className="lobby-mid">
+        {runs > 0 && omenBox}
+        {(() => {
+          const next = SEALS.find((x) => !(profile.seals || []).includes(x.id) && x.id !== "first");
+          return next && runs > 0 ? (
+            <div className="next-seal">
+              Next seal: <b>{next.name}</b>. {next.line}
+            </div>
+          ) : null;
+        })()}
+        <div className="seal-row" aria-label={`Seals: ${(profile.seals || []).length} of ${SEALS.length}`}>
+          {SEALS.map((x, i) => (
+            <Seal key={x.id} i={i} earned={(profile.seals || []).includes(x.id)} size={Math.round(u * 0.85)} />
+          ))}
+          <span className="seal-count">
+            {(profile.seals || []).length} of {SEALS.length} seals
+          </span>
+        </div>
+        <div className="namebox">
+          <button className="sigil-pick" onClick={() => setPickSigil((v) => !v)} aria-label={"Your sigil: " + SIGIL_NAMES[profile.sigil]}>
+            <Sigil id={profile.sigil} size={u * 0.75} className="filled" />
+          </button>
+          <input aria-label="Your hunter's name" value={profile.name} maxLength={18} onChange={(e) => update({ name: e.target.value.replace(/[<>{}[\]\\]/g, "").slice(0, 18) })} onBlur={(e) => update({ name: cleanName(e.target.value) || "Nameless" })} />
+        </div>
+        {pickSigil && (
+          <div className="sigil-grid" role="group" aria-label="Choose a sigil">
+            {SIGIL_NAMES.map((n, i) => (
+              <button key={n} aria-pressed={profile.sigil === i} title={n} onClick={() => (update({ sigil: i }), setPickSigil(false))}>
+                <Sigil id={i} size={u * 0.6} />
+              </button>
+            ))}
           </div>
-        ) : null;
-      })()}
-      <div className="seal-row" aria-label={`Seals: ${(profile.seals || []).length} of ${SEALS.length}`}>
-        {SEALS.map((x, i) => (
-          <Seal key={x.id} i={i} earned={(profile.seals || []).includes(x.id)} size={u * 0.95} />
-        ))}
-        <span className="seal-count">{(profile.seals || []).length} of {SEALS.length} seals</span>
-      </div>
-      <div className="namebox">
-        <button className="sigil-pick" onClick={() => setPickSigil((v) => !v)} aria-label={"Your sigil: " + SIGIL_NAMES[profile.sigil]}>
-          <Sigil id={profile.sigil} size={u * 0.75} className="filled" />
-        </button>
-        <input aria-label="Your hunter's name" value={profile.name} maxLength={18} onChange={(e) => update({ name: e.target.value.replace(/[<>{}[\]\\]/g, "").slice(0, 18) })} onBlur={(e) => update({ name: cleanName(e.target.value) || "Nameless" })} />
-      </div>
-      {pickSigil && (
-        <div className="sigil-grid" role="group" aria-label="Choose a sigil">
-          {SIGIL_NAMES.map((n, i) => (
-            <button key={n} aria-pressed={profile.sigil === i} title={n} onClick={() => (update({ sigil: i }), setPickSigil(false))}>
-              <Sigil id={i} size={u * 0.6} />
+        )}
+        <div className="aspects" role="group" aria-label="Choose your light">
+          {Object.values(ASPECTS).map((a) => (
+            <button key={a.id} className="aspect" aria-pressed={profile.aspect === a.id} onClick={() => update({ aspect: a.id })}>
+              <svg viewBox="0 0 24 24" className="sigil">
+                <path d={ASPECT_ICON[a.id]} />
+              </svg>
+              {a.name}
             </button>
           ))}
         </div>
-      )}
-      <div className="aspects" role="group" aria-label="Choose your light">
-        {Object.values(ASPECTS).map((a) => (
-          <button key={a.id} className="aspect" aria-pressed={profile.aspect === a.id} onClick={() => update({ aspect: a.id })}>
-            <svg viewBox="0 0 24 24" className="sigil">
-              <path d={ASPECT_ICON[a.id]} />
-            </svg>
-            {a.name}
-          </button>
-        ))}
+        <div className="aspect-line">{ASPECTS[profile.aspect].line}</div>
+        {/* the how-to is for a first visit; once a run is behind you the omen takes its place */}
+        {runs === 0 && (
+          <ul className="howto" aria-label="How to hunt">
+            <li>
+              <i className="life" /> Three lights. Only the bright pip at your star's heart can be struck.
+            </li>
+            <li>
+              <i className="hk">✦</i> Gold wounds open on the beat; your light strikes them by itself. Nearer the titan strikes harder.
+            </li>
+            <li>
+              <i className="hk">≈</i> Brush past ink to fill Resonance, then Surge. {layout && !layout.spread ? "Double-tap" : "Space"} dashes through anything.
+            </li>
+          </ul>
+        )}
       </div>
-      <div className="aspect-line">{ASPECTS[profile.aspect].line}</div>
-      {(profile.runs || 0) < 2 && (
-        <ul className="howto" aria-label="How to hunt">
-          <li>
-            <i className="life" /> Three lights. Only the bright pip at your star's heart can be struck.
-          </li>
-          <li>
-            <i className="hk">✦</i> Gold wounds open on the beat; your light strikes them by itself. Nearer the titan strikes harder.
-          </li>
-          <li>
-            <i className="hk">≈</i> Brush past ink to fill Resonance, then Surge. {layout && !layout.spread ? "Double-tap" : "Space"} dashes through anything.
-          </li>
-        </ul>
-      )}
-      <button className="join" onClick={begin} disabled={!!world?.interlude || !gameRef.current?.ready}>
-        {world?.interlude ? `The next titan stirs… ${world.interlude}` : !gameRef.current?.ready ? "The titan is being engraved…" : "Join the hunt"}
-        <small>
-          {world?.mode === "offline"
-            ? "The world is out of reach: you hunt this titan alone for now"
-            : rehearsal
-            ? "A rehearsal against a titan of your own: nothing here is written in the Hall"
-            : pinned
-            ? "A titan pinned to this page: only your blows count, nothing is sent"
-            : who?.join ?? ""}
-        </small>
+      <button className={"join" + (queued ? " queued" : "") + (!ready || interlude ? " waiting" : "")} onClick={() => begin()} aria-busy={!ready || interlude > 0}>
+        {joinLabel}
+        <small>{joinSub}</small>
       </button>
     </section>
   );
 
-  // during a hunt the lower half of the leaf becomes your ledger
-  const runStats = hud && phase === "playing" && (
-    <section className="ledger" aria-label="Your hunt">
-      <div className="rubric">Your hunt, in {ASPECTS[profile.aspect].name}</div>
-      <div className="ledger-big">
-        {fmt(hud.damage)}
-        <small>blows struck{world && world.hpMax > 1 ? ` · ${((hud.damage / world.hpMax) * 100).toFixed(2)}% of its life` : ""}</small>
-      </div>
-      <div className="ledger-row">
-        <span>
-          <b>{hud.time.toFixed(0)}</b> s alight
-        </span>
-        <span>
-          <b>{hud.grazes}</b> grazes
-        </span>
-        <span>
-          <b>{hud.bestCombo}</b> best chain
-        </span>
-        <span>
-          <b>{hud.surges}</b> surges
-        </span>
-      </div>
-    </section>
-  );
-
-  // your lights and Resonance: kept outside the arena, where nothing is ever thrown
-  const gauges = hud && phase === "playing" && (
-    <div className="gauges">
-      <div className="lives" aria-label={`${hud.maxHits - hud.hits} of ${hud.maxHits} lights left`}>
-        {Array.from({ length: hud.maxHits }, (_, i) => (
-          <span key={i} className={"life" + (i < hud.maxHits - hud.hits ? "" : " lost")} />
-        ))}
-      </div>
-      <span className={"reso" + (hud.resonance >= 99 || hud.surging ? " full" : "")} aria-label="Resonance">
-        <i style={{ width: (hud.surging ? 100 : hud.resonance) + "%" }} />
-        <em>{hud.surging ? "Surge!" : hud.combo > 1 ? `×${hud.combo}` : "Resonance"}</em>
-      </span>
-    </div>
-  );
+  const playing = phase === "playing";
   const dash = (cls, style) => (
     <button className={"dashbtn " + cls} style={style} onPointerDown={(e) => (e.preventDefault(), gameRef.current.input.queueDash())} aria-label="Dash">
       dash
     </button>
   );
+  const ledger = playing && <Ledger store={hudStore} aspectName={ASPECTS[profile.aspect].name} hpMax={world?.hpMax ?? 0} />;
+  const gauges = playing && <Gauges store={hudStore} />;
+  const tipNote = (cls, style) => tip && <div className={"margin-note " + cls} style={style} key={tip.id} dangerouslySetInnerHTML={{ __html: '<span class="manicule">☞</span> ' + tip.html }} />;
 
-  // the folded leaf beside the fight: the titan, its song, and your hunt
+  // the folded leaf beside the fight: the titan, its song, who else is here and what has happened, your hunt
   const stripBody = spec && (
     <>
       <div className="folio">
-        <span>The {ORD(spec.number)} Titan</span>
+        <span>{recorded ? "A recorded run" : rehearsal ? "A rehearsal titan" : `The ${ORD(spec.number)} Titan`}</span>
         <span className={"stage-name stage-" + stage}>{STAGE_NAMES[stage]}</span>
       </div>
       <h1 className="strip-name">{spec.name}</h1>
       <section className="wounds" aria-label="The titan's wounds">
         <div className="bar">
-          <div className="fill" style={{ width: (1 - hpFrac) * 100 + "%" }} />
+          <div className="fill" style={{ width: struckPct + "%" }} />
           <div className="stagemarks">
             <i style={{ left: "34%" }} />
             <i style={{ left: "67%" }} />
           </div>
         </div>
         <div className="caption">
-          <span>{((1 - hpFrac) * 100).toFixed(1)}% struck</span>
-          <span>
-            {recorded ? "a recorded run" : rehearsal ? "a rehearsal" : pinned ? "only you" : who?.topbar}
-          </span>
+          <span>{struckTxt}% struck</span>
+          <span>{recorded ? "a recorded run" : rehearsal ? "a rehearsal" : pinned ? "only you" : who?.topbar}</span>
         </div>
       </section>
       <section aria-label="The Canticle">
         <div className="rubric" style={{ display: "flex", justifyContent: "space-between" }}>
           <span>The Canticle</span>
-          <span style={{ color: "var(--ink-3)", fontStyle: "italic" }}>{(hud?.phrase ?? 0) + 1} of 8</span>
+          <Phrase store={hudStore} />
         </div>
-        <Canticle game={gameRef.current} height={u * 2.7} />
+        <Canticle game={g0} height={u * 2.7} />
       </section>
+      {playing && tip && tipNote("in-leaf in-strip")}
       <section className="strip-chronicle" aria-label="The chronicle">
-        <div className="rubric">The chronicle</div>
+        <div className="rubric">{recorded ? "A recorded run" : presenceLine}</div>
+        {live && world.hunters.length > 0 && (
+          <div className="hunters">
+            {world.hunters.slice(0, 6).map((h) => (
+              <span className={"hunter-chip" + (h.flying ? " wb-flying" : " wb-resting")} key={h.id}>
+                <Sigil id={h.sigil} size={u * 0.45} /> {h.name}
+                {h.me ? " (you)" : ""}
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="rubric strip-sub">The chronicle</div>
         <ul className="chronicle">
-          {world.feed.slice(-4).reverse().map((f) => (
-            <li key={f.id} dangerouslySetInnerHTML={{ __html: f.html }} />
+          {world.feed.slice(-8).reverse().map((f) => (
+            <li key={f.id}>
+              <span dangerouslySetInnerHTML={{ __html: f.html }} />
+              {f.n ? <span className="wb-ago"> · {fmtAgo(Date.now() - f.n)}</span> : null}
+            </li>
           ))}
         </ul>
       </section>
+      {runs > 0 && !recorded && (
+        <div className={"omen strip-omen" + (omenDone ? " done" : "")} aria-label="Today's omen">
+          <span className="rubric">Today's omen{omenDone ? " · fulfilled" : ""}</span>
+          <div className="omen-text">{omen.text}</div>
+        </div>
+      )}
       {gauges}
-      {runStats}
+      {ledger}
     </>
   );
 
@@ -629,9 +792,7 @@ export default function Hunt() {
         <div className="omen done fresh">
           <span className="rubric">The omen is fulfilled</span>
           <div className="omen-text">{omenFor(summary.omen.omenDay).text}</div>
-          <div className="omen-streak">
-            {summary.omen.omenStreak === 1 ? "Your first day kept. Return tomorrow for a new omen." : `${summary.omen.omenStreak} days kept in a row.`}
-          </div>
+          <div className="omen-streak">{summary.omen.omenStreak === 1 ? "Your first day kept. Return tomorrow for a new omen." : `${summary.omen.omenStreak} days kept in a row.`}</div>
         </div>
       )}
       {summary.freshSeals?.length > 0 && (
@@ -651,10 +812,16 @@ export default function Hunt() {
           })}
         </div>
       )}
-      {shareMsg && <div className="rubric" style={{ marginTop: "0.5em" }}>{shareMsg}</div>}
+      {shareMsg && (
+        <div className="rubric" style={{ marginTop: "0.5em" }}>
+          {shareMsg}
+        </div>
+      )}
       <div className="row">
-        <button className="join" style={{ flex: 2, fontSize: "1.3em" }} onClick={begin} autoFocus>
+        {/* after a fall the next titan sleeps for a while: the button says so, and joins it as it wakes */}
+        <button className="join" style={{ flex: 2, fontSize: "1.3em" }} onClick={() => begin()} autoFocus>
           Hunt again
+          {interlude > 0 && <small>the next titan wakes in {interlude} s: you join as it does</small>}
         </button>
         <button
           className="ghost"
@@ -663,7 +830,8 @@ export default function Hunt() {
             setShareMsg("Engraving your card…");
             const sp = summary.titanSpec ?? spec;
             const link = replayUrl({ seed: sp.seed, number: sp.number, stage: summary.stage, startT: summary.startT, damage: summary.damage, sigil: profile.sigil, name: profile.name, aspect: summary.aspect, path: summary.path });
-            const r = await shareRun({ spec: sp, summary, profile, share: live ? summary.worldShare : null, link });
+            const kind = rehearsal ? "rehearsal" : pinned || offline ? "own" : "live";
+            const r = await shareRun({ spec: sp, summary, profile, share: live ? summary.worldShare : null, link, kind });
             setShareMsg(r === "shared" ? "Shared." : r === "saved+copied" ? "Card saved; link copied." : "Card saved.");
             setTimeout(() => setShareMsg(null), 3000);
           }}
@@ -683,7 +851,6 @@ export default function Hunt() {
   const page = L?.right;
   // the side panel beside the page on a phone held sideways
   const sideBox = L && page && mode === "side" ? { left: page.x + page.w + 14, top: 0, bottom: 0, right: 0 } : null;
-  const playing = phase === "playing";
   return (
     <div className={"stage mode-" + mode + (L?.focus ? " is-focus" : "")} style={styleU}>
       {phase !== "playing" && phase !== "replay" && !closed && L?.spread && !L.focus && <Bookmarks />}
@@ -718,15 +885,14 @@ export default function Hunt() {
             ) : (
               <>
                 {leafBody}
-                {playing && tip && <div className="margin-note in-leaf" key={tip.id} dangerouslySetInnerHTML={{ __html: '<span class="manicule">☞</span> ' + tip.html }} />}
-                {playing ? runStats : summary ? summaryCard("in-leaf", null) : !replay && lobbyControls}
+                {playing ? ledger : summary ? summaryCard("in-leaf", null) : !replay && lobbyControls}
               </>
             )}
           </div>
         )}
 
         {/* the run's gauges: beside the page (sideways phone) or in the band under it (tall screens) */}
-        {L && spec && playing && hud && mode === "side" && page && (
+        {L && spec && playing && mode === "side" && page && (
           <>
             <div className="hud-side" style={{ right: L.vw - page.x + 14, top: L.vh / 2 }}>
               <div className="hud-side-name">{spec.name}</div>
@@ -734,22 +900,17 @@ export default function Hunt() {
                 <i style={{ width: hpFrac * 100 + "%" }} />
               </span>
               {gauges}
-              <div className="dmg">
-                {fmt(hud.damage)}
-                <small>blows</small>
-              </div>
+              <Blows store={hudStore} />
             </div>
+            {tip && tipNote("side-note", { left: 8, width: Math.max(120, page.x - 22), top: 8 })}
             {dash("side", { left: page.x + page.w + Math.max(12, (L.vw - page.x - page.w) / 2 - 39), top: L.vh * 0.5 })}
           </>
         )}
-        {L && spec && playing && hud && mode === "single" && page && (
+        {L && spec && playing && mode === "single" && page && (
           <div className="hud-band" style={{ left: 0, right: 0, top: page.y + page.h + 4, height: Math.max(56, L.vh - page.y - page.h - 4) }}>
             <div className="hud-band-row">
               {gauges}
-              <div className="dmg">
-                {fmt(hud.damage)}
-                <small>blows</small>
-              </div>
+              <Blows store={hudStore} />
             </div>
             {dash("band", null)}
           </div>
@@ -759,9 +920,8 @@ export default function Hunt() {
         {summary && arena && mode === "single" && summaryCard("", { left: arena.x + arena.w * 0.06, width: arena.w * 0.88, top: arena.y + arena.h * (summary.felled ? 0.42 : 0.14) })}
         {summary && sideBox && !L.focus && summaryCard("in-side", sideBox)}
 
-        {tip && arena && playing && (!L?.spread || L.focus) && (
-          <div className="margin-note" style={{ left: arena.x + arena.w * 0.06, width: arena.w * 0.88, top: arena.y + 4 }} key={tip.id} dangerouslySetInnerHTML={{ __html: tip.html }} />
-        )}
+        {/* a tall screen's notes sit in the titan's band, above the arena: never over the attack lanes */}
+        {tip && arena && page && playing && mode === "single" && tipNote("band-note", { left: arena.x + arena.w * 0.04, width: arena.w * 0.92, top: Math.max(page.y, 0) + 46 })}
 
         {replay && arena && phase === "replay" && (
           <div className="replay-banner" style={{ left: arena.x, top: arena.y + 6, width: arena.w }}>
@@ -826,21 +986,22 @@ export default function Hunt() {
           )}
           {phase !== "playing" && phase !== "replay" && !summary && (
             <div className={"sheet leaf" + (sideBox ? " side-sheet" : "")} style={{ position: "absolute", "--u": "30px", ...(sideBox || {}) }}>
-              <div>
+              <div className="sheet-head">
                 <h1>{spec.name}</h1>
                 <div className="epithet">{spec.epithet}</div>
+                <nav className="sheet-links" aria-label="Turn to">
+                  <a href="/hall">Hall of Titans</a>
+                  <a href="/how">How it works</a>
+                  {offerRehearse && <a href="/?rehearse=1">See a titan fall</a>}
+                </nav>
               </div>
               {lobbyControls}
-              <nav className="sheet-links" aria-label="Turn to">
-                <a href="/hall">Hall of Titans</a>
-                <a href="/how">How it works</a>
-              </nav>
             </div>
           )}
         </>
       )}
 
-      <Labels game={gameRef.current} world={worldRef.current} u={u} hidden={!!summary} />
+      <Labels game={g0} world={worldRef.current} u={u} hidden={!!summary} />
       <Floats bind={bindFloats} />
     </div>
   );

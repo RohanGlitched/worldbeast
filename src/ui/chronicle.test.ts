@@ -63,7 +63,7 @@ describe("chronicle on arrival", () => {
 describe("honest head-counts", () => {
   it("alone: you are the first hunter here", () => {
     const p = presence({ online: 1, hunters: [], watching: 1 });
-    expect(p.join).toBe("You are the first hunter here right now — your echo will fly for the next");
+    expect(p.join).toBe("You are the first hunter here right now — your echo will fly for the next hunter to arrive");
     expect(p.header).toBe("No one is hunting this minute · 1 watching");
     expect(p.cover).toBe("A living bestiary");
     expect(p.topbar).toBe("only you here");

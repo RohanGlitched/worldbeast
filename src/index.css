@@ -359,6 +359,11 @@ button {
   outline: none;
   border-bottom-color: var(--vermilion);
 }
+.namebox input:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+  background: rgba(255, 250, 236, 0.55);
+}
 .sigil-pick {
   appearance: none;
   border: 1.5px solid var(--ink-3);
@@ -595,9 +600,10 @@ button {
   background: linear-gradient(180deg, rgba(239, 228, 204, 0.97), rgba(230, 216, 185, 0.98));
   border-top: 2px solid var(--ink);
   box-shadow: 0 -0.5em 2em rgba(0, 0, 0, 0.35), inset 0 3px 0 rgba(214, 165, 49, 0.6);
-  padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
+  /* the bottom 92 px (and the home bar) belong to the host's badge: the sheet's controls sit above them */
+  padding: 14px 16px calc(92px + env(safe-area-inset-bottom));
   font-size: 15px;
-  overflow-y: auto;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -1294,18 +1300,26 @@ button {
   color: var(--ink-3);
   font-variant-numeric: tabular-nums;
 }
-.join:disabled {
+.join:disabled,
+.join.waiting {
   filter: grayscale(0.6) brightness(0.9);
+}
+.join:disabled {
   cursor: wait;
+}
+.join.queued {
+  filter: none;
+  background: linear-gradient(180deg, #c99a32, #8a6512 60%, #6d4f0e);
 }
 
 .sheet-links {
   display: flex;
-  gap: 18px;
-  justify-content: center;
+  flex-wrap: wrap;
+  gap: 2px 16px;
   font-family: var(--fell);
   font-style: italic;
-  padding-bottom: 54px; /* clear of the host badge */
+  font-size: 0.9em;
+  margin-top: 4px;
 }
 .sheet-links a {
   color: var(--ink-2);
@@ -1319,9 +1333,6 @@ button {
 }
 /* phones: keep every control clear of the host's corner badge */
 @media (max-width: 760px) {
-  .sheet {
-    padding-bottom: calc(86px + env(safe-area-inset-bottom));
-  }
   .hud-bottom {
     bottom: 70px !important;
   }

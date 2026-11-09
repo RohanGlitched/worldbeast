@@ -18,7 +18,36 @@ function loadImg(src) {
   });
 }
 
-export async function makeCard({ spec, summary, profile, share }) {
+/**
+ * What the card and the message may honestly say. `kind`: "live" (the world's titan, fought by everyone),
+ * "rehearsal" (a titan of your own, woken near death to watch one fall), "own" (a titan pinned to your page,
+ * or the world out of reach: only your blows).
+ */
+export function shareWords({ spec, summary, kind = "live" }) {
+  const blows = Math.round(summary.damage).toLocaleString("en-US");
+  if (kind === "rehearsal")
+    return {
+      folio: "A rehearsal titan",
+      line: summary.felled ? "blows struck, and my rehearsal titan fell" : "blows struck in a rehearsal",
+      text: summary.felled
+        ? `I felled ${spec.name} with ${blows} blows: a rehearsal against a titan of my own. The live titan is fought by everyone online at the same moment. Watch my run:`
+        : `I struck ${blows} blows against ${spec.name}: a rehearsal against a titan of my own. The live titan is fought by everyone online at the same moment. Watch my run:`,
+    };
+  if (kind === "own")
+    return {
+      folio: "A titan of my own",
+      line: summary.felled ? "blows struck, and the titan fell" : "blows struck against it, alone",
+      text: `I struck ${blows} blows against ${spec.name}, a titan on my own page (not the live world). Watch my run:`,
+    };
+  return {
+    folio: `The ${ORD(spec.number)} Titan`,
+    line: null,
+    text: `I struck ${blows} blows against ${spec.name}, the ${ORD(spec.number)} titan. Everyone online fights it at the same moment. Watch my run:`,
+  };
+}
+
+export async function makeCard({ spec, summary, profile, share, kind = "live" }) {
+  const words = shareWords({ spec, summary, kind });
   await document.fonts.ready;
   const W = 1200,
     H = 630;
@@ -47,7 +76,7 @@ export async function makeCard({ spec, summary, profile, share }) {
   // words
   g.fillStyle = "#7a6a58";
   g.font = "italic 26px 'IM Fell English', serif";
-  g.fillText(`The ${ORD(spec.number)} Titan`, 96, 120);
+  g.fillText(words.folio, 96, 120);
   g.fillStyle = "#231c17";
   g.font = "700 92px 'UnifrakturCook', serif";
   g.fillText(spec.name, 92, 210);
@@ -59,7 +88,7 @@ export async function makeCard({ spec, summary, profile, share }) {
   g.fillText(Math.round(summary.damage).toLocaleString("en-US"), 92, 400);
   g.font = "italic 30px 'EB Garamond', serif";
   g.fillStyle = "#4a3e33";
-  const line = summary.felled ? "blows struck, and the titan fell" : share ? `blows struck · ${share} of the world's wounds` : "blows struck against it";
+  const line = words.line ?? (summary.felled ? "blows struck, and the titan fell" : share ? `blows struck · ${share} of the world's wounds` : "blows struck against it");
   g.fillText(line, 96, 446);
   g.font = "26px 'EB Garamond', serif";
   g.fillText(`${profile.name}, bearing the ${SIGIL_NAMES[profile.sigil]}`, 96, 500);
@@ -75,7 +104,7 @@ export async function makeCard({ spec, summary, profile, share }) {
 export async function shareRun(args) {
   const blob = await makeCard(args);
   const url = args.link || location.origin + "/";
-  const text = `I struck ${Math.round(args.summary.damage).toLocaleString("en-US")} blows against ${args.spec.name}, the ${ORD(args.spec.number)} titan. Everyone online fights it at the same moment. Watch my run:`;
+  const { text } = shareWords(args);
   const file = new File([blob], "worldbeast.png", { type: "image/png" });
   // phones get the share sheet; desktops save the card and copy the link (the desktop sheet is slow and often empty)
   const coarse = window.matchMedia?.("(pointer: coarse)").matches;

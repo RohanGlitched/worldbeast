@@ -85,10 +85,11 @@ export class InkLayer {
           float aa = fwidth(d) * 1.2;
           float body = 1. - smoothstep(-aa, aa, d);
           if (body < .01 && d > .5) discard;
-          vec3 c = vInk < .5 ? uA : vInk < 1.5 ? uB : vInk < 2.5 ? uGold : uInk * 1.3;
+          vec3 c = vInk < .5 ? uA : vInk < 1.5 ? uB : vInk < 2.5 ? uGold : uInk * .6;
           // pooled pigment: darker rim, lighter wet centre, a tiny specular bead
           float rim = smoothstep(-.42, -.02, d);
           vec3 col = mix(c * 1.12, c * .55 + uInk * .25, rim);
+          if (vInk > 2.5) col = mix(uInk * .5, uGold * 1.1, smoothstep(-.25, -.02, head)); // hound: iron with a gilt rim
           vec2 hl = p - vec2(-.32, .34);
           col += vec3(1.) * .35 * (1. - smoothstep(.0, .22, length(hl)));
           if (vInk > 1.5) col += uGold * .4 * (.5 + .5 * sin(uTime * 9. + vSeed * 20.));

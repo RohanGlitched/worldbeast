@@ -600,7 +600,7 @@ export function touch(f: FieldFrame, x: number, y: number, out: Touch): Touch {
     if (d < nearest) nearest = d;
     if (d < 0) {
       out.hit = true;
-      out.hitKind = KIND_LIST[f.bullets[o + 5]] ?? "?";
+      out.hitKind = f.bullets[o + 5] >= KIND_LIST.length ? "hound" : (KIND_LIST[f.bullets[o + 5]] ?? "ring");
     } else if (d < GRAZE_R) out.grazes.push(f.bulletIds[i]);
   }
   for (let i = 0; i < f.beamCount; i++) {

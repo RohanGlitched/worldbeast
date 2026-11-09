@@ -110,6 +110,8 @@ export class Hunt {
    */
   private hounds: Array<{ beat: number; ox: number; oy: number; a: number; n: number; spread: number; speed: number; id: number }> = [];
   private nextHound = -1;
+  /** seconds into a run before hounds begin (first hunts are gentler) */
+  houndsAfter = 0;
   private houndId = 0;
   private stillT = 0;
   private lastX = 0;
@@ -262,6 +264,10 @@ export class Hunt {
 
   private houndsStep(t: number, beat: number, stage: Stage, dt: number) {
     if (t < 0) return;
+    if (this.time < this.houndsAfter) {
+      this.nextHound = -1;
+      return;
+    }
     const moved = Math.hypot(this.x - this.lastX, this.y - this.lastY);
     this.lastX = this.x;
     this.lastY = this.y;

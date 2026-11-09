@@ -395,7 +395,7 @@ export class Hunt {
     this.graceMax = Math.max(this.invuln, 0.001);
     const probe = newFrame(2048);
     const tc: Touch = { hit: false, grazes: [], nearest: 99 };
-    const xs = [0, -1.2, 1.2, -2.4, 2.4, -3.6, 3.6, -4.8, 4.8];
+    const xs = [0, -0.9, 0.9, -1.8, 1.8, -2.7, 2.7, -3.6, 3.6]; // central: clear of phone controls at the sides
     const ys = [SPAWN_Y, SPAWN_Y - 0.8, SPAWN_Y + 0.8];
     const graceEnd = this.invuln;
     const horizon = graceEnd + 2 * this.spec.beat + 0.3;
@@ -417,7 +417,7 @@ export class Hunt {
       k = 0;
     for (const y of ys)
       for (const x of xs) {
-        const score = Math.min(after[k], 2) * 3 + Math.min(during[k], 1.5) - Math.abs(x) * 0.08 - Math.abs(y - SPAWN_Y) * 0.1;
+        const score = Math.min(after[k], 2) * 3 + Math.min(during[k], 1.5) - Math.abs(x) * 0.18 - Math.abs(y - SPAWN_Y) * 0.1;
         if (score > bs) {
           bs = score;
           best = k;

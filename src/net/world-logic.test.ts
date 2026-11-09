@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { coreOpen, LOOP_BEATS, makeTitan, PHRASE_BEATS } from "@/core/titan";
 import { maxDps } from "@/core/hunt";
 import {
-  ACTIVITY_H, addDamage, checkHit, checkRun, DmgBuckets, echoEviction, hashKey, HOUR_MS, HP_CAP, HP_FLOOR, HP_PER_HUNTER, hpMaxFor,
+  ACTIVITY_H, addDamage, checkHit, checkRun, creditBlow, DmgBuckets, SOLO_RESIST, SOLO_SHARE, titanSeed, echoEviction, hashKey, HOUR_MS, HP_CAP, HP_FLOOR, HP_PER_HUNTER, hpMaxFor,
   LIFETIME_H, loopKey, maxHitDmg, prepareEcho, RATE_BUDGET, RateWindow, recentActivity, resizeTitan, Bucket, sanitizeName, segDist, stageAtT,
 } from "../../base44/actors/world/logic";
 import { decodePath, encodePath } from "./pathcodec";
@@ -90,8 +90,41 @@ describe("adaptive hp", () => {
     const b: DmgBuckets = [];
     for (const h of [1, 6, 11, 16, 21]) addDamage(b, 100 * HOUR_MS - (24 - h) * HOUR_MS, 10_000, 1);
     for (let h = 0; h < 24; h++) expect(hpMaxFor(b, 100 * HOUR_MS - h * HOUR_MS)).toBeLessThanOrEqual(HP_FLOOR + 3_000);
-    // a 3-minute judge alone (3-5 runs of 1.5-5k blows) can bring a fresh floor titan down
-    expect(3 * 3_500).toBeGreaterThanOrEqual(HP_FLOOR);
+    // a judge alone (2-3 runs of 1.5-5k blows) wounds a fresh floor titan to 40% struck at full strength
+    expect(3 * 3_500).toBeGreaterThanOrEqual(HP_FLOOR * SOLO_SHARE);
+  });
+  it("credits one hunter in full up to 40% of the titan's life, then at a quarter", () => {
+    expect(SOLO_SHARE).toBe(0.4);
+    expect(SOLO_RESIST).toBe(0.25);
+    expect(creditBlow(50, 0, 10_000)).toBe(50);
+    expect(creditBlow(50, 3_990, 10_000)).toBe(10 + 40 * 0.25);
+    expect(creditBlow(50, 5_000, 10_000)).toBe(12.5);
+  });
+  it("no titan falls to one hunter without a long siege; two need far less; three never meet the rule", () => {
+    const blowsToFell = (hunters: number, hp = HP_FLOOR) => {
+      const credited = new Array(hunters).fill(0);
+      let left = hp, raw = 0, i = 0;
+      while (left > 0) {
+        const w = Math.min(left, creditBlow(10, credited[i], hp));
+        credited[i] += w;
+        left -= w;
+        raw += 10;
+        i = (i + 1) % hunters;
+      }
+      return raw;
+    };
+    expect(blowsToFell(1)).toBeGreaterThanOrEqual(27_000); // 4,000 + 6,000 x 4
+    expect(blowsToFell(2)).toBeLessThan(17_000);
+    expect(blowsToFell(3)).toBe(HP_FLOOR);
+  });
+  it("the next titan's seed avoids the archetype just felled, deterministically", () => {
+    for (let n = 2; n < 200; n++) {
+      const prev = makeTitan(titanSeed(n - 1, "salt"), n - 1).archetype;
+      const s = titanSeed(n, "salt", prev);
+      expect(makeTitan(s, n).archetype).not.toBe(prev);
+      expect(titanSeed(n, "salt", prev)).toBe(s);
+    }
+    expect(titanSeed(1, "salt")).toBe(titanSeed(1, "salt", null)); // the first titan's seed is unchanged
   });
   it("grows with recent damage (lives ~LIFETIME_H at the last ACTIVITY_H hours' rate) and with the crowd", () => {
     const b: DmgBuckets = [];

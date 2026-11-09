@@ -1,6 +1,6 @@
 // Pure rules of the world actor: no runtime imports, so vitest can check them directly.
 import { hash32 } from "./core/rng.ts";
-import { ARENA, coreOpen, LOOP_BEATS, PHRASE_BEATS, Stage, stageFor, TitanSpec } from "./core/titan.ts";
+import { ARENA, coreOpen, LOOP_BEATS, PHRASE_BEATS, seedUnlike, Stage, stageFor, TitanSpec, type Archetype } from "./core/titan.ts";
 import { ASPECTS, maxDps, sustainedBudget, type AspectId } from "./core/hunt.ts";
 import { decodePath, encodePath, PATH_HZ } from "./shared/pathcodec.ts";
 import type { HitRow, HitWhy } from "./shared/types.ts";
@@ -36,8 +36,30 @@ export const RUN_SLACK = 60;
 
 // ---------- titan lifecycle
 
-export function titanSeed(number: number, salt: string): number {
-  return hash32("titan", number, salt);
+/**
+ * The seed of the nth titan. `avoid` is the archetype of the titan that just ended: the next one always has
+ * a different body (deterministic: the first candidate is the old rule's seed, later ones are re-salted).
+ */
+export function titanSeed(number: number, salt: string, avoid?: Archetype | null): number {
+  return seedUnlike((k) => (k === 0 ? hash32("titan", number, salt) : hash32("titan", number, salt, k)), avoid);
+}
+
+// ---------- one titan, many hunters
+
+/**
+ * The most of one titan's life a single hunter is credited at full strength. Past it the titan shrugs off
+ * that hunter: their blows still land and show (and count toward their own runs), but wound it only at
+ * SOLO_RESIST. So no titan falls to one hunter alone without a long siege (a 10,000-blow titan takes a lone
+ * hunter 4,000 + 6,000 x 4 = 28,000 blows), two hunters bring it down at ~16,000, and three or more never
+ * meet the rule. Everyone fells it together, and a lone first visitor still sees their first runs wound it.
+ */
+export const SOLO_SHARE = 0.4;
+export const SOLO_RESIST = 0.25;
+
+/** How much of a blow of `dmg` wounds the titan, given what this hunter is already credited with on it. */
+export function creditBlow(dmg: number, creditedBefore: number, hpMax: number): number {
+  const full = Math.max(0, Math.min(dmg, SOLO_SHARE * hpMax - creditedBefore));
+  return full + (dmg - full) * SOLO_RESIST;
 }
 
 /** [hourIndex, damage, distinct hunters who struck that hour] buckets for the last 24 h (older saves lack the third) */

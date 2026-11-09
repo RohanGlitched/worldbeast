@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeTitan } from "@/core/titan";
 // @ts-ignore plain js module
-import { createLocalWorld, INTERLUDE_MS, LIFT_MS, REHEARSAL_HP, REHEARSAL_LEFT } from "./localWorld.js";
+import { createLocalWorld, INTERLUDE_MS, LIFT_MS, LOCAL_HP, nextLocalSeed, REHEARSAL_HP, REHEARSAL_LEFT } from "./localWorld.js";
 
 // A stand-in for Game: just what the local world drives.
 function fakeGame() {
@@ -35,10 +35,10 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("a local titan falls", () => {
-  it("?hp=0.002: the last blow fells it, with the felled ceremony from this run alone, then the next titan engraves in", () => {
+  it("?hp=0.08: the last blow fells it, with the felled ceremony from this run alone, then the next titan engraves in", () => {
     const g = fakeGame();
     const felled: any[] = [];
-    const w = createLocalWorld(g, { search: "?seed=2870491872&n=1&t=1500&hp=0.002" }, { onFelled: (end: any, next: any) => felled.push({ end, next }) });
+    const w = createLocalWorld(g, { search: "?seed=2870491872&n=1&t=1500&hp=0.08" }, { onFelled: (end: any, next: any) => felled.push({ end, next }) });
     w.start();
     w.identify({ name: "Hale the Small", sigil: 5 });
     const first = g.spec;
@@ -70,6 +70,7 @@ describe("a local titan falls", () => {
     vi.advanceTimersByTime(20);
     expect(g.spec.seed).toBe(next.seed);
     expect(g.spec.number).toBe(2);
+    expect(g.spec.archetype).not.toBe(first.archetype); // never the same body twice in a row
     expect(w.state.spec).toBe(g.spec);
     expect(w.state.hp).toBe(w.state.hpMax);
     expect(g.hpFrac).toBe(1);
@@ -86,11 +87,35 @@ describe("a local titan falls", () => {
     w.stop();
   });
 
+  it("a pinned titan and a replayed one are sized like the live floor (10,000), not 400,000", () => {
+    const w = createLocalWorld(fakeGame(), { search: "?seed=2870491872&n=1&t=60" });
+    w.start();
+    expect(w.state).toMatchObject({ hpMax: LOCAL_HP, hp: 10_000, pinned: true, counts: false });
+    expect(LOCAL_HP).toBe(10_000);
+    const r = createLocalWorld(fakeGame(), { seed: 10, number: 10, replay: { name: "Ana", sigil: 1, damage: 900, duration: 20 }, search: "" });
+    r.start();
+    expect(r.state).toMatchObject({ hpMax: 10_000, counts: false });
+    w.stop();
+    r.stop();
+  });
+
+  it("the next titan is never the same archetype as the one just felled, for any seed", () => {
+    for (let s = 1; s < 400; s++) expect(makeTitan(nextLocalSeed(s), 2).archetype).not.toBe(makeTitan(s, 1).archetype);
+    expect(nextLocalSeed(77)).toBe(nextLocalSeed(77)); // deterministic
+  });
+
   it("a rehearsal: a titan of your own near death, labelled, sized like the live world's quietest", () => {
     const g = fakeGame();
     const w = createLocalWorld(g, { rehearsal: true, search: "?rehearse=1" });
     w.start();
-    expect(w.state).toMatchObject({ rehearsal: true, local: true, hpMax: REHEARSAL_HP, hp: Math.round(REHEARSAL_HP * REHEARSAL_LEFT) });
+    expect(w.state).toMatchObject({ rehearsal: true, local: true, hpMax: REHEARSAL_HP, hp: Math.round(REHEARSAL_HP * REHEARSAL_LEFT), counts: false, huntOpts: { forgiving: true } });
+    // ~180 blows from falling, and it fights in Wrath (its wounds alone would say Ruin)
+    expect(w.state.hp).toBeGreaterThanOrEqual(150);
+    expect(w.state.hp).toBeLessThanOrEqual(200);
+    expect(g.stageFn()).toBe(1);
+    w.stop();
+    expect(g.stageFn).toBeNull();
+    w.start();
     expect(w.state.feed[0].html).toMatch(/^A rehearsal: .*a titan of your own.*nothing here is written in the Hall/);
     expect(w.shareOf(100)).toBeNull();
     const felled: any[] = [];

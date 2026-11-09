@@ -25,4 +25,4 @@ it("difficulty report", () => {
   const med = (a: number[]) => a.slice().sort((x, y) => x - y)[Math.floor(a.length / 2)];
   console.log("median survival (s, cap 60):", [0, 1, 2].map((s) => med(surv[s]).toFixed(1)).join(" / "), " alive@60:", [0, 1, 2].map((s) => surv[s].filter((x) => x >= 59.9).length + "/30").join(" "));
   console.log("hits by kind:", JSON.stringify(Object.entries(kills).sort((a, b) => b[1] - a[1])));
-}, 600000);
+}, 1_800_000); // bots now live longer (more frames to simulate)

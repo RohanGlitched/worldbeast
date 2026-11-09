@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { COLUMN, FieldFrame, LANE, RAIL, STRIDE, TREAD } from "@/core/field";
+import { COLUMN, FieldFrame, GAP, LANE, RAIL, RING_FLOOR, STRIDE, TREAD } from "@/core/field";
 import { Plate } from "@/core/titan";
 import { NOISE } from "./glsl";
 
@@ -31,6 +31,7 @@ function colorUniforms() {
     uTime: { value: 0 },
     uPage: { value: new THREE.Vector4(-8.6, -0.9, 8.6, 34.4) },
     uShow: { value: 1 },
+    uHush: { value: 1 },
   };
 }
 
@@ -83,7 +84,7 @@ export class InkLayer {
       `,
       fragmentShader: /* glsl */ `
         precision highp float;
-        uniform vec3 uInk, uA, uB, uGold; uniform float uTime, uShow; uniform vec4 uPage;
+        uniform vec3 uInk, uA, uB, uGold; uniform float uTime, uShow, uHush; uniform vec4 uPage;
         varying vec2 vUv; varying float vInk; varying float vAlpha; varying float vSeed; varying float vR; varying vec2 vWp; varying float vTail;
         ${NOISE}
         ${ENGRAVE}
@@ -102,22 +103,37 @@ export class InkLayer {
           float body = 1. - smoothstep(-aa, aa, d);
           if (body < .01 && d > .5) discard;
           vec3 c = vInk < .5 ? uA : vInk < 1.5 ? uB : uGold;
-          // engraved bead: a pale wash of the ink, contour hatching across the flight, an inked rim
-          float tone = .5 + .5 * vnoise(vec2(vSeed * 13., 2.)); // no two drops cut quite alike
-          vec3 wash = mix(PAPER, c, .55 + .2 * tone);
-          float hatch = lines(p.y * 1.6 + p.x * .35 + vSeed * 3., .2 + .08 * tone) * step(head, -.18);
-          vec3 col = mix(wash, mix(c * .55, uInk, .35), hatch * .85);
-          float rim = smoothstep(-.34, -.06, d);
-          col = mix(col, uInk * .9 + c * .15, rim);
+          // an ink drop: the attack ink, its hue kept but darkened until it stands at least ~5:1 on the vellum
+          // (R4's pale striped beads fell to 2.6:1 and read as sweets), pooled darker at the core, with a
+          // contour of short dark strokes just inside an inked rim
+          float L = dot(c, vec3(.2126, .7152, .0722));
+          vec3 inkC = c * min(1., .1 / max(L, .001));
+          float tone = .5 + .5 * vnoise(vec2(vSeed * 13., 2.)); // no two drops pool quite alike
+          float rr = length(p);
+          float pool = (1. - smoothstep(.0, .85, rr)) * (.4 + .2 * tone);
+          vec3 col = mix(inkC * 1.12, mix(inkC * .4, uInk, .5), pool);
+          float inner = smoothstep(-.46, -.3, head) * (1. - smoothstep(-.17, -.1, head));
+          float contour = lines(ang * 3.2 + vSeed * 5., .26) * inner;
+          col = mix(col, uInk, contour * .6);
+          float rim = smoothstep(-.13, -.03, d);
+          col = mix(col, uInk * .92, rim);
           // the tail is one dry stroke of ink
-          if (tail < head) col = mix(c * .7, uInk, .45);
-          // a fleck of paper left uninked: the highlight
-          col = mix(col, PAPER, (1. - smoothstep(.12, .2, length(p - vec2(-.34, .36)))) * .9);
-          if (vInk > 2.5) col = mix(mix(uInk * .55, uGold * .6, hatch * .5), uGold * 1.1, smoothstep(-.3, -.04, head)); // hound: iron, gilt rim
-          if (vInk > 1.5 && vInk < 2.5) col += uGold * .3 * (.5 + .5 * sin(uTime * 9. + vSeed * 20.));
+          if (tail < head) col = mix(inkC, uInk, .4);
+          // a small fleck of paper left uninked: the highlight
+          col = mix(col, PAPER, (1. - smoothstep(.08, .15, length(p - vec2(-.34, .36)))) * .7);
+          if (vInk > 1.5 && vInk < 2.5) {
+            // a bloom's gold seed: gilt, inked rim, a slow glint
+            col = mix(mix(uGold, uGold * .62, pool), uInk, rim * .9);
+            col += uGold * .25 * (.5 + .5 * sin(uTime * 9. + vSeed * 20.));
+          }
+          if (vInk > 2.5) {
+            // a hound: solid iron (only you face it), ringed with a fine gilt line
+            col = mix(uInk * .85 + uGold * .04, uInk * .55, pool);
+            col = mix(col, uGold * 1.05, band(d + .085, .03));
+          }
           // a paper halo so drops read against busy ink
-          float halo = (1. - smoothstep(0., .45, d)) * step(0., d) * .3;
-          float a = max(body, halo) * vAlpha * uShow;
+          float halo = (1. - smoothstep(0., .45, d)) * step(0., d) * .35;
+          float a = max(body, halo) * vAlpha * uShow * uHush;
           vec3 outc = mix(PAPER, col, body);
           gl_FragColor = vec4(outc, a);
           #include <colorspace_fragment>
@@ -171,11 +187,12 @@ export class InkLayer {
       `,
       fragmentShader: /* glsl */ `
         precision highp float;
-        uniform vec3 uInk, uA, uB, uGold; uniform float uTime, uShow; uniform vec4 uPage;
+        uniform vec3 uInk, uA, uB, uGold; uniform float uTime, uShow, uHush; uniform vec4 uPage;
         varying vec2 vW; varying vec4 vA; varying vec4 vB; varying vec4 vC;
         ${NOISE}
         ${ENGRAVE}
         float angDist(float a, float b){ float d = mod(a - b + 3.14159, 6.28318) - 3.14159; return abs(d); }
+        const float RF = ${RING_FLOOR.toFixed(2)};
         void main(){
           if (vW.x < uPage.x || vW.x > uPage.z || vW.y < uPage.y || vW.y > uPage.w) discard;
           float kind = vA.x;
@@ -191,10 +208,15 @@ export class InkLayer {
             float along = clamp(s, 0., L);
             float d = length(q - dir * along);
             if (live < .01) {
-              // a hound's aim: a fine dashed dry-point line
-              float dash = step(.5, fract(s * 1.6 - uTime * 2.));
-              a = band(d, .03) * dash * .55;
-              col = mix(uInk, c, .35);
+              // a hound's aim: one solid iron hairline with small arrowheads marching down it toward you
+              // (beam warnings are dotted with dashed rules; this is never dotted, never dashed)
+              float hair = band(d, .022) * step(0., s);
+              float cl = 3.2;
+              float cs = mod(s - uTime * 2.6, cl) - cl * .5;
+              float hw = (.1 - cs) * .42;
+              float arrow = (1. - smoothstep(-.02, .02, abs(n) - hw)) * step(-.34, cs) * step(cs, .1) * step(.6, s);
+              a = max(hair * .75, arrow * .85);
+              col = uInk;
             } else if (live < .999) {
               // beam warning, drawn like dry-point: a row of inked dots along the line it will strike
               // first (swelling as it nears), and for the last stretch its breadth as two dashed rules.
@@ -237,13 +259,22 @@ export class InkLayer {
             float wob = (vnoise(vec2(ang * 5., R)) - .5) * .06;
             float hw = w * .5 * (1. + .45 * swell) + wob;
             float d = abs(r - R);
-            float body = band(d, hw) * (1. - gap);
+            // it spends itself above the foot of the page (core/field.ts RING_FLOOR): the stroke fades out there
+            float floorK = smoothstep(RF - .05, RF + .3, vW.y);
+            float body = band(d, hw) * (1. - gap) * floorK;
             float ticks = lines(ang * R * 6., .2);
-            col = mix(mix(PAPER, c, .6), dark, ticks * .85);
+            // (inked like the drops: the attack ink darkened to stand out on the vellum, not a pale wash)
+            vec3 cd = c * min(1., .14 / max(dot(c, vec3(.2126, .7152, .0722)), .001));
+            col = mix(mix(PAPER, cd, .85), dark, ticks * .85);
             col = mix(col, uInk, smoothstep(hw - .06, hw - .01, d));
-            float halo = (1. - smoothstep(hw, hw + .4, d)) * .22 * (1. - gap);
-            a = max(body, halo);
+            // the gap's edges are tipped in gold, like a wall's posts, and the gap itself is a dotted gilt way through
+            float tip = (1. - smoothstep(.0, .32, arc)) * (1. - gap);
+            col = mix(col, uGold * 1.05, tip * .9 * (1. - smoothstep(hw - .07, hw - .02, d)));
+            float way = band(d, .06) * lines(ang * R * 2.4, .3) * gap * floorK;
+            float halo = (1. - smoothstep(hw, hw + .4, d)) * .22 * (1. - gap) * floorK;
+            a = max(max(body, halo), way * .75);
             col = mix(PAPER, col, body);
+            col = mix(col, uGold * .9, way * (1. - body));
           } else if (kind < 2.5) {
             // zone: progress <1 a dry-point circle filling with hatch; >=1 a cross-hatched flood
             vec2 cc = vA.yz; float R = vA.w; float pr = vB.x; float tread = live;
@@ -279,7 +310,17 @@ export class InkLayer {
             }
           } else if (kind < 3.5) {
             vec2 q = vW - vA.yz; float pr = vB.x; float r = length(q); float ang = atan(q.y, q.x);
-            if (live > .5) {
+            if (live > 1.5) {
+              // a shockwave gap's sight on the rail or the foot of the page: a gilt lozenge with an inked rim,
+              // faint while the slam winds up, solid while its ring passes, fading as the ring spends itself
+              float k = pr < 1. ? .35 + .65 * pr : 1. - (pr - 1.) * .65;
+              float dm = abs(q.x) * 1.15 + abs(q.y) - .3;
+              float body = 1. - smoothstep(-.02, .02, dm);
+              float rim = 1. - smoothstep(.0, .05, abs(dm + .035));
+              float pip = 1. - smoothstep(.05, .08, r);
+              a = max(body, rim) * k;
+              col = mix(mix(uGold * 1.05, uInk, rim), uInk, pip);
+            } else if (live > .5) {
               if (abs(vA.y) > 8.1) {
                 // side rail: an inked chevron pointing in, at the falling wall's height
                 float sx = -sign(vA.y); vec2 u = vec2(q.x * sx, q.y);
@@ -338,7 +379,7 @@ export class InkLayer {
             a = max(a, inside * flash * .08);
             col = mix(uGold * .95, uInk, border * .55);
           }
-          a *= uShow;
+          a *= uShow * uHush;
           if (a < .005) discard;
           gl_FragColor = vec4(col, a);
           #include <colorspace_fragment>
@@ -351,6 +392,16 @@ export class InkLayer {
     scene.add(this.shapes);
   }
 
+  private hushTo = 1;
+  private hushAt = 0;
+  /**
+   * Fade every attack off the page (on a fall: the FELLED stamp never lands over flying ink), or bring them
+   * back (the next titan). Game wiring: `this.ink.hush(true)` in fell(), `this.ink.hush(false)` in setTitan().
+   */
+  hush(on: boolean) {
+    this.hushTo = on ? 0 : 1;
+  }
+
   setPlate(p: Plate) {
     this.uniforms.uInk.value.set(p.ink);
     this.uniforms.uA.value.set(p.accent);
@@ -360,6 +411,12 @@ export class InkLayer {
 
   update(f: FieldFrame, time: number) {
     this.uniforms.uTime.value = time;
+    // the hush glides over ~0.25 s (wall time, so it works while the titan's clock jumps)
+    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    const dt = this.hushAt ? Math.min(0.1, (now - this.hushAt) / 1000) : 0;
+    this.hushAt = now;
+    const hv = this.uniforms.uHush.value;
+    this.uniforms.uHush.value = hv + (this.hushTo - hv) * Math.min(1, dt * 12);
     const { B, BM, RG, ZN, MK } = STRIDE;
     const n = Math.min(f.bulletCount, MAX_B);
     const d = this.aData.array as Float32Array;
@@ -421,8 +478,9 @@ export class InkLayer {
     for (let i = 0; i < f.markCount; i++) {
       const o = i * MK;
       const ink = f.marks[o + 3];
-      const rail = ink >= RAIL ? 1 : 0;
-      put(3, f.marks[o], f.marks[o + 1], 1, f.marks[o + 2], 0, 0, 0, 0, 0, rail ? ink - RAIL : ink, rail);
+      // live: 0 an origin sigil, 1 a wall's rider (post or rail chevron), 2 a shockwave gap's sight
+      const kind = ink >= GAP ? 2 : ink >= RAIL ? 1 : 0;
+      put(3, f.marks[o], f.marks[o + 1], 1, f.marks[o + 2], 0, 0, 0, 0, 0, ink - (kind === 2 ? GAP : kind === 1 ? RAIL : 0), kind);
     }
     this.sA.needsUpdate = this.sB.needsUpdate = this.sC.needsUpdate = true;
     this.shapeGeo.instanceCount = k;

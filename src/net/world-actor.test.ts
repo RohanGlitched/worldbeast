@@ -236,4 +236,48 @@ describe("world actor (in-process)", () => {
     expect(t.titan.number).toBe(1);
     expect(t.mockDb.Titan.rows).toHaveLength(0);
   });
+
+  it("past 40% of a titan's life, it shrugs off a lone hunter: blows land at a quarter, runs still count them", async () => {
+    const t: W = new (World as any)();
+    await t.handleStart();
+    await settle(t);
+    const s = makeTitan(t.titan.seed, 1);
+    const C = new MockConn("solo");
+    t.conns.push(C);
+    await t.handleConnect(C);
+    await send(t, C, { t: "hello", key: key("c"), name: "Cy", sigil: 2, aspect: "lance" });
+    const hk = t.hunters.get("solo").key;
+    t.credits.set(hk, { name: "Cy", sigil: 2, dmg: 3_990 }); // 10 short of 40% of a 10,000 titan
+    const [core, beat] = openBeat(s, 4);
+    vi.setSystemTime(t.titan.wokeAt + beat * s.beat * 1000);
+    await send(t, C, { t: "pos", x: 0, y: 4, alive: true, flags: 0 });
+    const hp0 = t.titan.hp;
+    await send(t, C, { t: "hit", hits: [[core, 50, beat]] });
+    expect(C.last("ack")).toMatchObject({ ok: 20, rs: 30 }); // 10 at full strength, 40 at a quarter
+    expect(hp0 - t.titan.hp).toBe(20);
+    expect(t.credits.get(hk).dmg).toBe(4_010);
+    expect(t.hunters.get("solo").acc).toBe(50); // the run is bounded by what they landed, not what wounded it
+    // a second hunter is struck at full strength
+    const D = new MockConn("two");
+    t.conns.push(D);
+    await t.handleConnect(D);
+    await send(t, D, { t: "hello", key: key("d"), name: "Di", sigil: 4, aspect: "lance" });
+    await send(t, D, { t: "pos", x: 1, y: 4, alive: true, flags: 0 });
+    await send(t, D, { t: "hit", hits: [[core, 50, beat]] });
+    expect(D.last("ack")).toMatchObject({ ok: 50 });
+    expect(D.last("ack").rs).toBeUndefined();
+  });
+
+  it("the next titan never has the body of the one just felled", async () => {
+    const t: W = new (World as any)();
+    await t.handleStart();
+    await settle(t);
+    for (let k = 0; k < 6; k++) {
+      const before = makeTitan(t.titan.seed, t.titan.number).archetype;
+      t.titan.hp = 0.5;
+      await t.endTitan("felled", Date.now(), null);
+      await settle(t);
+      expect(makeTitan(t.titan.seed, t.titan.number).archetype).not.toBe(before);
+    }
+  });
 });

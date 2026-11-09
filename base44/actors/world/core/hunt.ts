@@ -34,8 +34,12 @@ const INVULN_AFTER_HIT = 1.6;
 const INVULN_BEAM_MAX = 4.5;
 /** grace at spawn, seconds (the caller may lengthen it for first hunts) */
 export const SPAWN_GRACE = 3;
-/** seconds without being struck that rekindle a lost light */
-export const RELIGHT_AFTER = 30;
+/** seconds without being struck that rekindle a lost light (R4: at 30 s it never fired in 20 runs) */
+export const RELIGHT_AFTER = 15;
+/** the most lights one run can win back */
+export const MAX_RELIGHTS = 3;
+/** in a forgiving hunt (a rehearsal) a hit costs this much Resonance instead of a light */
+export const FORGIVE_COST = 35;
 /** where a fresh light enters the page: low, but above the bottom lane where walls finish */
 export const SPAWN_Y = 5;
 /** the most a grace may be held open while an attack is passing over you, seconds */
@@ -145,10 +149,16 @@ export class Hunt {
   private edgeT = 0;
   private lastBeat = 0;
 
-  constructor(spec: TitanSpec, field: Field, aspect: AspectId) {
+  /** a forgiving hunt (a rehearsal): a hit costs Resonance, never a light, so the light cannot go out */
+  readonly forgiving: boolean;
+  /** hits a forgiving hunt took without losing a light */
+  forgiven = 0;
+
+  constructor(spec: TitanSpec, field: Field, aspect: AspectId, opts: { forgiving?: boolean } = {}) {
     this.spec = spec;
     this.field = field;
-    this.aspect = ASPECTS[aspect];
+    this.aspect = ASPECTS[aspect] ?? ASPECTS.ember;
+    this.forgiving = !!opts.forgiving;
   }
 
   /** Advance one frame. `t` = seconds since the titan woke (synced), `dt` = frame seconds. */
@@ -221,7 +231,10 @@ export class Hunt {
       if (dashing) {
         if (a.id === "mirror" && this.dashT > DASH_TIME * 0.35) this.mirror(stage);
       } else if (this.invuln <= 0) {
-        this.hits++;
+        if (this.forgiving) {
+          this.forgiven++;
+          this.resonance = Math.max(0, this.resonance - FORGIVE_COST);
+        } else this.hits++;
         this.hurtEvents++;
         this.lastHitKind = tc.hitKind ?? "?";
         this.lastHitAt = this.time;
@@ -249,11 +262,7 @@ export class Hunt {
     if (this.grazed.size > 4000) this.grazed.clear();
     this.cleanBest = Math.max(this.cleanBest, this.time - this.lastHitAt);
     // a long clean stretch rekindles a lost light (and the clock starts again for the next one)
-    if (this.hits > 0 && this.time - Math.max(this.lastHitAt, this.lastRelightAt) >= RELIGHT_AFTER) {
-      this.hits--;
-      this.relights++;
-      this.lastRelightAt = this.time;
-    }
+    if (this.time - Math.max(this.lastHitAt, this.lastRelightAt) >= RELIGHT_AFTER) this.relight();
     this.comboT -= dt;
     if (this.comboT <= 0) this.combo = 0;
 
@@ -263,6 +272,8 @@ export class Hunt {
       this.surgeT = SURGE_TIME;
       this.surges++;
       this.resonance = 0;
+      // a Surge also rekindles a lost light (R4: a clean stretch alone almost never did)
+      this.relight();
     }
     if (this.surgeT > 0) this.surgeT -= dt;
 
@@ -282,7 +293,8 @@ export class Hunt {
       }
       // closer to the titan strikes harder, but the graze chain matters more: weaving through the
       // ink is the reward, so a hunter parked in a quiet corner under the titan cannot farm it
-      const reach = reachAt(this.y);
+      // and from the margins darts strike the titan's flank at a glancing angle (see marginMul)
+      const reach = reachAt(this.y) * marginMul(this.x);
       const comboMul = chainMul(this.combo);
       for (let s = 0; s < a.spread; s++) {
         const spreadMul = a.id === "bloom" ? 0.75 + 0.7 * (this.y / ARENA.H) : 1;
@@ -320,7 +332,7 @@ export class Hunt {
     this.lastX = this.x;
     this.lastY = this.y;
     this.stillT = moved < dt * 1.2 ? this.stillT + dt : 0;
-    const hugging = Math.abs(this.x) > ARENA.W / 2 - 1.4 || this.y > ARENA.H - 3;
+    const hugging = Math.abs(this.x) > ARENA.W / 2 - MARGIN || this.y > ARENA.H - 3;
     this.edgeT = hugging ? this.edgeT + dt : Math.max(0, this.edgeT - dt * 2);
     // interval in beats: shorter as the run goes on, in harder stages, and much shorter for a hunter who sits still
     const runRamp = Math.min(1, this.time / 90);
@@ -361,6 +373,14 @@ export class Hunt {
         pushPersonal(this.frame, h.ox + Math.cos(a) * d, h.oy + Math.sin(a) * d, 0.25, 0x7f000000 + h.id * 16 + k, Math.cos(a) * h.speed, Math.sin(a) * h.speed);
       }
     }
+  }
+
+  /** give back one lost light (after RELIGHT_AFTER clean seconds, or on a Surge), at most MAX_RELIGHTS a run */
+  private relight() {
+    if (this.hits <= 0 || this.relights >= MAX_RELIGHTS) return;
+    this.hits--;
+    this.relights++;
+    this.lastRelightAt = this.time;
   }
 
   /** a passing hunter rekindled this light: back in the fight with one hit left and a moment's grace */
@@ -448,6 +468,15 @@ export class Hunt {
 /** Height factor of a blow: nearer the titan strikes harder (x0.81 at the bottom, x1.13 at the top). */
 export function reachAt(y: number): number {
   return 0.8 + 0.35 * (y / ARENA.H);
+}
+/** the outer band of the page, either side, where blows glance off */
+export const MARGIN = 1.4;
+/**
+ * Margin factor of a blow: x0.7 from the outer MARGIN units of either side rail, x1 elsewhere. Camping a
+ * margin pays less than weaving through the middle (in Calm the margins are no more dangerous than the middle).
+ */
+export function marginMul(x: number): number {
+  return Math.abs(x) > ARENA.W / 2 - MARGIN ? 0.7 : 1;
 }
 /** Graze-chain factor of a blow: x1 with no chain, x1.5 at a 30-graze chain. */
 export function chainMul(combo: number): number {

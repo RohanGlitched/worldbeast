@@ -188,6 +188,9 @@
   height: 16px;
   font-size: 13px;
 }
+.hud-side .reso {
+  flex: none;
+}
 .hud-side .dmg,
 .hud-band .dmg {
   color: var(--vellum);

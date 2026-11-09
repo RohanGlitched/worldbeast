@@ -77,7 +77,10 @@ export function createLiveWorld(game, audio, hooks = {}) {
           pendingTitan = null;
           w.emit();
         };
-        if (game.falling) {
+        // the next titan announced during the interlude (it arrives just before the "felled" news):
+        // hold it until the fallen one has lifted off the page
+        const interlude = game.spec && game.spec.seed !== t.seed && world.serverNow() < t.wokeAt && game.spec.number > 0 && t.number > game.spec.number;
+        if (game.falling || interlude) {
           pendingTitan = apply;
           clearTimeout(pendingTimer);
           pendingTimer = setTimeout(() => pendingTitan?.(), 3800);

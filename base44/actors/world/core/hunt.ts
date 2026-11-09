@@ -30,6 +30,16 @@ export const MAX_HITS = 3;
 const DASH_TIME = 0.16;
 const DASH_SPEED = 26;
 const INVULN_AFTER_HIT = 1.6;
+/** a beam's hit keeps you safe until its sweep is over, up to this long */
+const INVULN_BEAM_MAX = 4.5;
+/** grace at spawn, seconds (the caller may lengthen it for first hunts) */
+export const SPAWN_GRACE = 3;
+/** seconds without being struck that rekindle a lost light */
+export const RELIGHT_AFTER = 30;
+/** where a fresh light enters the page: low, but above the bottom lane where walls finish */
+export const SPAWN_Y = 5;
+/** the most a grace may be held open while an attack is passing over you, seconds */
+const GRACE_HOLD = 1.5;
 const RESONANCE_PER_GRAZE = 9;
 const SURGE_TIME = 3.2;
 const DART_SPEED = 30;
@@ -71,11 +81,23 @@ export class Hunt {
   private tch: Touch = { hit: false, grazes: [], nearest: 99 };
 
   x = 0;
-  y = 3;
+  y = SPAWN_Y;
   vx = 0;
   vy = 0;
   hits = 0;
-  invuln = 3.0; // grace at spawn
+  invuln = SPAWN_GRACE; // grace at spawn
+  /** the grace this run started with (for the shrinking spawn ring) */
+  graceMax = SPAWN_GRACE;
+  /**
+   * On the first step the hunt picks its own spawn: the point on the spawn row that stays clear of
+   * the shared field through the grace and two beats beyond it. Set false to keep a caller's x/y.
+   */
+  autoSpawn = true;
+  /** true until the spawn (or revive) grace has run out */
+  inGrace = true;
+  private graceExtra = 0;
+  /** lights given back after RELIGHT_AFTER clean seconds (the caller cues each one) */
+  relights = 0;
   dashT = 0;
   dashCd = 0;
   dashDir = { x: 0, y: 1 };
@@ -100,6 +122,7 @@ export class Hunt {
   /** longest stretch without being struck, seconds */
   cleanBest = 0;
   private lastHitAt = 0;
+  private lastRelightAt = 0;
   hitLog: string[] = [];
   private dashId = 0;
   private mirroredDash = -1;
@@ -117,7 +140,9 @@ export class Hunt {
   private houndId = 0;
   private stillT = 0;
   private lastX = 0;
-  private lastY = 3;
+  private lastY = SPAWN_Y;
+  /** seconds spent hugging a side rail or the top edge (hounds come oftener for a camper) */
+  private edgeT = 0;
   private lastBeat = 0;
 
   constructor(spec: TitanSpec, field: Field, aspect: AspectId) {
@@ -130,6 +155,10 @@ export class Hunt {
   step(t: number, dt: number, input: Input, stage: Stage, coreBroken: (id: number) => boolean = () => false) {
     dt = Math.min(dt, 1 / 20);
     const beat = t / this.spec.beat;
+    if (this.autoSpawn && this.time === 0 && this.alive) {
+      this.autoSpawn = false;
+      this.pickSpawn(t, stage);
+    }
     this.field.sample(t, stage, this.frame);
     if (!this.alive) return;
     this.time += dt;
@@ -179,6 +208,14 @@ export class Hunt {
     this.invuln = Math.max(0, this.invuln - dt);
     const tc = touch(this.frame, this.x, this.y, this.tch);
     this.nearest = tc.nearest;
+    if (this.inGrace) {
+      // the grace never runs out inside an attack: it holds (up to GRACE_HOLD s) until your spot is clear
+      if (this.invuln < 0.2 && tc.nearest < 0.45 && this.graceExtra < GRACE_HOLD) {
+        this.graceExtra += 0.2 - this.invuln;
+        this.invuln = 0.2;
+      }
+      if (this.invuln <= 0) this.inGrace = false;
+    }
     const dashing = this.dashT > 0;
     if (tc.hit) {
       if (dashing) {
@@ -189,7 +226,8 @@ export class Hunt {
         this.lastHitKind = tc.hitKind ?? "?";
         this.lastHitAt = this.time;
         this.hitLog.push(this.lastHitKind);
-        this.invuln = INVULN_AFTER_HIT;
+        // a beam sweeps on after it strikes you: stay safe until its sweep ends, so one beam is one light
+        this.invuln = tc.hitKind === "beam" ? Math.max(INVULN_AFTER_HIT, Math.min(INVULN_BEAM_MAX, this.field.beamLeft(t, stage) + 0.25)) : INVULN_AFTER_HIT;
         this.combo = 0;
         // a hit costs a light, not your Resonance
         if (this.hits >= MAX_HITS) {
@@ -210,6 +248,12 @@ export class Hunt {
     }
     if (this.grazed.size > 4000) this.grazed.clear();
     this.cleanBest = Math.max(this.cleanBest, this.time - this.lastHitAt);
+    // a long clean stretch rekindles a lost light (and the clock starts again for the next one)
+    if (this.hits > 0 && this.time - Math.max(this.lastHitAt, this.lastRelightAt) >= RELIGHT_AFTER) {
+      this.hits--;
+      this.relights++;
+      this.lastRelightAt = this.time;
+    }
     this.comboT -= dt;
     if (this.comboT <= 0) this.combo = 0;
 
@@ -236,11 +280,12 @@ export class Hunt {
           best = c;
         }
       }
-      // closer to the titan = harder hits (risk for reward)
-      const reach = 0.6 + 0.8 * (this.y / ARENA.H);
-      const comboMul = 1 + Math.min(this.combo, 50) * 0.01;
+      // closer to the titan strikes harder, but the graze chain matters more: weaving through the
+      // ink is the reward, so a hunter parked in a quiet corner under the titan cannot farm it
+      const reach = reachAt(this.y);
+      const comboMul = chainMul(this.combo);
       for (let s = 0; s < a.spread; s++) {
-        const spreadMul = a.id === "bloom" ? 0.55 + 1.1 * (this.y / ARENA.H) : 1;
+        const spreadMul = a.id === "bloom" ? 0.75 + 0.7 * (this.y / ARENA.H) : 1;
         const dmg = a.dart * reach * comboMul * spreadMul * (surge ? 2.5 : 1);
         const off = a.spread > 1 ? (s - (a.spread - 1) / 2) * 0.6 : 0;
         this.darts.push({ x: this.x, y: this.y, tx: best.x + off, ty: best.y, core: best.id, dmg, t: bd / DART_SPEED, surge });
@@ -275,11 +320,15 @@ export class Hunt {
     this.lastX = this.x;
     this.lastY = this.y;
     this.stillT = moved < dt * 1.2 ? this.stillT + dt : 0;
+    const hugging = Math.abs(this.x) > ARENA.W / 2 - 1.4 || this.y > ARENA.H - 3;
+    this.edgeT = hugging ? this.edgeT + dt : Math.max(0, this.edgeT - dt * 2);
     // interval in beats: shorter as the run goes on, in harder stages, and much shorter for a hunter who sits still
     const runRamp = Math.min(1, this.time / 90);
     let every = (stage === 0 ? 6 : stage === 1 ? 5 : 4) - runRamp * 2.5;
+    if (this.edgeT > 3) every = Math.min(every, 2.5);
     if (this.stillT > 1.6) every = 1.5;
-    if (this.nextHound < 0) this.nextHound = Math.ceil(beat) + 3;
+    // the first hound winds up only once the spawn grace is over
+    if (this.nextHound < 0) this.nextHound = Math.ceil(beat + Math.max(0, this.invuln) / this.spec.beat) + 1;
     if (beat >= this.nextHound) {
       const r = rngFor("hound", this.spec.seed, this.houndId);
       const o = this.spec.origins[this.houndId % this.spec.origins.length];
@@ -319,6 +368,9 @@ export class Hunt {
     this.alive = true;
     this.hits = MAX_HITS - 1;
     this.invuln = 2.5;
+    this.graceMax = 2.5;
+    this.inGrace = true;
+    this.graceExtra = 0;
     this.resonance = 0;
   }
 
@@ -331,8 +383,58 @@ export class Hunt {
     this.mirroredDash = this.dashId;
     this.mirrorReflects++;
     const c = open[0];
-    const reach = 0.6 + 0.8 * (this.y / ARENA.H);
+    const reach = reachAt(this.y);
     this.darts.push({ x: this.x, y: this.y, tx: c.x, ty: c.y, core: c.id, dmg: 55 * reach, t: Math.hypot(c.x - this.x, c.y - this.y) / DART_SPEED, surge: true });
+  }
+
+  /** Place the light now (instead of on its first step), e.g. so a caller can aim a touch drag from it. */
+  place(t: number, stage: Stage) {
+    this.autoSpawn = false;
+    this.pickSpawn(t, stage);
+  }
+
+  /**
+   * Choose where this light enters: on the spawn row, the point whose clearance from the shared
+   * field stays largest through the end of the grace and two beats past it (a hunter who has not
+   * moved yet is never struck the moment grace ends). Deterministic for a given (seed, t, stage).
+   */
+  private pickSpawn(t: number, stage: Stage) {
+    this.graceMax = Math.max(this.invuln, 0.001);
+    const probe = newFrame(2048);
+    const tc: Touch = { hit: false, grazes: [], nearest: 99 };
+    const xs = [0, -0.9, 0.9, -1.8, 1.8, -2.7, 2.7, -3.6, 3.6]; // central: clear of phone controls at the sides
+    const ys = [SPAWN_Y, SPAWN_Y - 0.8, SPAWN_Y + 0.8];
+    const graceEnd = this.invuln;
+    const horizon = graceEnd + 2 * this.spec.beat + 0.3;
+    const during = new Array(xs.length * ys.length).fill(9);
+    const after = new Array(xs.length * ys.length).fill(9);
+    for (let s = 0; s <= horizon + 1e-6; s += 0.1) {
+      this.field.sample(t + s, stage, probe);
+      let k = 0;
+      for (const y of ys)
+        for (const x of xs) {
+          const c = touch(probe, x, y, tc).nearest;
+          if (s >= graceEnd - 0.6) after[k] = Math.min(after[k], c);
+          else during[k] = Math.min(during[k], c);
+          k++;
+        }
+    }
+    let best = 0,
+      bs = -1e9,
+      k = 0;
+    for (const y of ys)
+      for (const x of xs) {
+        const score = Math.min(after[k], 2) * 3 + Math.min(during[k], 1.5) - Math.abs(x) * 0.18 - Math.abs(y - SPAWN_Y) * 0.1;
+        if (score > bs) {
+          bs = score;
+          best = k;
+        }
+        k++;
+      }
+    this.x = xs[best % xs.length];
+    this.y = ys[Math.floor(best / xs.length)];
+    this.lastX = this.x;
+    this.lastY = this.y;
   }
 
   get dashing() {
@@ -341,6 +443,15 @@ export class Hunt {
   get surging() {
     return this.surgeT > 0;
   }
+}
+
+/** Height factor of a blow: nearer the titan strikes harder (x0.81 at the bottom, x1.13 at the top). */
+export function reachAt(y: number): number {
+  return 0.8 + 0.35 * (y / ARENA.H);
+}
+/** Graze-chain factor of a blow: x1 with no chain, x1.5 at a 30-graze chain. */
+export function chainMul(combo: number): number {
+  return 1 + (Math.min(combo, 30) / 30) * 0.5;
 }
 
 /** The most damage per second any aspect can deal (used by the world actor to reject impossible claims). */

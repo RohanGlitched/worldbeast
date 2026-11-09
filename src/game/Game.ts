@@ -134,6 +134,7 @@ export class Game {
   private hudT = 0;
   private lastHurt = 0;
   private lastSurges = 0;
+  private lastRelights = 0;
   private lastBeatInt = -1;
   private frameTimes: number[] = [];
   private cssW = 1;
@@ -377,9 +378,10 @@ export class Game {
       this.hunt.houndsAfter = 20;
       this.hunt.invuln = 4;
     }
-    this.hunt.x = 0;
-    this.hunt.y = 3;
-    this.target = { x: 0, y: 3 };
+    // a spawn point that stays clear through the grace and two beats more (deterministic for this seed and moment)
+    this.hunt.place(this.clock(), this.stage);
+    this.target = { x: this.hunt.x, y: this.hunt.y };
+    this.lastRelights = 0;
     this.phase = "playing";
     this.path = [];
     this.pathAcc = 0;
@@ -612,6 +614,12 @@ export class Game {
         this.events.onSfx?.("hurt", h.x);
         if (navigator.vibrate) navigator.vibrate(60);
       }
+      if (h.relights > this.lastRelights) {
+        this.lastRelights = h.relights;
+        this.fx.ring(h.x, h.y, 3, 0, 0.7);
+        this.events.onSfx?.("relight", h.x);
+        this.events.onFloat?.("A light returns", h.x, h.y + 1, "info");
+      }
       if (h.surges > this.lastSurges) {
         this.lastSurges = h.surges;
         this.events.onSfx?.("surge", h.x);
@@ -715,7 +723,7 @@ export class Game {
     this.ink.update(frame, t);
     this.ink.uniforms.uShow.value = Math.min(1, Math.max(0, (this.revealT - 2.4) / 1.4));
     const draws: HunterDraw[] = this.others ? this.others.list(t) : [];
-    if (h && this.phase === "playing") draws.push({ x: h.x, y: h.y, kind: 0, hue: 0.12, inv: h.invuln > 0 ? Math.min(1, h.invuln) : 0, dash: h.dashing ? 1 : 0, surge: h.surging ? 1 : 0, seed: 0.3 });
+    if (h && this.phase === "playing") draws.push({ x: h.x, y: h.y, kind: 0, hue: 0.12, inv: h.invuln > 0 ? Math.min(1, h.invuln) : 0, dash: h.dashing ? 1 : 0, surge: h.surging ? 1 : 0, seed: 0.3, grace: h.inGrace ? h.invuln / h.graceMax : 0 });
     this.hunters.update(draws, t, h && this.phase === "playing" ? { x: h.x, y: h.y, alive: h.alive } : null);
     if (Math.random() < dt * 6) this.fx.add({ x: (Math.random() - 0.5) * ARENA.W * 1.1, y: Math.random() * ARENA.TOP, vx: (Math.random() - 0.5) * 0.4, vy: 0.3 + Math.random() * 0.4, type: P.Spore, col: 0, size: 0.06 + Math.random() * 0.06, max: 4, drag: 0 });
     this.fx.update(dt);

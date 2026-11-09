@@ -641,6 +641,17 @@ export class Synth {
 
 /** A cathedral impulse response: pre-delay, sparse early reflections, a darkening stereo tail. */
 export function cathedralIR(ctx: BaseAudioContext, seconds = 3.2, preDelay = 0.028): AudioBuffer {
+  const steps = cathedralIRSteps(ctx, seconds, preDelay);
+  let r = steps.next();
+  while (!r.done) r = steps.next();
+  return r.value;
+}
+
+/**
+ * The same impulse response, in slices: it pauses (yields) after every `block` samples, so a caller can
+ * spread the work over idle time instead of stalling the page for it. The result is sample-identical.
+ */
+export function* cathedralIRSteps(ctx: BaseAudioContext, seconds = 3.2, preDelay = 0.028, block = 1 << 30): Generator<void, AudioBuffer> {
   const sr = ctx.sampleRate;
   const len = Math.floor(sr * (seconds + preDelay));
   const buf = ctx.createBuffer(2, len, sr);
@@ -670,6 +681,7 @@ export function cathedralIR(ctx: BaseAudioContext, seconds = 3.2, preDelay = 0.0
       lp = (1 - a) * rnd() + a * lp;
       lp2 = (1 - a) * lp + a * lp2;
       d[i] += lp2 * env * 2.2;
+      if ((i - pd) % block === block - 1) yield;
     }
   }
   // normalise to unit energy so the send level means the same for every IR length

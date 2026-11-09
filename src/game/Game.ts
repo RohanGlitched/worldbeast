@@ -276,6 +276,7 @@ export class Game {
     this.revealT = 0;
     this.fallT = -1;
     this.view.scene.add(this.titan.group);
+    this.ink.hush(false);
     this.rushReveal = false;
     // warm every program off the main thread where the browser allows it (KHR_parallel_shader_compile).
     // Nothing but the paper is drawn until they are linked, so the first use never blocks.
@@ -351,7 +352,8 @@ export class Game {
       const o = i * STRIDE.B;
       this.fx.burst(f.bullets[o], f.bullets[o + 1], 1, { type: P.Fleck, size: 0.1, speed: 2.5, life: 0.7, g: -1.5 });
     }
-    clearFrame(this.lobbyFrame);
+    // (the drops still drawn fade off the page; nothing new is thrown)
+    this.ink.hush(true);
     const h = this.hunt;
     if (h && this.phase === "playing" && h.alive) {
       // your run ends with the titan: a victory, not a death
@@ -431,8 +433,9 @@ export class Game {
     this.autopilot = on && this.field ? new Bot(this.field, 1, greed) : null;
   }
 
-  start(aspect: AspectId, opts: { resonance?: number; gentle?: boolean } = {}) {
-    this.hunt = new Hunt(this.spec, this.field, aspect);
+  start(aspect: AspectId, opts: { resonance?: number; gentle?: boolean; forgiving?: boolean } = {}) {
+    // (forgiving: a rehearsal, where a hit costs Resonance instead of a light)
+    this.hunt = new Hunt(this.spec, this.field, aspect, { forgiving: opts.forgiving });
     if (opts.resonance) this.hunt.resonance = opts.resonance;
     if (opts.gentle) {
       this.hunt.houndsAfter = 20;
@@ -728,7 +731,7 @@ export class Game {
         if (navigator.vibrate) navigator.vibrate([80, 60, 140]);
         this.events.onDown?.(this.summaryOf(h, stage, false));
       }
-    } else if (this.fallT >= 0 || this.kept) {
+    } else if (this.fallT >= 0.4 || this.kept) {
       // a felled titan throws nothing more
       clearFrame(this.lobbyFrame);
     } else {

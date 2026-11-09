@@ -25,6 +25,10 @@ export function createLiveWorld(game, audio, hooks = {}) {
     mode: "connecting",
     interlude: 0, // seconds until the next titan wakes
     last: null, // the titan that just ended
+    /** this world's runs are written in the Hall: seals, bests and omens count (not while out of reach) */
+    counts: true,
+    /** blows of yours this titan shrugged off (one hunter is credited in full only up to 40% of a life) */
+    shrugged: 0,
   };
   let history = [];
   const rebuildFeed = () => {
@@ -46,12 +50,14 @@ export function createLiveWorld(game, audio, hooks = {}) {
       world.events.onStatus = (m) => {
         st.mode = m;
         st.local = m === "offline";
+        st.counts = m !== "offline";
         w.emit();
       };
       world.events.onTitan = (t, spec) => {
         // let a falling titan finish lifting off the page before the next one is engraved
         const apply = () => {
           game.setTitan(t.seed, t.number);
+          if (st.spec?.seed !== game.spec?.seed) st.shrugged = 0;
           st.spec = game.spec;
           pendingTitan = null;
           rebuildFeed();
@@ -105,6 +111,12 @@ export function createLiveWorld(game, audio, hooks = {}) {
         if (e.me && game.revive()) hooks.onRevived?.(e.byName);
       };
       world.events.onDown = () => {};
+      // the lone-hunter rule: past 40% of a titan's life from one hunter, the rest of their blows count at a quarter
+      world.events.onAck = (ok, bad, why, resisted) => {
+        if (!(resisted > 0)) return;
+        st.shrugged += resisted;
+        w.emit();
+      };
       game.clock = () => world.titanTime();
       game.stageFn = () => world.stage;
       game.others = world.others;

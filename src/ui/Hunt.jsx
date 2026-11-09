@@ -335,11 +335,15 @@ export default function Hunt() {
         Promise.resolve(w.sendRun(s)).then((r) => r && setSummary((cur) => (cur && cur.startT === s.startT ? { ...cur, recorded: r.damage } : cur)));
       }, s.felled ? 0 : 8600);
       setProfile((p) => {
-        // a titan of your own falling (a rehearsal, a pinned titan) is not a world titan: no Witness seal for it
-        const freshSeals = judgeSeals(p, w.state.local && s.felled ? { ...s, felled: false } : s);
-        const omen = judgeOmen(p, s);
-        setSummary({ ...s, worldShare: w.shareOf(s.damage), mark: runMark.current, titanName: g.spec?.name, titanSpec: g.spec, freshSeals, omen });
-        const n = { ...p, ...(omen || {}), runs: p.runs + 1, total: p.total + s.damage, best: Math.max(p.best, s.damage), fresh: false, seals: [...(p.seals || []), ...freshSeals] };
+        // only runs in the world count: a rehearsal, a pinned titan or a world out of reach earns no seal, no
+        // best and no omen (it still counts as a run behind you, for the gentle first hunts)
+        const counts = !!w.state.counts;
+        const freshSeals = counts ? judgeSeals(p, s) : [];
+        const omen = counts ? judgeOmen(p, s) : null;
+        setSummary({ ...s, counts, worldShare: w.shareOf(s.damage), mark: runMark.current, titanName: g.spec?.name, titanSpec: g.spec, freshSeals, omen });
+        const n = counts
+          ? { ...p, ...(omen || {}), runs: p.runs + 1, total: p.total + s.damage, best: Math.max(p.best, s.damage), fresh: false, seals: [...(p.seals || []), ...freshSeals] }
+          : { ...p, runs: p.runs + 1, fresh: false };
         saveProfile(n);
         return n;
       });
@@ -405,7 +409,8 @@ export default function Hunt() {
       runMark.current = worldRef.current?.runMark?.() ?? null;
       setSummary(null);
       // a first hunt starts half-charged, so the first Surge comes early
-      g.start(profile.aspect, { resonance: (profile.runs || 0) === 0 ? 55 : 0, gentle: (profile.runs || 0) < 2 });
+      // (the world may soften the run: a rehearsal is forgiving, a hit costs Resonance instead of a light)
+      g.start(profile.aspect, { resonance: (profile.runs || 0) === 0 ? 55 : 0, gentle: (profile.runs || 0) < 2, ...(worldRef.current?.state?.huntOpts || {}) });
       canvasRef.current?.focus();
     },
     [profile],
@@ -456,11 +461,12 @@ export default function Hunt() {
     if (!L || (L.spread && !L.focus)) return;
     const touch = !L.spread;
     if (hud.time < 6) showTip("move", touch ? "Drag anywhere to fly. Only the bright pip at your star's heart can be struck." : "Fly with <b>WASD</b> or the arrows. Only the bright pip at your star's heart can be struck.");
-    else if (hud.coresOpen > 0) showTip("wound", "A <b>gold wound</b> is open. Your light strikes open wounds by itself; fly nearer the titan to strike harder.");
+    else if (hud.coresOpen > 0) showTip("wound", "A <b>gold wound</b> is open. Your light strikes open wounds by itself; fly nearer the titan, and away from the outer margins, to strike harder.");
     if (gameRef.current?.hunt?.houndWarned) showTip("hound", "<b>Hounds</b>: dark drops thrown at where you stand. Their dotted line shows the aim: keep moving.");
     if (hud.grazes >= 3) showTip("graze", "<b>Grazing</b> an attack fills Resonance. Fill it and your light Surges.");
     if (hud.time > 14) showTip("dash", touch ? "Tap <b>dash</b> or double-tap to pass clean through an attack." : "<b>Space</b> dashes you clean through an attack.");
     if (hud.time > 24) showTip("song", "Every attack lands on the beat. Read what comes next in <b>the Canticle</b>.");
+    if (hud.hits >= 1) showTip("relight", "A lost light <b>returns</b> after 15 s unstruck, or on each Surge.");
   };
 
   const update = (patch) =>
@@ -550,7 +556,7 @@ export default function Hunt() {
           </div>
           <div className="caption">
             <span>
-              {heldSpec ? `Felled · the next titan wakes in ${interlude || "a moment"}${interlude ? " s" : ""}` : interlude ? `Wakes in ${interlude} s · ${fmt(world.hpMax)} to strike` : `${struckTxt}% struck · ${fmt(world.hp)} of ${fmt(world.hpMax)} left`}
+              {heldSpec ? interlude ? `Felled · the next titan wakes in ${interlude} s` : "Felled · the next titan stirs" : interlude ? `Wakes in ${interlude} s · ${fmt(world.hpMax)} to strike` : `${struckTxt}% struck · ${fmt(world.hp)} of ${fmt(world.hpMax)} left`}
             </span>
             <span className={"stage-name stage-" + stage}>{STAGE_NAMES[stage]}</span>
           </div>
@@ -703,7 +709,7 @@ export default function Hunt() {
               <i className="life" /> Three lights. Only the bright pip at your star's heart can be struck.
             </li>
             <li>
-              <i className="hk">✦</i> Gold wounds open on the beat; your light strikes them by itself. Nearer the titan strikes harder.
+              <i className="hk">✦</i> Gold wounds open on the beat; your light strikes them by itself. Nearer the titan, and nearer the middle, strikes harder.
             </li>
             <li>
               <i className="hk">≈</i> Brush past ink to fill Resonance, then Surge. {layout && !layout.spread ? "Double-tap" : "Space"} dashes through anything.
@@ -759,6 +765,7 @@ export default function Hunt() {
       {playing && tip && tipNote("in-leaf in-strip")}
       <section className="strip-chronicle" aria-label="The chronicle">
         <div className="rubric">{recorded ? "A recorded run" : presenceLine}</div>
+        {world.shrugged > 0 && <div className="wb-shrug">The titan shrugs off a lone hunter: it needs more of you.</div>}
         {live && world.hunters.length > 0 && (
           <div className="hunters">
             {world.hunters.slice(0, 6).map((h) => (
@@ -819,6 +826,7 @@ export default function Hunt() {
           </div>
         );
       })()}
+      {live && world.shrugged > 0 && <div className="wb-shrug">The titan shrugs off a lone hunter: it needs more of you.</div>}
       {rehearsal && summary.felled && (
         <a className="wb-rehearse-live" href="/">
           Now hunt the live titan, with everyone
@@ -832,7 +840,7 @@ export default function Hunt() {
         <dt>Surges</dt>
         <dd>{summary.surges}</dd>
         <dt>Your best</dt>
-        <dd>{fmt(Math.max(profile.best, summary.damage))}</dd>
+        <dd>{summary.counts ? fmt(Math.max(profile.best, summary.damage)) : `${fmt(profile.best)} in the world (this run is not counted)`}</dd>
       </dl>
       {summary.omen && (
         <div className="omen done fresh">

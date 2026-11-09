@@ -49,6 +49,9 @@ function planVolley(spec: TitanSpec, r: Rng, kind: Kind, beat: number, idx: numb
   const o = originOf(spec, r);
   const hard = stage; // 0,1,2
   const sp = (lo: number, hi: number) => r.range(lo, hi) * (1 + 0.08 * hard);
+  // Calm aims its fans, glyphs, blooms and waves a little wider (the same draws, pushed toward the margins),
+  // so the margins are no refuge without the rail hems Wrath and Ruin add
+  const wide = (x: number, from: number, to: number) => (hard === 0 ? Math.sign(x) * to * Math.pow(Math.min(1, Math.abs(x) / from), 0.7) : x);
   const v: Volley = { id: phrase * 1000 + idx, kind, beat, tele: 1, ink: r.chance(0.7) ? 0 : 1, heavy: false, p: {} };
   switch (kind) {
     case "ring": {
@@ -61,23 +64,29 @@ function planVolley(spec: TitanSpec, r: Rng, kind: Kind, beat: number, idx: numb
       break;
     }
     case "fan": {
-      v.p = { ox: o.x, oy: o.y, tx: r.range(-ARENA.W * 0.4, ARENA.W * 0.4), ty: r.range(1, ARENA.H * 0.45), n: r.int(5, 7) + hard, spread: r.range(0.45, 0.8), speed: sp(5.2, 7), waves: r.int(2, 3) + (hard > 1 ? 1 : 0), gap: r.pick([0.5, 1]), rad: 0.26 };
+      v.p = { ox: o.x, oy: o.y, tx: wide(r.range(-ARENA.W * 0.4, ARENA.W * 0.4), ARENA.W * 0.4, ARENA.W / 2 - 0.8), ty: r.range(1, ARENA.H * 0.45), n: r.int(5, 7) + hard, spread: r.range(0.45, 0.8), speed: sp(5.2, 7), waves: r.int(2, 3) + (hard > 1 ? 1 : 0), gap: r.pick([0.5, 1]), rad: 0.26 };
       break;
     }
     case "wall": {
       const gapW = Math.max(2.1, r.range(2.6, 3.6) - hard * 0.25);
-      v.p = { gapX: r.range(-ARENA.W / 2 + gapW, ARENA.W / 2 - gapW), gapW, speed: sp(3.2, 4.4), spacing: 0.72, rad: 0.3, rows: hard > 0 && r.chance(0.5) ? 2 : 1, shift: r.range(-3, 3) };
+      // (a Calm wall leaves its lane nearer the middle: the margins are walled, the way through is central)
+      v.p = { gapX: r.range(-ARENA.W / 2 + gapW, ARENA.W / 2 - gapW) * (hard === 0 ? 0.6 : 1), gapW, speed: sp(3.2, 4.4), spacing: 0.72, rad: 0.3, rows: hard > 0 && r.chance(0.5) ? 2 : 1, shift: r.range(-3, 3) };
       v.tele = 2;
       v.heavy = true;
       break;
     }
     case "rain": {
       v.p = { cols: r.int(4, 6) + hard, seed: r.int(0, 1e6), speed: sp(7, 9.5), drops: r.int(3, 5), every: r.pick([0.5, 1]), rad: 0.3 };
+      // how many of its columns hug a side rail: in Calm only one rain in three touches the rails (both, so
+      // the margins are no refuge, but no worse than the middle); from Wrath on one always does, both in a third
+      v.p.rails = hard === 0 ? (v.p.seed % 3 === 0 ? 2 : 0) : v.p.seed % 3 === 2 ? 2 : 1;
+      // (a Calm rain that spares the rails drops the column a rail would have taken, not moves it inward)
+      if (v.p.rails === 0) v.p.cols--;
       v.tele = 2;
       break;
     }
     case "wave": {
-      v.p = { ox: o.x, oy: o.y, n: r.int(7, 11) + hard * 2, speed: sp(3.4, 4.6), amp: r.range(1.2, 2.6), freq: r.range(0.6, 1.1), every: r.pick([0.25, 0.5]), rad: 0.26, phase: r.range(0, TAU) };
+      v.p = { ox: wide(o.x, 6.5, ARENA.W / 2 - 1), oy: o.y, n: r.int(7, 11) + hard * 2, speed: sp(3.4, 4.6), amp: r.range(1.2, 2.6), freq: r.range(0.6, 1.1), every: r.pick([0.25, 0.5]), rad: 0.26, phase: r.range(0, TAU) };
       break;
     }
     case "curve": {
@@ -85,7 +94,7 @@ function planVolley(spec: TitanSpec, r: Rng, kind: Kind, beat: number, idx: numb
       break;
     }
     case "bloom": {
-      v.p = { ox: o.x, oy: o.y, tx: r.range(-ARENA.W * 0.38, ARENA.W * 0.38), ty: r.range(4, ARENA.H * 0.7), travel: r.pick([2, 3]), n: r.int(10, 14) + hard * 2, speed: sp(3, 4.2), rad: 0.27, seedRad: 0.55 };
+      v.p = { ox: o.x, oy: o.y, tx: wide(r.range(-ARENA.W * 0.38, ARENA.W * 0.38), ARENA.W * 0.38, ARENA.W / 2 - 1), ty: r.range(4, ARENA.H * 0.7), travel: r.pick([2, 3]), n: r.int(10, 14) + hard * 2, speed: sp(3, 4.2), rad: 0.27, seedRad: 0.55 };
       v.heavy = true;
       break;
     }
@@ -100,13 +109,24 @@ function planVolley(spec: TitanSpec, r: Rng, kind: Kind, beat: number, idx: numb
       break;
     }
     case "slam": {
-      v.p = { cx: r.range(-ARENA.W * 0.35, ARENA.W * 0.35), cy: r.range(3, ARENA.H * 0.6), speed: sp(5, 6.5), width: 0.32, gapA: r.range(0, TAU), gapW: Math.max(0.95, r.range(1.15, 1.45) - hard * 0.1), gapB: r.range(0, TAU), rings: hard > 1 ? 2 : 1, reach: r.range(9, 12) };
+      // Calm and Wrath: one ring, slower, with two wide gaps set well apart (R4: rings that met the floor
+      // trapped hunters there and made slams the top killer); the corner footfall comes only from Wrath on
+      const gentle = hard < 2;
+      const cx = r.range(-ARENA.W * 0.35, ARENA.W * 0.35),
+        cy = r.range(3, ARENA.H * 0.6),
+        speed = sp(5, 6.5) * (gentle ? 0.85 : 1),
+        gapA = r.range(0, TAU),
+        gw = r.range(1.15, 1.45),
+        gb = r.range(0, TAU);
+      // (two gaps that overlap read as one: in Calm and Wrath the second sits at least 126 degrees away)
+      const gapB = gentle ? gapA + Math.PI * (0.7 + 0.6 * (gb / TAU)) : gb;
+      v.p = { cx, cy, speed, width: 0.32, gapA, gapW: gentle ? 1.6 + (gw - 1.15) : Math.max(0.95, gw - hard * 0.1), gapB, rings: hard > 1 ? 2 : 1, reach: r.range(9, 12), tread: hard > 0 ? 1 : 0 };
       v.tele = 2;
       v.heavy = true;
       break;
     }
     case "glyph": {
-      v.p = { cx: r.range(-ARENA.W * 0.38, ARENA.W * 0.38), cy: r.range(2, ARENA.H * 0.7), R: r.range(1.6, 2.6), dur: r.pick([2, 3, 4]) };
+      v.p = { cx: wide(r.range(-ARENA.W * 0.38, ARENA.W * 0.38), ARENA.W * 0.38, ARENA.W / 2 - 1), cy: r.range(2, ARENA.H * 0.7), R: r.range(1.6, 2.6), dur: r.pick([2, 3, 4]) };
       v.tele = 2;
       break;
     }
@@ -167,9 +187,10 @@ export function planPhrase(spec: TitanSpec, phrase: number, stage: Stage): Phras
   }
   // Hems: short rains down both side rails, so the margins are never a refuge (R3: the edge columns
   // were half as dangerous as the centre for every titan). Drawn from their own stream, so the rest
-  // of the plan is unchanged.
+  // of the plan is unchanged. Only from Wrath on: in Calm they made the margins the most dangerous place
+  // on the page (R4: edge coverage 1.27x the centre's).
   const hr = rngFor("hem", spec.seed, phrase, stage);
-  const hems = overture ? 1 : [2, 2, 3][stage];
+  const hems = stage === 0 ? 0 : overture ? 1 : [0, 2, 3][stage];
   const used = new Set<number>();
   for (let k = 0; k < hems; k++) {
     let bar = hr.int(overture ? 4 : 1, 14);
@@ -191,7 +212,7 @@ function signature(spec: TitanSpec, r: Rng, beat: number, idx: number, phrase: n
     case "coil":
       return { ...base, kind: "beam", p: { ox: 0, oy: ARENA.TOP + 0.6, a1: DOWN + 1.1, a2: DOWN - 1.1, len: ARENA.H * 1.5, width: 0.9, dur: 8, twin: 1 } };
     case "strider":
-      return { ...base, kind: "slam", p: { cx: 0, cy: ARENA.H * 0.42, speed: 6, width: 0.38, gapA: r.range(0, TAU), gapW: 1.1, gapB: r.range(0, TAU), rings: 3, reach: 13 } };
+      return { ...base, kind: "slam", p: { cx: 0, cy: ARENA.H * 0.42, speed: 6, width: 0.38, gapA: r.range(0, TAU), gapW: 1.1, gapB: r.range(0, TAU), rings: 3, reach: 13, tread: 1 } };
     case "bloom":
       return { ...base, kind: "spiral", p: { ox: 0, oy: ARENA.TOP + 0.6, n: 48, speed: 3.6, turns: 2.5, dur: 8, dir: 1, a0: 0, rad: 0.24, twin: 1 } };
     case "throne":
@@ -391,18 +412,54 @@ export const TREAD = 4; // zones: ink + TREAD = a slam's footfall (a hazard, rep
 export const COLUMN = 10;
 export const LANE = 20;
 export const RAIL = 20;
+/** marks: ink + GAP = where a shockwave's gap meets the page's rails or foot (stand on that line to pass through) */
+export const GAP = 30;
+/** a shockwave spends itself this far above the foot of the page, so the bottom lane is never a trap */
+export const RING_FLOOR = 1.2;
 
-/** Rain columns. One always hugs a side rail (both, for a third of rains), so the margins are never a refuge. */
+/** Rain columns. `rails` of them hug a side rail (planVolley sets how many by stage), so the margins are never a refuge. */
 export function rainColumns(p: Record<string, number>): number[] {
   const rail = ARENA.W / 2 - 0.45;
   if (p.hem) return [-rail, rail]; // a hem: both side rails at once
   const r = rngFor("rain", p.seed);
   const cols: number[] = [];
-  for (let c = 0; c < p.cols; c++) cols.push(r.range(-ARENA.W / 2 + 0.6, ARENA.W / 2 - 0.6));
+  const rails = p.rails ?? (p.seed % 3 === 2 ? 2 : 1);
+  const L = ARENA.W / 2 - 0.6;
+  for (let c = 0; c < p.cols; c++) {
+    const x = r.range(-L, L);
+    // a Calm rain that spares the rails leans its columns a little outward instead (a column near the
+    // middle can be dodged either way; one near the margin only one way, so the margins get a fair share)
+    cols.push(rails === 0 ? Math.sign(x) * L * Math.pow(Math.abs(x) / L, 0.75) : x);
+  }
   const side = p.seed % 2 ? 1 : -1;
-  cols[0] = side * rail;
-  if (p.seed % 3 === 2 && cols.length > 1) cols[1] = -side * rail;
+  if (rails > 0) cols[0] = side * rail;
+  if (rails > 1 && cols.length > 1) cols[1] = -side * rail;
   return cols;
+}
+
+/**
+ * Where a shockwave's gap (the ray from its centre at angle `a`) meets the page frame: a side rail, or the
+ * line it spends itself on above the foot of the page (drawn just below the arena). Null when the gap points
+ * up into the titan, or the ring spends itself before it gets there.
+ */
+export function gapSight(cx: number, cy: number, a: number, reach: number): { x: number; y: number } | null {
+  const c = Math.cos(a),
+    s = Math.sin(a);
+  let t = 1e9;
+  if (c > 1e-3) t = (ARENA.W / 2 - cx) / c;
+  else if (c < -1e-3) t = (-ARENA.W / 2 - cx) / c;
+  let floor = false;
+  if (s < -1e-3) {
+    const tf = (RING_FLOOR - cy) / s;
+    if (tf < t) {
+      t = tf;
+      floor = true;
+    }
+  }
+  if (t > reach + 0.5) return null;
+  const y = cy + s * t;
+  if (y > ARENA.H) return null;
+  return floor ? { x: cx + c * t, y: -0.35 } : { x: (c > 0 ? 1 : -1) * (ARENA.W / 2 + 0.35), y };
 }
 
 /** A slam's tread: where the titan's foot comes down at the top of the page (top corners, under its body). */
@@ -599,19 +656,34 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
     }
     case "slam": {
       const tr = slamTread(p);
+      const tread = p.tread ?? 1;
+      const reach = p.reach ?? ARENA.H * 1.6;
+      // each gap's sight on the rails (or the foot of the page), from the telegraph on: a hunter sees where
+      // to stand before the ring arrives, as a wall's posts show its lane
+      const sights = (k: number, pr: number) => {
+        for (const g of [p.gapA + k * 1.3, p.gapB + k * 0.7]) {
+          const s = gapSight(p.cx, p.cy, g, reach);
+          if (s) pushMark(f, s.x, s.y, pr, v.ink + GAP);
+        }
+      };
       if (age < 0) {
         pushZone(f, p.cx, p.cy, 1.1, tele * 0.999, v.ink + TREAD);
-        pushZone(f, tr.x, tr.y, tr.R, tele * 0.999, v.ink + TREAD);
+        if (tread) pushZone(f, tr.x, tr.y, tr.R, tele * 0.999, v.ink + TREAD);
+        sights(0, tele * 0.999);
         return;
       }
-      // the foot itself lands for most of a beat: a splash under the titan in the top corner
-      if (tSec < beatLen * 0.75) pushZone(f, tr.x, tr.y, tr.R, 1 + tSec / (beatLen * 0.75), v.ink + TREAD);
+      // the foot itself lands for most of a beat: a splash under the titan in the top corner (from Wrath on)
+      if (tread && tSec < beatLen * 0.75) pushZone(f, tr.x, tr.y, tr.R, 1 + tSec / (beatLen * 0.75), v.ink + TREAD);
       for (let k = 0; k < p.rings; k++) {
         const te = tSec - k * beatLen * 2;
-        if (te < 0) continue;
+        if (te < 0) {
+          if (te > -beatLen * 2) sights(k, Math.max(0, 1 + te / (beatLen * 2)) * 0.999);
+          continue;
+        }
         const R = p.speed * te;
-        if (R > (p.reach ?? ARENA.H * 1.6)) continue; // the shockwave spends itself
+        if (R > reach) continue; // the shockwave spends itself
         pushRing(f, p.cx, p.cy, R, p.width, p.gapA + k * 1.3, p.gapW, p.gapB + k * 0.7, 1, v.ink);
+        sights(k, 1 + Math.min(0.999, R / reach));
       }
       if (tSec < beatLen) pushZone(f, p.cx, p.cy, 1.1, 1 + tSec / beatLen, v.ink + TREAD);
       return;
@@ -702,6 +774,7 @@ export function touch(f: FieldFrame, x: number, y: number, out: Touch): Touch {
     }
   }
   for (let i = 0; i < f.ringCount; i++) {
+    if (y < RING_FLOOR) break; // a shockwave spends itself above the foot of the page
     const o = i * RG;
     const dx = x - f.rings[o],
       dy = y - f.rings[o + 1];

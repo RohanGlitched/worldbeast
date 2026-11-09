@@ -94,9 +94,25 @@ export const LOOP_BEATS = PHRASE_BEATS * LOOP_PHRASES;
 /** Arena: x in [-W/2, W/2], y in [0, H]; the titan towers beyond y = H. */
 export const ARENA = { W: 16, H: 20, TOP: 20 };
 
+/** A seed's anatomy (cheap: no need to build the whole titan). */
+export function archetypeOf(seed: number): Archetype {
+  return ARCHETYPES[hash32("arch", seed) % ARCHETYPES.length];
+}
+
+/**
+ * The first of `candidate(0), candidate(1), ...` whose archetype differs from `avoid` (the titan just felled),
+ * so a fall is always followed by a different body. Deterministic; candidate(0) is kept whenever it already
+ * differs, so seeds chosen before this rule are unchanged.
+ */
+export function seedUnlike(candidate: (k: number) => number, avoid?: Archetype | null): number {
+  let s = candidate(0) >>> 0;
+  for (let k = 1; avoid && archetypeOf(s) === avoid && k < 64; k++) s = candidate(k) >>> 0;
+  return s;
+}
+
 export function makeTitan(seed: number, number: number): TitanSpec {
   const r = rngFor("titan", seed);
-  const archetype = ARCHETYPES[hash32("arch", seed) % ARCHETYPES.length];
+  const archetype = archetypeOf(seed);
   const plate = PLATES[hash32("plate", seed) % PLATES.length];
   const bpm = r.int(23, 33) * 4; // 92..132, multiple of 4
   const modes = ["aeolian", "dorian", "phrygian", "lydian", "mixolydian"] as const;

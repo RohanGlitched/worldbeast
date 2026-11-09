@@ -56,7 +56,7 @@ export class InkLayer {
           vec2 dir = sp > .01 ? vel / sp : vec2(0., -1.);
           vec2 side = vec2(dir.y, -dir.x);
           vTail = clamp(sp * .16, 0., 1.8);
-          float s = aData.z * 1.55;
+          float s = aData.z * 1.55 * 1.18;
           vec2 lp = position.xy;
           lp.y = lp.y < 0. ? lp.y * (1. + vTail) : lp.y;
           vUv = lp;

@@ -75,6 +75,7 @@ export interface RunSummary {
   felled?: boolean; // the run ended because the world felled the titan
   cleanTime?: number;
   finalBlow?: boolean;
+  killer?: string;
 }
 
 export class Game {
@@ -192,7 +193,7 @@ export class Game {
   }
 
   private summaryOf(h: Hunt, stage: Stage, felled: boolean): RunSummary {
-    return { damage: h.damage, time: h.time, grazes: h.grazeCount, bestCombo: h.bestCombo, surges: h.surges, aspect: h.aspect.id, path: this.path.slice(), startT: this.runStart, stage, felled, cleanTime: h.cleanBest };
+    return { damage: h.damage, time: h.time, grazes: h.grazeCount, bestCombo: h.bestCombo, surges: h.surges, aspect: h.aspect.id, path: this.path.slice(), startT: this.runStart, stage, felled, cleanTime: h.cleanBest, killer: h.lastHitKind };
   }
   get falling() {
     return this.fallT >= 0;
@@ -257,7 +258,11 @@ export class Game {
     resizeView(this.view, this.cssW, this.cssH, this.quality);
     this.events.onLayout?.(this.layout());
     // engraving lines: about one line every 4.5 device pixels, whatever the screen
-    if (this.titan) this.titan.u.uPx.value = this.view.unitsPerPx / this.view.dpr;
+    if (this.titan) {
+      this.titan.u.uPx.value = this.view.unitsPerPx / this.view.dpr;
+      // in the open book the titan may spill onto the desk, but never across the gutter onto the text
+      this.titan.u.uClipX.value = this.view.spread ? -PAGE.W / 2 - 0.15 : -1e4;
+    }
   };
 
   private adaptQuality(dt: number) {

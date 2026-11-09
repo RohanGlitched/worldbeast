@@ -9,7 +9,7 @@ export default function Footer() {
     <footer className="doc-footer">
       <div className="foot-grid">
         <div>
-          <div className="foot-title">WORLDBEAST</div>
+          <div className="foot-title">Worldbeast</div>
           <p>One titan. Everyone online. The same moment. A living bestiary built on Base44: the world's clock, wounds and hunters live in a Base44 actor; every titan, run and echo is a Base44 record.</p>
         </div>
         <nav aria-label="Pages">

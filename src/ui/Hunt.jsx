@@ -21,6 +21,22 @@ const ORD = (n) => {
 const fmt = (n) => Math.round(n).toLocaleString("en-US");
 const NOTE = ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"];
 
+// what struck the last blow, and how to live through it next time
+const KILLERS = {
+  ring: ["a ring of ink", "Rings always leave gaps: slip between two drops rather than outrunning them."],
+  spiral: ["a turning spiral", "Spirals sweep around: circle with them, not against them."],
+  fan: ["an aimed volley", "Volleys are aimed at a spot, not at you: step sideways as they leave the mouth."],
+  wall: ["a wall of drops", "Watch the gold posts at the top: the gap opens where they stand."],
+  rain: ["falling rain", "Rain falls down thin guide lines: stand between them."],
+  wave: ["a swaying stream", "Streams sway in a rhythm: move with the sway."],
+  curve: ["a curving flight", "Curving drops bend one way: read the bend and step the other."],
+  bloom: ["a bursting seed", "A gold seed bursts where it lands: be far from the mark."],
+  beam: ["a sweeping beam", "Beams start along the dashed guide: cross behind the stroke, or dash through it."],
+  slam: ["a shockwave", "Shockwaves have two gaps: find one, or dash through the ring."],
+  zone: ["a flooding glyph", "Circles drawn on the page flood with ink: leave before they fill."],
+  cross: ["crossing lines", "Diagonal lines leave diamond gaps: wait inside one."],
+};
+
 const ASPECT_ICON = {
   ember: "M12 2c1 4 6 6.2 6 11.6A6 6 0 0 1 6 13.6c0-2.6 1.4-4.2 2.6-5.2.2 2 1 3.4 2.4 3.8C10 8.6 10.6 5 12 2z",
   lance: "M12 1.5l2 4.5-1.2 1V21h-1.6V7L10 6zM8.5 16h7",
@@ -294,7 +310,7 @@ export default function Hunt() {
       <div className="aspect-line">{ASPECTS[profile.aspect].line}</div>
       <button className="join" onClick={begin} disabled={!!world?.interlude}>
         {world?.interlude ? `The next titan stirs… ${world.interlude}` : "Join the hunt"}
-        <small>{world?.mode === "offline" ? "The world is out of reach: you hunt this titan alone for now" : world?.online > 1 ? `${world.online - 1} others are watching or fighting it now` : "Your echo will fly with the hunters after you"}</small>
+        <small>{world?.mode === "offline" ? "The world is out of reach: you hunt this titan alone for now" : world?.online > 1 ? `${world.online - 1} ${world.online - 1 === 1 ? "other is" : "others are"} watching or fighting it now` : "Your echo will fly with the hunters after you"}</small>
       </button>
     </section>
   );
@@ -314,7 +330,7 @@ export default function Hunt() {
   const arena = L?.arena;
   return (
     <div className="stage" style={styleU}>
-      {phase !== "playing" && !closed && <Bookmarks />}
+      {phase !== "playing" && !closed && L?.spread && <Bookmarks />}
       {closed && (
         <Cover
           rect={L ? (L.spread && L.left ? { x: L.left.x, y: L.left.y - 4, w: L.right.x + L.right.w - L.left.x, h: L.left.h + 8 } : null) : null}
@@ -356,6 +372,10 @@ export default function Hunt() {
                 <div className="epithet">{spec.epithet}</div>
               </div>
               {lobbyControls}
+              <nav className="sheet-links" aria-label="Turn to">
+                <a href="/hall">Hall of Titans</a>
+                <a href="/how">How it works</a>
+              </nav>
             </div>
           )}
         </>
@@ -364,23 +384,20 @@ export default function Hunt() {
       {/* HUD over the arena */}
       {arena && phase === "playing" && hud && (
         <div className="hud" style={{ left: arena.x, top: arena.y, width: arena.w, height: arena.h }}>
-          <div className="hud-top">
+          <div className="hud-bottom">
             <div className="lives" aria-label={`${hud.maxHits - hud.hits} of ${hud.maxHits} lights left`}>
               {Array.from({ length: hud.maxHits }, (_, i) => (
                 <span key={i} className={"life" + (i < hud.maxHits - hud.hits ? "" : " lost")} />
               ))}
             </div>
+            <span className={"reso" + (hud.resonance >= 99 || hud.surging ? " full" : "")} aria-label="Resonance">
+              <i style={{ width: (hud.surging ? 100 : hud.resonance) + "%" }} />
+              <em>{hud.surging ? "Surge!" : hud.combo > 1 ? `×${hud.combo}` : "Resonance"}</em>
+            </span>
             <div className="dmg">
               {fmt(hud.damage)}
-              <small>blows struck</small>
+              <small>blows</small>
             </div>
-          </div>
-          <div className="hud-bottom">
-            <span className="reso-label">{hud.surging ? "Surge!" : "Resonance"}</span>
-            <span className={"reso" + (hud.resonance >= 99 || hud.surging ? " full" : "")}>
-              <i style={{ width: (hud.surging ? 100 : hud.resonance) + "%" }} />
-            </span>
-            <span className="combo">{hud.combo > 1 ? `×${hud.combo}` : ""}</span>
           </div>
           {L && !L.spread && (
             <button className="dashbtn" style={{ right: u * 0.5, bottom: u * 1.6 }} onPointerDown={(e) => (e.preventDefault(), gameRef.current.input.queueDash())}>
@@ -395,8 +412,9 @@ export default function Hunt() {
         <div className="summary" style={{ left: arena.x + arena.w * 0.08, width: arena.w * 0.84, top: arena.y + arena.h * 0.2 }} role="dialog" aria-label="Your run">
           <h2>{summary.felled ? "The titan is felled!" : "Your light went out"}</h2>
           <div className="rubric">
-            against {spec?.name}, after {summary.time.toFixed(1)} s
+            against {spec?.name}, after {summary.time.toFixed(1)} s{!summary.felled && KILLERS[summary.killer] ? `, struck down by ${KILLERS[summary.killer][0]}` : ""}
           </div>
+          {!summary.felled && KILLERS[summary.killer] && <p className="tip-line">{KILLERS[summary.killer][1]}</p>}
           {!summary.felled && world && !world.local && world.online > 1 && <div className="rubric">Your spark lingers for 8 s: a hunter who flies through it rekindles you.</div>}
           <div className="big">{fmt(summary.damage)}</div>
           <div style={{ fontStyle: "italic", color: "var(--ink-2)" }}>blows struck{summary.worldShare ? ` · ${summary.worldShare} of the world's today` : ""}</div>

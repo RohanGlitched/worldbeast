@@ -44,7 +44,7 @@ describe("world actor (in-process)", () => {
     w = new (World as any)();
     await w.handleStart();
     await settle(w);
-    expect(w.titan).toMatchObject({ number: 1, hp: 150_000, hpMax: 150_000, status: "awake", wokeAt: T0 });
+    expect(w.titan).toMatchObject({ number: 1, hp: 40_000, hpMax: 40_000, status: "awake", wokeAt: T0 });
     spec = makeTitan(w.titan.seed, 1);
     expect(w.mockDb.Titan.rows).toHaveLength(1);
     expect(w.mockDb.Titan.rows[0]).toMatchObject({ number: 1, seed: w.titan.seed, status: "awake" });
@@ -55,7 +55,7 @@ describe("world actor (in-process)", () => {
   it("welcomes, relays hunters and keeps one hp for everyone", async () => {
     A = await connect(w, "a");
     B = await connect(w, "b");
-    expect(A.last("welcome")).toMatchObject({ titan: { number: 1 }, hp: 150_000, stage: 0 });
+    expect(A.last("welcome")).toMatchObject({ titan: { number: 1 }, hp: 40_000, stage: 0 });
     await send(w, A, { t: "hello", key: key("a"), name: "Ana http://spam.com", sigil: 3, aspect: "lance" });
     await send(w, B, { t: "hello", key: key("b"), name: "Bo", sigil: 9, aspect: "ember" });
     expect(B.inbox.find((m) => m.t === "join" && m.r[0] === 1).r.slice(1)).toEqual([expect.not.stringMatching(/spam|http/), 3, "lance"]);
@@ -67,11 +67,11 @@ describe("world actor (in-process)", () => {
     expect(A.last("s").h).toEqual(expect.arrayContaining([[1, 20, 80, 3, 1], [2, -40, 120, 9, 0]]));
 
     await send(w, A, { t: "hit", hits: [[core, 50, beat], [core, 60, beat - 0.2, 1]] });
-    expect(A.last("ack")).toMatchObject({ ok: 110, bad: 0, hp: 149_890 });
+    expect(A.last("ack")).toMatchObject({ ok: 110, bad: 0, hp: 39_890 });
     await send(w, A, { t: "hit", hits: [[core, 50, beat + 5], [core, 9999, beat], [core, 50, beat]] });
     expect(A.last("ack")).toMatchObject({ ok: 50, bad: 2 });
     await w.handleTick();
-    expect(B.last("s").hp).toBe(149_840);
+    expect(B.last("s").hp).toBe(39_840);
     expect(B.last("s").f?.some((f: any) => f.k === "surge")).toBe(true);
   });
 
@@ -125,7 +125,7 @@ describe("world actor (in-process)", () => {
   it("persists hp (throttled) and restores everything after the session idles", async () => {
     vi.setSystemTime(Date.now() + 3000);
     await w.handleTick();
-    expect(w.storage.map.get("hp")).toBe(149_840);
+    expect(w.storage.map.get("hp")).toBe(39_840);
     w.conns.splice(w.conns.indexOf(B), 1);
     await w.handleClose(B);
     w.conns.length = 0;
@@ -135,7 +135,7 @@ describe("world actor (in-process)", () => {
     w2.mockDb = w.mockDb;
     w2.client = w.client;
     await w2.handleStart();
-    expect(w2.titan).toMatchObject({ number: 1, hp: 149_840, seed: w.titan.seed, recordId: w.titan.recordId });
+    expect(w2.titan).toMatchObject({ number: 1, hp: 39_840, seed: w.titan.seed, recordId: w.titan.recordId });
     expect([...w2.credits.values()][0]).toMatchObject({ dmg: 160 });
     w = w2;
     A = await connect(w, "a");
@@ -152,7 +152,7 @@ describe("world actor (in-process)", () => {
     await send(w, B, { t: "hit", hits: [[core, 50, beat]] });
     await settle(w);
     const felled = A.last("felled");
-    expect(felled.end).toMatchObject({ number: 1, status: "felled", blow: { name: "Bo", sigil: 9 }, damageTotal: 150_000 });
+    expect(felled.end).toMatchObject({ number: 1, status: "felled", blow: { name: "Bo", sigil: 9 }, damageTotal: 40_000 });
     expect(felled.next).toMatchObject({ number: 2, wokeAt: felled.n + 20_000, status: "awake" });
     expect(B.last("ack")).toMatchObject({ ok: 30, hp: 0 });
     const t1 = w.mockDb.Titan.rows.find((r: any) => r.number === 1);

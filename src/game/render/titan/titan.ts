@@ -51,13 +51,13 @@ export class Titan {
     this.u.uAccent.value.set(p.accent);
     this.r = rngFor("anatomy", spec.seed);
     const mk = (k: string, o: EngraveOpts) => (this.m[k] = engraveMaterial(this.u, o));
-    mk("body", { wash: 0.78 });
-    mk("dark", { wash: 0.9, tone: -0.22 });
-    mk("light", { wash: 0.32, tone: 0.1 });
+    mk("body", { wash: 0.5 });
+    mk("dark", { wash: 0.62, tone: -0.2 });
+    mk("light", { wash: 0.18, tone: 0.1 });
     mk("stone", { wash: 0.35, tone: 0.12, tint: "paper", cracks: 0.4 });
     mk("gilt", { wash: 0.2, tone: 0.05, gilt: 0.9, cracks: 0 });
-    mk("accent", { wash: 0.72, tint: "accent" });
-    mk("scales", { wash: 0.8, scales: 1 });
+    mk("accent", { wash: 0.5, tint: "accent" });
+    mk("scales", { wash: 0.52, scales: 1 });
     mk("bone", { wash: 0.12, tone: 0.18, tint: "paper", cracks: 0.6 });
     mk("eye", { wash: 0.05, tone: 0.35, tint: "paper", cracks: 0 });
     mk("pupil", { wash: 0, tone: -0.9, gilt: 0.35, cracks: 0 });
@@ -108,7 +108,7 @@ export class Titan {
     return this.part(eng(new THREE.ConeGeometry(r, h, 12, 4), Math.round(r * 10 + 4), Math.round(h * 4 + 3)), mat, parent, ow);
   }
   private torus(R: number, tube: number, mat = "gilt", parent: THREE.Object3D = this.anatomy, arc = Math.PI * 2, ow = 0.04) {
-    return this.part(eng(new THREE.TorusGeometry(R, tube, 10, Math.max(24, Math.round(R * 16)), arc), 6, Math.round(R * 14 + 8)), mat, parent, ow);
+    return this.part(eng(new THREE.TorusGeometry(R, tube, 10, Math.max(24, Math.round(R * 16)), arc), 10, Math.round(R * 26 + 10)), mat, parent, ow);
   }
   private capsule(r: number, len: number, mat = "body", parent: THREE.Object3D = this.anatomy, ow = 0.06) {
     return this.part(eng(new THREE.CapsuleGeometry(r, len, 8, 16), Math.round(r * 12 + 6), Math.round((len + r * 2) * 5)), mat, parent, ow);
@@ -147,12 +147,24 @@ export class Titan {
         spike.position.set(Math.cos(a) * 1.15, Math.sin(a) * 1.15, 0);
         spike.rotation.z = a - Math.PI / 2;
       }
+      // an iris of engraved iron blades closes over the wound; it opens on the titan's beat
       const shell: THREE.Mesh[] = [];
-      for (const side of [-1, 1]) {
-        const g = eng(new THREE.SphereGeometry(0.8, 18, 12, side < 0 ? Math.PI / 2 : -Math.PI / 2, Math.PI, 0, Math.PI), 10, 8);
-        const s = this.part(g, "dark", this.group, 0.04);
-        s.position.set(c.x, c.y, z + 0.12);
-        shell.push(s);
+      const blades = 6;
+      for (let k = 0; k < blades; k++) {
+        const sh = new THREE.Shape();
+        sh.moveTo(0, 0);
+        sh.lineTo(0.95, -0.12);
+        sh.quadraticCurveTo(0.9, 0.45, 0.32, 0.62);
+        sh.lineTo(0, 0);
+        const g = eng(new THREE.ExtrudeGeometry(sh, { depth: 0.06, bevelEnabled: false, curveSegments: 6 }), 8, 8);
+        const pivot = new THREE.Group();
+        pivot.position.set(c.x, c.y, z + 0.18 + k * 0.004);
+        pivot.rotation.z = (k / blades) * Math.PI * 2;
+        const blade = this.part(g, "dark", pivot, 0.025);
+        blade.position.set(0, 0, 0);
+        (blade.userData as { base: number }).base = 0;
+        this.group.add(pivot);
+        shell.push(blade);
       }
       this.group.add(gem);
       const aura = new THREE.Mesh(
@@ -648,7 +660,7 @@ export class Titan {
   private buildSwarm(): Rig {
     const r = this.r;
     const A = this.anatomy;
-    const heart = this.part(orb(44, 30, r.range(0, 9), 0.16, 64, 40), "body", A, 0.12);
+    const heart = this.part(orb(44, 30, r.range(0, 9), 0.16, 64, 40), "accent", A, 0.12);
     heart.scale.set(3.3, 3.5, 2.6);
     heart.position.set(0, 26, -0.5);
     const veins: Sweep[] = [];
@@ -664,9 +676,9 @@ export class Titan {
       rib.rotation.set(r.range(-0.9, 0.9), r.range(-0.9, 0.9), r.range(0, 6));
       ribs.push(rib);
     }
-    this.eye(heart, V(-0.3, 0.12, 0.92), 0.17, 0.5);
-    this.eye(heart, V(0.3, 0.12, 0.92), 0.17, 0.5);
-    this.eye(heart, V(0, -0.22, 0.96), 0.13, 0.5);
+    const slit = this.eye(heart, V(0, 0.08, 0.93), 0.24, 0.45);
+    slit.scale.set(0.2, 0.3, 0.12); // a tall, narrow eye
+    (slit.children.find((c) => c instanceof THREE.Mesh && c.material === this.m.pupil) as THREE.Mesh | undefined)?.scale.set(0.18, 0.9, 0.3);
     const shards: Array<{ m: THREE.Mesh; R: number; sp: number; ph: number; tilt: number }> = [];
     for (let i = 0; i < 30; i++) {
       const g = eng(new THREE.OctahedronGeometry(r.range(0.25, 0.55), 0), 6, 6);
@@ -722,10 +734,12 @@ export class Titan {
       (m.aura.material as THREE.ShaderMaterial).uniforms.uOpen.value = m.open;
       m.aura.scale.setScalar(1 + (c.coreHit[i] ?? 0) * 0.25);
       const k = m.open;
-      m.shell[0].position.x = core.x - k * 0.8;
-      m.shell[1].position.x = core.x + k * 0.8;
-      m.shell[0].rotation.y = -k * 1.1;
-      m.shell[1].rotation.y = k * 1.1;
+      // blades swing outward like an aperture, and shrink back into the frame
+      for (const b of m.shell) {
+        b.rotation.z = -k * 1.25;
+        b.position.set(k * 0.35, 0, 0);
+        b.scale.setScalar(1 - k * 0.55);
+      }
       m.gem.rotation.y = c.t * (0.5 + k * 2.6);
       const s = 1 + (c.coreHit[i] ?? 0) * 0.28 + k * Math.sin(c.t * 7) * 0.05;
       m.gem.scale.set(0.82 * s, 1.2 * s, 0.72 * s);

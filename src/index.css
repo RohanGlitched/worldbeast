@@ -431,18 +431,18 @@ button {
 }
 .hud-bottom {
   position: absolute;
-  left: calc(var(--u) * 0.5);
-  right: calc(var(--u) * 0.5);
-  bottom: calc(var(--u) * 0.45);
+  left: calc(var(--u) * 0.45);
+  right: calc(var(--u) * 0.45);
+  bottom: calc(var(--u) * 0.4);
   display: flex;
   align-items: center;
-  gap: 0.6em;
+  gap: 0.7em;
 }
 .reso {
   flex: 1;
-  height: calc(var(--u) * 0.3);
+  height: calc(var(--u) * 0.5);
   border: 1.5px solid var(--ink);
-  background: rgba(239, 228, 204, 0.75);
+  background: rgba(239, 228, 204, 0.8);
   position: relative;
   overflow: hidden;
 }
@@ -452,6 +452,17 @@ button {
   background: linear-gradient(90deg, #b8861f, var(--gold), var(--gold-2));
   transition: width 0.15s;
 }
+.reso em {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-family: var(--fell);
+  font-style: italic;
+  font-size: 0.82em;
+  color: var(--ink);
+  text-shadow: 0 0 4px var(--vellum);
+}
 .reso.full i {
   animation: surgeGlow 0.5s infinite alternate;
 }
@@ -460,19 +471,9 @@ button {
     filter: brightness(1.35);
   }
 }
-.reso-label {
-  font-family: var(--fell);
-  font-style: italic;
-  font-size: 0.9em;
-  color: var(--ink-2);
-  white-space: nowrap;
-}
-.combo {
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  color: #8a6512;
-  min-width: 3.5em;
-  text-align: right;
+.hud-bottom .dmg {
+  font-size: 1.45em;
+  min-width: 3.4em;
 }
 .dashbtn {
   position: absolute;
@@ -1255,4 +1256,32 @@ button {
 .join:disabled {
   filter: grayscale(0.6) brightness(0.9);
   cursor: wait;
+}
+
+.sheet-links {
+  display: flex;
+  gap: 18px;
+  justify-content: center;
+  font-family: var(--fell);
+  font-style: italic;
+  padding-bottom: 54px; /* clear of the host badge */
+}
+.sheet-links a {
+  color: var(--ink-2);
+}
+
+.tip-line {
+  margin: 0.35em 0 0;
+  font-style: italic;
+  color: var(--ink-2);
+  font-size: 0.95em;
+}
+/* phones: keep every control clear of the host's corner badge */
+@media (max-width: 760px) {
+  .sheet {
+    padding-bottom: calc(86px + env(safe-area-inset-bottom));
+  }
+  .hud-bottom {
+    bottom: 70px !important;
+  }
 }

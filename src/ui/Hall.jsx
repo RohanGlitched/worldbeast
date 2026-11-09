@@ -134,7 +134,7 @@ export default function Hall() {
                 <Sigil id={h.sigil} size={20} />
                 <span className="roll-name">{h.name}</span>
                 <span className="roll-d">{fmt(h.damageTotal)} blows</span>
-                <span className="roll-r">{h.titansFelled ? `${h.titansFelled} felled` : `${h.runs} runs`}</span>
+                <span className="roll-r">{h.titansFelled ? `${h.titansFelled} felled` : `${h.runs} ${h.runs === 1 ? "run" : "runs"}`}</span>
               </li>
             ))}
           </ol>

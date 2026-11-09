@@ -96,7 +96,7 @@ interface ActorConn {
 }
 
 const LOCAL_BLOCK_MS = 3 * 3_600_000;
-const LOCAL_HP = 150_000;
+const LOCAL_HP = 40_000;
 const INTERLUDE_MS = 20_000;
 const SILENT_MS = 8_000;
 const PING_EVERY_MS = 2_000;

@@ -10,8 +10,8 @@ export const HOUR_MS = 3_600_000;
 export const ESCAPE_MS = 8 * HOUR_MS;
 export const INTERLUDE_MS = 20_000;
 export const LIFETIME_H = 2.5;
-/** ~45 min for one skilled hunter (the look-ahead bot deals 30-70 dps, ~55 on average) */
-export const HP_FLOOR = 150_000;
+/** ~12-20 min for one hunter alone (humans deal ~30-60 dps): a lone visitor can see a titan fall */
+export const HP_FLOOR = 40_000;
 export const HP_CAP = 60_000_000;
 export const BEAT_TOL = 2;
 export const RATE_WINDOW_MS = 2_000;

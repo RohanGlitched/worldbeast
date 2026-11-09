@@ -19,6 +19,7 @@ export interface TitanUniforms {
   uWrath: THREE.IUniform<number>;
   uPx: THREE.IUniform<number>; // world units per device pixel (line weight stays crisp at any size)
   uReveal: THREE.IUniform<number>; // 0..3: lines engrave in (0-1), wash bleeds in (1-2), gold settles (2-3)
+  uClipX: THREE.IUniform<number>; // nothing of the titan is drawn left of this x (the open book's left leaf)
 }
 
 export function titanUniforms(): TitanUniforms {
@@ -35,6 +36,7 @@ export function titanUniforms(): TitanUniforms {
     uWrath: { value: 0 },
     uPx: { value: 0.03 },
     uReveal: { value: 3 },
+    uClipX: { value: -1e4 },
   };
 }
 
@@ -71,7 +73,7 @@ export function engraveMaterial(u: TitanUniforms, o: EngraveOpts = {}) {
     `,
     fragmentShader: /* glsl */ `
       precision highp float;
-      uniform float uTime, uCrack, uFlash, uWrath, uPx, uReveal;
+      uniform float uTime, uCrack, uFlash, uWrath, uPx, uReveal, uClipX;
       uniform vec3 uInk, uBody, uVellum, uGold, uAccent, uLight;
       varying vec3 vN; varying vec3 vObj; varying vec2 vUv; varying vec2 vL; varying vec3 vWorld;
       ${NOISE}
@@ -82,6 +84,7 @@ export function engraveMaterial(u: TitanUniforms, o: EngraveOpts = {}) {
         return 1. - smoothstep(width - w, width + w, f);
       }
       void main(){
+        if (vWorld.x < uClipX) discard;
         vec3 n = normalize(vN);
         vec3 L = normalize(uLight);
         float key = max(dot(n, L), 0.);
@@ -93,9 +96,9 @@ export function engraveMaterial(u: TitanUniforms, o: EngraveOpts = {}) {
         vec2 lc = vUv * vL;
         float jitter = (vnoise(vec2(lc.x * .35, lc.y * 2.)) - .5) * .18;
         float swell = .75 + .25 * sin(lc.x * .9 + lc.y * .13);
-        float w1 = mix(.0, .42, smoothstep(.97, .30, tone)) * swell;
-        float w2 = mix(.0, .36, smoothstep(.62, .12, tone));
-        float w3 = mix(.0, .34, smoothstep(.34, .02, tone));
+        float w1 = mix(.06, .46, smoothstep(.98, .28, tone)) * swell;
+        float w2 = mix(.0, .38, smoothstep(.68, .14, tone));
+        float w3 = mix(.0, .34, smoothstep(.38, .04, tone));
         float l1 = cut(lc.y + jitter, w1);
         // cross-hatching runs on diagonals of the surface grid (never a globe grid)
         float l2 = cut(lc.y * .72 + lc.x * .55 + jitter * .6, w2);
@@ -153,19 +156,20 @@ export function outlineMaterial(u: TitanUniforms, width = 0.07) {
     uniforms: u,
     side: THREE.BackSide,
     vertexShader: /* glsl */ `
-      varying float vY;
+      varying float vY; varying float vX;
       void main(){
         vec3 nW = normalize(mat3(modelMatrix) * normal);
         vec4 w = modelMatrix * vec4(position, 1.);
         w.xyz += nW * ${f3(width)};
-        vY = w.y;
+        vY = w.y; vX = w.x;
         gl_Position = projectionMatrix * viewMatrix * w;
       }
     `,
     fragmentShader: /* glsl */ `
-      uniform vec3 uInk; uniform float uReveal;
-      varying float vY;
+      uniform vec3 uInk; uniform float uReveal, uClipX;
+      varying float vY; varying float vX;
       void main(){
+        if (vX < uClipX) discard;
         float frontY = mix(36., 17., clamp(uReveal, 0., 1.));
         if (vY < frontY) discard;
         gl_FragColor = vec4(uInk, 1.);

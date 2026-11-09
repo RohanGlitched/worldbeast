@@ -106,6 +106,20 @@ export default class World extends Actor<ToServer, ToClient> {
     await this.ready;
   }
 
+  private async wipeRecords() {
+    for (const name of ["Echo", "Run", "Hunter", "Titan"] as const) {
+      try {
+        for (let round = 0; round < 20; round++) {
+          const rows = await this.db[name].list("-created_date", 500, 0, ["id"]);
+          if (!rows.length) break;
+          for (const r of rows) await this.db[name].delete(r.id).catch(() => {});
+        }
+      } catch (e) {
+        this.log("wipe " + name, e);
+      }
+    }
+  }
+
   /** one-time: a titan woken under the old 150k floor takes the new size, keeping every wound already dealt */
   private async resizeOldTitan() {
     const t = this.titan;
@@ -136,6 +150,12 @@ export default class World extends Actor<ToServer, ToClient> {
     const titan = await st.get<TitanState>("titan");
     const now = Date.now();
     if (!titan) {
+      // launch: the real world starts clean (one time, only in the live session): every record the
+      // test world wrote (titans, hunters, runs, echoes) is removed before titan #1 wakes
+      if (this.instanceId === WORLD_SESSION && !(await st.get<boolean>("wiped-v1"))) {
+        await this.wipeRecords();
+        await st.put("wiped-v1", true);
+      }
       await this.wakeTitan(1, now);
     } else {
       this.titan = titan;

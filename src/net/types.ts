@@ -2,7 +2,7 @@
 // (scripts/sync-core.mjs copies this file), so keep it free of imports.
 
 export const WORLD_ACTOR = "world";
-export const WORLD_SESSION = "world-1";
+export const WORLD_SESSION = "world-2"; // world-1 was the test world before launch (Nov 9)
 
 /** Positions travel quantised to 1/20 of an arena unit (the same grid echoes are stored on). */
 export const Q = 20;

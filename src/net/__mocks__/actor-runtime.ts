@@ -22,6 +22,9 @@ export class Table {
     this.rows = this.rows.filter((x) => x.id !== id);
     return { success: true };
   }
+  async list(_sort?: string, limit = 5000) {
+    return structuredClone(this.rows.slice(0, limit));
+  }
   async deleteMany(q: Record<string, any>) {
     const before = this.rows.length;
     this.rows = this.rows.filter((x) => !Object.entries(q).every(([k, v]) => x[k] === v));
@@ -73,7 +76,7 @@ export const tables = () => ({ Titan: new Table("Titan"), Hunter: new Table("Hun
 
 export class Actor<I, O> {
   tickIntervalMs = 100;
-  instanceId = "world-1";
+  instanceId = "world-2";
   conns: MockConn[] = [];
   storage = new MockStorage();
   schedules = new Map<string, number>();

@@ -18,6 +18,7 @@ export interface TitanUniforms {
   uFlash: THREE.IUniform<number>;
   uWrath: THREE.IUniform<number>;
   uPx: THREE.IUniform<number>; // world units per device pixel (line weight stays crisp at any size)
+  uReveal: THREE.IUniform<number>; // 0..3: lines engrave in (0-1), wash bleeds in (1-2), gold settles (2-3)
 }
 
 export function titanUniforms(): TitanUniforms {
@@ -33,6 +34,7 @@ export function titanUniforms(): TitanUniforms {
     uFlash: { value: 0 },
     uWrath: { value: 0 },
     uPx: { value: 0.03 },
+    uReveal: { value: 3 },
   };
 }
 
@@ -69,7 +71,7 @@ export function engraveMaterial(u: TitanUniforms, o: EngraveOpts = {}) {
     `,
     fragmentShader: /* glsl */ `
       precision highp float;
-      uniform float uTime, uCrack, uFlash, uWrath, uPx;
+      uniform float uTime, uCrack, uFlash, uWrath, uPx, uReveal;
       uniform vec3 uInk, uBody, uVellum, uGold, uAccent, uLight;
       varying vec3 vN; varying vec3 vObj; varying vec2 vUv; varying vec2 vL; varying vec3 vWorld;
       ${NOISE}
@@ -95,8 +97,9 @@ export function engraveMaterial(u: TitanUniforms, o: EngraveOpts = {}) {
         float w2 = mix(.0, .36, smoothstep(.62, .12, tone));
         float w3 = mix(.0, .34, smoothstep(.34, .02, tone));
         float l1 = cut(lc.y + jitter, w1);
-        float l2 = cut(lc.x * 1. + jitter * .6, w2);
-        float l3 = cut((lc.x + lc.y) * .72, w3);
+        // cross-hatching runs on diagonals of the surface grid (never a globe grid)
+        float l2 = cut(lc.y * .72 + lc.x * .55 + jitter * .6, w2);
+        float l3 = cut(lc.y * .7 - lc.x * .6, w3);
         float lines = max(l1, max(l2, l3));
         // scale / plate pattern: overlapping arcs cut into the surface
         ${scales > 0 ? `
@@ -110,9 +113,15 @@ export function engraveMaterial(u: TitanUniforms, o: EngraveOpts = {}) {
         vec3 washCol = ${tintExpr};
         vec3 paper = mix(uVellum, washCol, ${f3(wash)} * (.45 + .55 * smoothstep(1., .25, tone)));
         paper = mix(paper, uVellum * 1.05, smoothstep(.82, 1., tone) * .55);
-        vec3 col = mix(paper, uInk, lines * .94);
-        // gold leaf
-        float gl = ${f3(gilt)};
+        // the engraver's pass: lines are cut in from the crown down with a ragged burin front,
+        // then the hand-colouring bleeds in, then the gold leaf settles
+        float frontY = mix(36., 17., clamp(uReveal, 0., 1.));
+        float cutIn = smoothstep(frontY - .7, frontY + .7, vWorld.y + (vnoise(vWorld.xy * 1.3) - .5) * 1.6);
+        float washIn = clamp((uReveal - 1.) * 1.4 - (vnoise(vWorld.xy * .45) - .5) * .8, 0., 1.);
+        paper = mix(uVellum, paper, washIn);
+        vec3 col = mix(paper, uInk, lines * .94 * cutIn);
+        if (cutIn < .01 && washIn < .01) discard;
+        float gl = ${f3(gilt)} * clamp(uReveal - 2., 0., 1.);
         if (gl > 0.) {
           vec3 h = normalize(L + vec3(0., 0., 1.));
           float spec = pow(max(dot(n, h), 0.), 40.);
@@ -141,16 +150,22 @@ export function outlineMaterial(u: TitanUniforms, width = 0.07) {
     uniforms: u,
     side: THREE.BackSide,
     vertexShader: /* glsl */ `
+      varying float vY;
       void main(){
         vec3 nW = normalize(mat3(modelMatrix) * normal);
         vec4 w = modelMatrix * vec4(position, 1.);
         w.xyz += nW * ${f3(width)};
+        vY = w.y;
         gl_Position = projectionMatrix * viewMatrix * w;
       }
     `,
     fragmentShader: /* glsl */ `
-      uniform vec3 uInk;
-      void main(){ gl_FragColor = vec4(uInk, 1.);
+      uniform vec3 uInk; uniform float uReveal;
+      varying float vY;
+      void main(){
+        float frontY = mix(36., 17., clamp(uReveal, 0., 1.));
+        if (vY < frontY) discard;
+        gl_FragColor = vec4(uInk, 1.);
         #include <colorspace_fragment>
       }
     `,
@@ -168,10 +183,11 @@ export function goldMaterial(u: TitanUniforms) {
     `,
     fragmentShader: /* glsl */ `
       precision highp float;
-      uniform float uTime, uOpen, uHit; uniform vec3 uGold, uInk, uLight, uAccent;
+      uniform float uTime, uOpen, uHit, uReveal; uniform vec3 uGold, uInk, uLight, uAccent;
       varying vec3 vN; varying vec3 vObj;
       ${NOISE}
       void main(){
+        if (uReveal < 2. + vnoise(vObj.xy * 3.) * .8) discard;
         vec3 n = normalize(vN);
         vec3 L = normalize(uLight);
         float lam = max(dot(n, L), 0.);

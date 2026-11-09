@@ -401,16 +401,38 @@ export class AudioEngine {
   static async renderExcerpt(
     spec: TitanSpec,
     field: Field,
-    o: { t0: number; seconds: number; stage: Stage; hpFrac?: number; playing?: boolean; sampleRate?: number; quiet?: boolean; sfx?: Array<{ at: number; name: string; x?: number; strength?: number }> },
+    o: {
+      t0: number;
+      seconds: number;
+      stage: Stage;
+      hpFrac?: number;
+      playing?: boolean;
+      sampleRate?: number;
+      quiet?: boolean;
+      sfx?: Array<{ at: number; name: string; x?: number; strength?: number }>;
+      /** diagnostics: only these channels sound (perc, bass, mel, bell, choir, bourdon, cue, impact, sfx) */
+      solo?: string[];
+      /** diagnostics: render without the cathedral */
+      dry?: boolean;
+    },
   ): Promise<AudioBuffer> {
     const sr = o.sampleRate ?? 44100;
     const off = new OfflineAudioContext(2, Math.ceil(sr * o.seconds), sr);
     const eng = new AudioEngine({ context: off, quiet: o.quiet });
     eng.setTitan(spec, field);
+    if (o.solo) for (const [k, n] of Object.entries(eng.g!.ch)) if (!o.solo.includes(k)) (n as GainNode).gain.value = 0;
+    if (o.dry) eng.g!.verbOut.gain.value = 0;
+    const a = performance.now();
     eng.renderSchedule(o.t0, o.t0 + o.seconds, o.stage, o.hpFrac ?? [0.9, 0.5, 0.2][o.stage], o.playing ?? true);
     for (const s of o.sfx ?? []) eng.sfx(s.name, s.x ?? 0, s.strength ?? 1, s.at);
-    return off.startRendering();
+    const b = performance.now();
+    const buf = await off.startRendering();
+    AudioEngine.lastRender = { scheduleMs: b - a, renderMs: performance.now() - b, notes: eng.synth!.stats.notes, nodes: eng.synth!.stats.created };
+    return buf;
   }
+
+  /** Timing of the last offline render (diagnostics). */
+  static lastRender = { scheduleMs: 0, renderMs: 0, notes: 0, nodes: 0 };
 
   /** Offline: schedule [t0, t1) of titan time onto context time 0.. in one go. */
   renderSchedule(t0: number, t1: number, stage: Stage, hpFrac: number, playing: boolean) {

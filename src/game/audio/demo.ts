@@ -228,10 +228,10 @@ function drawTimeline(t: number) {
 }
 
 // --- offline rendering, also used by the automated tests
-async function renderExcerpt(seed: number, st: Stage, phrase: number, seconds: number, sfx?: Array<{ at: number; name: string; x?: number; strength?: number }>) {
+async function renderExcerpt(seed: number, st: Stage, phrase: number, seconds: number, sfx?: Array<{ at: number; name: string; x?: number; strength?: number }>, diag: { solo?: string[]; dry?: boolean; quiet?: boolean; playing?: boolean } = {}) {
   const s = makeTitan(seed, 1);
   const f = new Field(s);
-  return AudioEngine.renderExcerpt(s, f, { t0: phrase * PHRASE_BEATS * s.beat, seconds, stage: st, sfx });
+  return AudioEngine.renderExcerpt(s, f, { t0: phrase * PHRASE_BEATS * s.beat, seconds, stage: st, sfx, ...diag });
 }
 
 function encodeWav(buf: AudioBuffer): ArrayBuffer {
@@ -265,8 +265,8 @@ function encodeWav(buf: AudioBuffer): ArrayBuffer {
 }
 
 /** Float32 stereo of a render, base64 encoded (little endian, L then R planes). For tests. */
-async function renderFloat(seed: number, st: Stage, phrase: number, seconds: number, sfx?: Array<{ at: number; name: string; x?: number; strength?: number }>) {
-  const buf = await renderExcerpt(seed, st, phrase, seconds, sfx);
+async function renderFloat(seed: number, st: Stage, phrase: number, seconds: number, sfx?: Array<{ at: number; name: string; x?: number; strength?: number }>, diag: { solo?: string[]; dry?: boolean; quiet?: boolean; playing?: boolean } = {}) {
+  const buf = await renderExcerpt(seed, st, phrase, seconds, sfx, diag);
   const L = buf.getChannelData(0);
   const R = buf.getChannelData(1);
   const all = new Float32Array(L.length * 2);
@@ -276,7 +276,7 @@ async function renderFloat(seed: number, st: Stage, phrase: number, seconds: num
   let s = "";
   for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   const s2 = makeTitan(seed, 1);
-  return { b64: btoa(s), sampleRate: buf.sampleRate, length: buf.length, beat: s2.beat, bpm: s2.bpm, archetype: s2.archetype, mode: s2.mode, root: s2.root, t0: phrase * PHRASE_BEATS * s2.beat };
+  return { timing: AudioEngine.lastRender, b64: btoa(s), sampleRate: buf.sampleRate, length: buf.length, beat: s2.beat, bpm: s2.bpm, archetype: s2.archetype, mode: s2.mode, root: s2.root, t0: phrase * PHRASE_BEATS * s2.beat };
 }
 
 (window as any).__wb = {

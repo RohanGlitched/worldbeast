@@ -158,18 +158,18 @@ export class Titan {
       const aura = new THREE.Mesh(
         new THREE.PlaneGeometry(5.2, 5.2),
         new THREE.ShaderMaterial({
-          uniforms: { uTime: this.u.uTime, uGold: this.u.uGold, uOpen: { value: 0 }, uSeed: { value: c.id * 1.7 } },
+          uniforms: { uTime: this.u.uTime, uGold: this.u.uGold, uOpen: { value: 0 }, uSeed: { value: c.id * 1.7 }, uReveal: this.u.uReveal },
           transparent: true,
           depthWrite: false,
           vertexShader: `varying vec2 vUv; void main(){ vUv = uv * 2. - 1.; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.); }`,
           fragmentShader: `
-            precision highp float; uniform float uTime, uOpen, uSeed; uniform vec3 uGold; varying vec2 vUv;
+            precision highp float; uniform float uTime, uOpen, uSeed, uReveal; uniform vec3 uGold; varying vec2 vUv;
             void main(){
               float r = length(vUv); float a = atan(vUv.y, vUv.x);
               float rays = pow(abs(sin(a * 8. + uTime * .6 + uSeed)), 6.) * smoothstep(1., .25, r);
               float glow = pow(smoothstep(1., 0., r), 2.5);
               float beat = .75 + .25 * sin(uTime * 7.);
-              float k = (glow * .75 + rays * .55) * uOpen * beat;
+              float k = (glow * .75 + rays * .55) * uOpen * beat * clamp(uReveal - 2., 0., 1.);
               gl_FragColor = vec4(mix(uGold, vec3(1., .93, .7), glow), k);
               #include <colorspace_fragment>
             }`,
@@ -400,16 +400,21 @@ export class Titan {
     for (let i = 0; i < 14; i++) fins.push(this.cone(0.38, 1.7, i % 3 ? "dark" : "gilt", A, 0.04));
     const head = new THREE.Group();
     A.add(head);
-    this.orbPart(4.6, 3.7, 0.5, V(0, 0.9, -1.4), "scales", head, 0.02, 0.1);
-    const hoodRim = this.torus(3.2, 0.14, "gilt", head, Math.PI * 1.1);
-    hoodRim.scale.set(1.42, 1.16, 1);
-    hoodRim.position.set(0, 0.9, -1.0);
-    hoodRim.rotation.z = -0.05 - Math.PI * 0.05;
-    for (let i = 0; i < 7; i++) {
-      const a = Math.PI * (0.18 + (i / 6) * 0.64);
-      const rib = this.cone(0.16, 2.6, "dark", head, 0.03);
-      rib.position.set(Math.cos(a) * 2.6, 0.9 + Math.sin(a) * 2.05, -0.9);
-      rib.rotation.z = a - Math.PI / 2;
+    // the frill: webbed vanes fanned behind the skull, each tipped with a gilded spine
+    const frill = new THREE.Group();
+    frill.position.set(0, 0.4, -1.2);
+    head.add(frill);
+    const vanes = 9;
+    for (let i = 0; i < vanes; i++) {
+      const a = Math.PI * (0.06 + (i / (vanes - 1)) * 0.88);
+      const g = new THREE.Group();
+      g.rotation.z = a - Math.PI / 2;
+      frill.add(g);
+      const len = 3.4 + Math.sin((i / (vanes - 1)) * Math.PI) * 1.4;
+      const vane = this.part(lathe([[0.01, 0], [0.75, 0.5], [0.95, len * 0.45], [0.55, len * 0.85], [0.01, len]], 14, 16, 20), i % 2 ? "accent" : "body", g, 0.07);
+      vane.scale.z = 0.18;
+      const spine = this.cone(0.09, len * 0.95, "gilt", g, 0.03);
+      spine.position.set(0, len * 0.5, 0.18);
     }
     this.orbPart(1.9, 1.15, 1.45, V(0, 0.2, 0.5), "body", head, 0.03, 0.09);
     this.orbPart(1.25, 0.62, 1.15, V(0, -0.55, 1.35), "light", head, 0.02, 0.06);

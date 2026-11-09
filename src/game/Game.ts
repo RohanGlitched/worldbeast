@@ -108,6 +108,8 @@ export class Game {
   private frameTimes: number[] = [];
   private cssW = 1;
   private cssH = 1;
+  /** seconds since this titan was first drawn: drives the engraving-in sequence */
+  private revealT = 0;
   private ro: ResizeObserver;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -134,6 +136,8 @@ export class Game {
     this.spec = makeTitan(seed, number);
     this.field = new Field(this.spec);
     this.titan = new Titan(this.spec);
+    this.titan.u.uReveal.value = 0;
+    this.revealT = 0;
     this.view.scene.add(this.titan.group);
     this.resize();
     const p = this.spec.plate;
@@ -144,6 +148,14 @@ export class Game {
     this.coreHit = this.spec.cores.map(() => 0);
     this.hunt = null;
     this.phase = "lobby";
+  }
+
+  get revealing() {
+    return this.revealT < 4.9;
+  }
+  skipReveal() {
+    this.revealT = 6;
+    if (this.titan) this.titan.u.uReveal.value = 3;
   }
 
   get stage(): Stage {
@@ -338,6 +350,13 @@ export class Game {
     const me = h && this.phase === "playing" ? { x: h.x, y: h.y } : { x: 0, y: 4 };
     const ctx: TitanCtx = { t, beat, player: me, cues, stage, crack: 1 - this.hpFrac, hurt: this.titanHurt, coreOpen: coreOpenArr, coreHit: this.coreHit };
     this.titan.update(ctx, dt);
+    if (this.revealT < 6) {
+      this.revealT += dt;
+      const r = this.revealT;
+      // lines cut in over 2.6 s, colour bleeds in over 1.3 s, gold settles over 1 s
+      this.titan.u.uReveal.value = r < 2.6 ? (r / 2.6) : r < 3.9 ? 1 + (r - 2.6) / 1.3 : Math.min(3, 2 + (r - 3.9));
+      if (this.revealT >= 6) this.titan.u.uReveal.value = 3;
+    }
 
     // --- page, ink, hunters, fx
     const pulse = Math.pow(1 - (beat % 1), 8) * (beatInt % 4 === 0 ? 1 : 0.4);

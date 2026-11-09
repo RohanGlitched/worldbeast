@@ -231,9 +231,13 @@ export class Game {
     this.autopilot = on && this.field ? new Bot(this.field, 1, greed) : null;
   }
 
-  start(aspect: AspectId, opts: { resonance?: number } = {}) {
+  start(aspect: AspectId, opts: { resonance?: number; gentle?: boolean } = {}) {
     this.hunt = new Hunt(this.spec, this.field, aspect);
     if (opts.resonance) this.hunt.resonance = opts.resonance;
+    if (opts.gentle) {
+      this.hunt.houndsAfter = 20;
+      this.hunt.invuln = 4;
+    }
     this.hunt.x = 0;
     this.hunt.y = 3;
     this.target = { x: 0, y: 3 };

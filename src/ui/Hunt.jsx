@@ -35,7 +35,10 @@ const KILLERS = {
   slam: ["a shockwave", "Shockwaves have two gaps: find one, or dash through the ring."],
   zone: ["a flooding glyph", "Circles drawn on the page flood with ink: leave before they fill."],
   cross: ["crossing lines", "Diagonal lines leave diamond gaps: wait inside one."],
+  hound: ["its hounds", "Hounds are thrown at where you stand: keep moving, and step aside the moment their mark flares."],
+  glyph: ["a flooding glyph", "Circles drawn on the page flood with ink: leave before they fill."],
 };
+const killerOf = (k) => KILLERS[k] ?? ["the titan's ink", "Every attack is warned a beat early: watch the marks on its body and the guides on the page."];
 
 const ASPECT_ICON = {
   ember: "M12 2c1 4 6 6.2 6 11.6A6 6 0 0 1 6 13.6c0-2.6 1.4-4.2 2.6-5.2.2 2 1 3.4 2.4 3.8C10 8.6 10.6 5 12 2z",
@@ -202,7 +205,7 @@ export default function Hunt() {
     worldRef.current?.identify?.(profile);
     setSummary(null);
     // a first hunt starts half-charged, so the first Surge comes early
-    g.start(profile.aspect, { resonance: (profile.runs || 0) === 0 ? 55 : 0 });
+    g.start(profile.aspect, { resonance: (profile.runs || 0) === 0 ? 55 : 0, gentle: (profile.runs || 0) < 2 });
     canvasRef.current?.focus();
   }, [profile, world]);
 
@@ -427,6 +430,7 @@ export default function Hunt() {
       {L?.spread && L.left && spec && (
         <div className="leaf" style={{ left: L.left.x, top: L.left.y, width: L.left.w, height: L.left.h }}>
           {leafBody}
+          {phase === "playing" && tip && <div className="margin-note in-leaf" key={tip.id} dangerouslySetInnerHTML={{ __html: '<span class="manicule">☞</span> ' + tip.html }} />}
           {phase === "playing" ? runStats : !summary && lobbyControls}
         </div>
       )}
@@ -488,9 +492,9 @@ export default function Hunt() {
         <div className="summary" style={{ left: arena.x + arena.w * 0.08, width: arena.w * 0.84, top: arena.y + arena.h * 0.2 }} role="dialog" aria-label="Your run">
           <h2>{summary.felled ? "The titan is felled!" : "Your light went out"}</h2>
           <div className="rubric">
-            against {spec?.name}, after {summary.time.toFixed(1)} s{!summary.felled && KILLERS[summary.killer] ? `, struck down by ${KILLERS[summary.killer][0]}` : ""}
+            against {spec?.name}, after {summary.time.toFixed(1)} s{!summary.felled && summary.killer ? `, struck down by ${killerOf(summary.killer)[0]}` : ""}
           </div>
-          {!summary.felled && KILLERS[summary.killer] && <p className="tip-line">{KILLERS[summary.killer][1]}</p>}
+          {!summary.felled && summary.killer && <p className="tip-line">{killerOf(summary.killer)[1]}</p>}
           {!summary.felled && world && !world.local && world.online > 1 && <div className="rubric">Your spark lingers for 8 s: a hunter who flies through it rekindles you.</div>}
           <div className="big">{fmt(summary.damage)}</div>
           <div style={{ fontStyle: "italic", color: "var(--ink-2)" }}>blows struck{summary.worldShare ? ` · ${summary.worldShare} of the world's today` : ""}</div>
@@ -545,13 +549,8 @@ export default function Hunt() {
         </div>
       )}
 
-      {tip && arena && phase === "playing" && (
-        <div
-          className={"margin-note" + (L?.spread ? " in-leaf" : "")}
-          style={L?.spread && L.left ? { left: L.left.x + L.left.w * 0.06, width: L.left.w * 0.88, top: L.left.y + L.left.h * 0.66 } : { left: arena.x + arena.w * 0.06, width: arena.w * 0.88, top: arena.y + 4 }}
-          key={tip.id}
-          dangerouslySetInnerHTML={{ __html: (L?.spread ? '<span class="manicule">☞</span> ' : "") + tip.html }}
-        />
+      {tip && arena && phase === "playing" && !L?.spread && (
+        <div className="margin-note" style={{ left: arena.x + arena.w * 0.06, width: arena.w * 0.88, top: arena.y + 4 }} key={tip.id} dangerouslySetInnerHTML={{ __html: tip.html }} />
       )}
 
       {felled && arena && (
@@ -583,7 +582,7 @@ export default function Hunt() {
         </div>
       )}
 
-      {labels.map((l) => (
+      {!summary && labels.map((l) => (
         <div key={l.k} className={"hunter-label " + l.kind} style={{ left: l.x, top: l.y }}>
           <Sigil id={l.sigil} size={u * 0.38} /> {l.text}
         </div>

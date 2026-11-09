@@ -103,6 +103,19 @@ export default class World extends Actor<ToServer, ToClient> {
     await this.ready;
   }
 
+  /** one-time: a titan woken under the old 150k floor takes the new size, keeping every wound already dealt */
+  private async resizeOldTitan() {
+    const t = this.titan;
+    if (!t || t.status !== "awake" || t.hpMax !== 150_000 || HP_FLOOR >= 150_000) return;
+    const dealt = t.hpMax - t.hp;
+    const hpMax = Math.max(HP_FLOOR, Math.round((dealt + 12_000) / 1000) * 1000);
+    t.hpMax = hpMax;
+    t.hp = Math.max(1, hpMax - dealt);
+    await this.storage.put("titan", t);
+    await this.storage.put("hp", t.hp);
+    this.broadcast({ t: "wake", n: Date.now(), titan: this.info(), hp: Math.round(t.hp) } as never);
+  }
+
   private async restore() {
     const st = this.storage;
     let salt = await st.get<string>("salt");
@@ -125,15 +138,7 @@ export default class World extends Actor<ToServer, ToClient> {
       this.titan = titan;
       const hp = await st.get<number>("hp");
       if (typeof hp === "number") this.titan.hp = hp;
-      // one-time: titans woken under the old 150k floor take the new size, keeping every wound already dealt
-      if (this.titan.status === "awake" && this.titan.hpMax === 150_000 && HP_FLOOR < 150_000) {
-        const dealt = this.titan.hpMax - this.titan.hp;
-        const hpMax = Math.max(HP_FLOOR, Math.round((dealt + 12_000) / 1000) * 1000);
-        this.titan.hpMax = hpMax;
-        this.titan.hp = Math.max(1, hpMax - dealt);
-        await st.put("titan", this.titan);
-        await st.put("hp", this.titan.hp);
-      }
+      await this.resizeOldTitan();
       this.spec = makeTitan(titan.seed, titan.number);
       if (this.last) this.lastSpec = makeTitan(this.last.seed, this.last.number);
       this.announcedWake = now >= titan.wokeAt ? titan.number : 0;
@@ -155,6 +160,7 @@ export default class World extends Actor<ToServer, ToClient> {
   async handleConnect(conn: Conn) {
     try {
       await this.ensureReady();
+      await this.resizeOldTitan();
       this.welcome(conn, Date.now());
     } catch (e) {
       this.log("connect", e);

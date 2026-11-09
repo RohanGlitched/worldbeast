@@ -1368,6 +1368,8 @@ button {
 }
 
 .margin-note.in-leaf {
+  position: relative;
+  pointer-events: auto;
   text-align: left;
   font-size: calc(var(--u) * 0.66);
   background: none;

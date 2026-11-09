@@ -4,7 +4,7 @@ import { ARENA } from "@/core/titan";
 // The page: an orthographic view of a manuscript leaf. Arena units map 1:1 to world x/y.
 // Page spans x in [-PAGE_W/2, PAGE_W/2], y in [PAGE_Y0, PAGE_Y1]. The titan lives above the arena (y > 20).
 
-export const PAGE = { W: ARENA.W + 1.2, Y0: -0.9, Y1: ARENA.TOP + 13.2 };
+export const PAGE = { W: ARENA.W + 1.2, Y0: -0.9, Y1: ARENA.TOP + 14.4 };
 
 export interface View {
   renderer: THREE.WebGLRenderer;

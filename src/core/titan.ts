@@ -107,8 +107,10 @@ export function makeTitan(seed: number, number: number): TitanSpec {
   const coreCount = archetype === "swarmheart" ? 3 : r.int(3, 5);
   const cores: CoreSpec[] = [];
   for (let i = 0; i < coreCount; i++) {
+    // spread evenly across the titan's front, never overlapping (≥ 2.4 units apart)
     const t = coreCount === 1 ? 0.5 : i / (coreCount - 1);
-    const x = (t - 0.5) * r.range(7, 10) + r.range(-0.6, 0.6);
+    const span = Math.max(2.4 * (coreCount - 1), r.range(8.5, 11));
+    const x = (t - 0.5) * span + r.range(-0.35, 0.35);
     const y = ARENA.TOP + r.range(0.6, 2.4);
     const z = r.range(2.5, 6.5);
     // each core opens in 2..3 windows per phrase, each 6..12 beats, on bar lines

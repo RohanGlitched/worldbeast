@@ -9,6 +9,7 @@ import { Titan, TitanCtx } from "./render/titan/titan";
 import { HunterDraw, HunterLayer } from "./render/hunters";
 import { FxLayer, P } from "./render/fx";
 import { Input } from "./input";
+import { Bot } from "@/core/bot/bot";
 
 // The conductor: one synced clock, one titan, your run, everyone else's sparks, the page.
 
@@ -75,6 +76,8 @@ export class Game {
   hpFrac = 1;
   quality = 1;
   reducedMotion = false;
+  /** demo / attract mode: a look-ahead bot plays your run */
+  autopilot: Bot | null = null;
 
   private canvas: HTMLCanvasElement;
   private raf = 0;
@@ -136,6 +139,10 @@ export class Game {
     return stageFor(this.hpFrac);
   }
 
+  setAutopilot(on: boolean, greed = 0.6) {
+    this.autopilot = on && this.field ? new Bot(this.field, 1, greed) : null;
+  }
+
   start(aspect: AspectId) {
     this.hunt = new Hunt(this.spec, this.field, aspect);
     this.hunt.x = 0;
@@ -176,7 +183,7 @@ export class Game {
     this.cssH = Math.max(1, r.height);
     resizeView(this.view, this.cssW, this.cssH, this.quality);
     // engraving lines: about one line every 4.5 device pixels, whatever the screen
-    if (this.titan) this.titan.u.uFreq.value = Math.max(3, Math.min(9, 1 / (this.view.unitsPerPx * 4.5)));
+    if (this.titan) this.titan.u.uPx.value = this.view.unitsPerPx / this.view.dpr;
   };
 
   private adaptQuality(dt: number) {
@@ -208,6 +215,13 @@ export class Game {
     // --- your run
     if (h && this.phase === "playing") {
       const st = this.input.poll();
+      if (this.autopilot) {
+        const d = this.autopilot.decide(h, t, stage);
+        st.mx = d.mx;
+        st.my = d.my;
+        st.dash = d.dash;
+        st.drag.active = false;
+      }
       let tx: number | undefined, ty: number | undefined;
       if (st.drag.active) {
         const d = this.input.takeDrag();
@@ -294,7 +308,7 @@ export class Game {
     this.titanHurt = Math.max(0, this.titanHurt - dt * 2.5);
     const me = h && this.phase === "playing" ? { x: h.x, y: h.y } : { x: 0, y: 4 };
     const ctx: TitanCtx = { t, beat, player: me, cues, stage, crack: 1 - this.hpFrac, hurt: this.titanHurt, coreOpen: coreOpenArr, coreHit: this.coreHit };
-    this.titan.update(ctx);
+    this.titan.update(ctx, dt);
 
     // --- page, ink, hunters, fx
     const pulse = Math.pow(1 - (beat % 1), 8) * (beatInt % 4 === 0 ? 1 : 0.4);

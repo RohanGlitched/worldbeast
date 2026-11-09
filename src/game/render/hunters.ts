@@ -44,7 +44,7 @@ export class HunterLayer {
       vertexShader: /* glsl */ `
         attribute vec4 hA; attribute vec4 hB; varying vec2 vUv; varying vec4 vA; varying vec4 vB;
         void main(){ vUv = position.xy; vA = hA; vB = hB;
-          float s = hA.z < .5 ? 1.25 : hA.z < 1.5 ? .95 : hA.z < 2.5 ? .8 : 1.1;
+          float s = hA.z < .5 ? 1.9 : hA.z < 1.5 ? 1.15 : hA.z < 2.5 ? .95 : 1.3;
           s *= 1. + hB.z * .5;
           gl_Position = projectionMatrix * modelViewMatrix * vec4(hA.xy + position.xy * s, 3., 1.); }
       `,
@@ -60,9 +60,11 @@ export class HunterLayer {
           // a four-pointed illuminated star with a fine ring
           float spin = uTime * (kind < .5 ? 1.2 : .6) + seed * 6.;
           float star = abs(cos((ang + spin * .3) * 2.));
-          float body = 1. - smoothstep(.0, .04, r - (.16 + .3 * pow(star, 6.)));
-          float ring = 1. - smoothstep(.01, .035, abs(r - .52 - .03 * sin(uTime * 4. + seed * 9.)));
-          float glow = (1. - smoothstep(0., .9, r)) * .45;
+          float star2 = abs(cos((ang - spin * .2) * 2. + .785));
+          float body = 1. - smoothstep(.0, .035, r - (.13 + .3 * pow(star, 8.)));
+          body = max(body, (1. - smoothstep(.0, .035, r - (.1 + .16 * pow(star2, 8.)))) * .9);
+          float ring = 1. - smoothstep(.008, .03, abs(r - .5 - .025 * sin(uTime * 4. + seed * 9.)));
+          float glow = pow(1. - smoothstep(0., 1., r), 2.) * .55;
           vec3 tint = kind < .5 ? uGold : mix(uGold, hue2rgb(vA.w) * .85, .55);
           vec3 col = mix(tint * 1.15, vec3(1., .96, .82), body * .6);
           float a = max(body, ring * (kind < .5 ? .95 : .6));

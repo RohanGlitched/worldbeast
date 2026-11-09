@@ -14,7 +14,7 @@ function colorUniforms() {
     uB: { value: new THREE.Color("#2b4a8b") },
     uGold: { value: new THREE.Color("#d6a531") },
     uTime: { value: 0 },
-    uPage: { value: new THREE.Vector4(-8.6, -0.9, 8.6, 33.2) },
+    uPage: { value: new THREE.Vector4(-8.6, -0.9, 8.6, 34.4) },
   };
 }
 

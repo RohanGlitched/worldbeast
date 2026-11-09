@@ -15,16 +15,26 @@ export const LIFT_MS = 3_800;
 export const LOCAL_HP = 10_000;
 export const REHEARSAL_HP = LOCAL_HP;
 /**
- * A rehearsal titan wakes near death, ~180 blows from falling (a few seconds of any light), and fights it out
- * in Wrath, not Ruin: R4's rehearsal woke in Ruin at 400 and a novice died before it fell.
+ * A rehearsal titan wakes near death, ~700 blows from falling, and fights it out in Wrath, not Ruin (R4's
+ * rehearsal woke in Ruin at 400 and a novice died before it fell). R5's 180 blows fell in 3-6 s, a cutscene;
+ * at 700 a human-model player fells it in ~12-16 s (median, harness Nov 10: novice 12.2 s, skilled 15.8 s),
+ * long enough to see Wrath's ink, one Surge (Resonance starts at REHEARSAL_RESONANCE) and the fall.
  */
-export const REHEARSAL_LEFT = 0.018;
+export const REHEARSAL_LEFT = 0.07;
 export const REHEARSAL_STAGE = 1;
+/**
+ * A rehearsal's light starts this full of Resonance: two grazes and it Surges, once, before the fall (harness:
+ * a Surge before the fall in 20/24 novice and 11/24 skilled-model rehearsals at 85; 17/24 and 6/24 at 70).
+ */
+export const REHEARSAL_RESONANCE = 85;
 
-/** the seed of the titan after `seed`: never the same body as the one just felled (as in the live world) */
+/**
+ * The seed of the titan after `seed`: never the same body or the same epithet as the one just felled (as in the
+ * live world). Deterministic.
+ */
 export function nextLocalSeed(seed) {
   const spec = makeTitan(seed, 1);
-  return seedUnlike((k) => (k === 0 ? hash32(seed, "next") : hash32(seed, "next", k)), spec.archetype);
+  return seedUnlike((k) => (k === 0 ? hash32(seed, "next") : hash32(seed, "next", k)), spec.archetype, spec.epithet);
 }
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -60,9 +70,17 @@ export function createLocalWorld(game, opts = {}, hooks = {}) {
     pinned: !rehearsal && !replay,
     /**
      * Hunt options for runs here: in a rehearsal a hit costs Resonance, not a light (core/hunt.ts forgiving),
-     * so the light cannot go out before the titan falls. Wiring: Game.start(aspect, { ...opts, ...state.huntOpts }).
+     * so the light cannot go out before the titan falls, and the light starts with REHEARSAL_RESONANCE so one
+     * Surge comes before the fall. Wiring: Game.start(aspect, { ...opts, ...state.huntOpts }).
      */
-    huntOpts: rehearsal ? { forgiving: true } : {},
+    // (never `gentle`: a rehearsal cannot be lost anyway, and it is there to show Wrath's whole page)
+    huntOpts: rehearsal ? { forgiving: true, resonance: REHEARSAL_RESONANCE, gentle: false } : {},
+    /**
+     * The titan on the page woke near death (a rehearsal's first titan). The titan that wakes
+     * after a rehearsal's fall is a whole 10,000-blow titan: lore that says "woken near death" must check this,
+     * not `rehearsal`.
+     */
+    nearDeath: rehearsal && !q.has("hp"),
     /**
      * Whether runs here count toward the profile (seals, personal best, the day's omen). A world of your own
      * (pinned, rehearsal, ghost replay) never does: Hunt.jsx onDown should skip judgeSeals/judgeOmen/best/total
@@ -168,6 +186,9 @@ export function createLocalWorld(game, opts = {}, hooks = {}) {
         game.hpFrac = 1;
         st.spec = game.spec;
         falling = false;
+        // the next titan is a whole one (its lore must not say "woken near death"), and its light starts plain
+        st.nearDeath = false;
+        if (rehearsal) st.huntOpts = { forgiving: true, gentle: false };
         w.push(`A new titan stirs on the page: <b>${esc(st.spec.name)}</b>, ${esc(st.spec.epithet)}.`);
         w.update();
       }, LIFT_MS);

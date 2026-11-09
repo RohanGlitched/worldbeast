@@ -26,6 +26,26 @@ export interface Volley {
   ink: 0 | 1; // which attack ink
   heavy: boolean;
   p: Record<string, number>; // parameters (numbers only, deterministic)
+  /** 0 (or absent): the bar's lead volley; 1+: a secondary one (a bar's second or third, or a rail hem) */
+  sub?: number;
+}
+
+/**
+ * A first hunt's grace field (Hunt `gentle`): one hunter's own view of the shared plan, thinned for the first
+ * seconds of their first run. Volleys that leave the titan before `until` (titan seconds) keep only each bar's
+ * lead volley (the overture's density), and walls and beams that leave before `heavyUntil` are held back.
+ * Pure numbers, so the same hunter at the same moment always sees the same thinned page; a volley is kept or
+ * hidden whole, for its whole life, so nothing vanishes mid-flight once the run is under way.
+ */
+export interface Thin {
+  until: number;
+  heavyUntil: number;
+}
+
+export function thinned(v: Volley, spawnSec: number, thin: Thin | null | undefined): boolean {
+  if (!thin) return false;
+  if (spawnSec < thin.until && (v.sub ?? 0) > 0) return true;
+  return spawnSec < thin.heavyUntil && (v.kind === "wall" || v.kind === "beam");
 }
 
 export interface PhrasePlan {
@@ -102,7 +122,9 @@ function planVolley(spec: TitanSpec, r: Rng, kind: Kind, beat: number, idx: numb
       const side = r.chance(0.5) ? 1 : -1;
       const from = DOWN + side * r.range(0.45, 0.8);
       const to = DOWN - side * r.range(0.25, 0.7);
-      v.p = { ox: o.x, oy: o.y, a1: from, a2: to, len: ARENA.H * 1.45, width: r.range(0.4, 0.58), dur: r.pick([6, 8, 8]) };
+      const width = r.range(0.4, 0.58);
+      // (the sweep stops short of the foot corner it swings toward: R5's beams pinned hunters there, 6/17 deaths)
+      v.p = { ox: o.x, oy: o.y, a1: from, a2: beamStop(o.x, o.y, from, to, width), len: ARENA.H * 1.45, width, dur: r.pick([6, 8, 8]) };
       // Calm and Wrath give a beam a full extra beat of warning (beams made the R3 kill chains)
       v.tele = hard < 2 ? 3 : 2;
       v.heavy = true;
@@ -180,6 +202,7 @@ export function planPhrase(spec: TitanSpec, phrase: number, stage: Stage): Phras
       }
       const beat = bar * 4 + (c === 0 ? 0 : r.pick([1, 2, 3, 2.5]));
       const v = planVolley(spec, r, kind, beat, idx++, phrase, stage);
+      if (c > 0) v.sub = c;
       if (v.heavy) heavyCooldown = stage === 2 ? 1 : 2;
       volleys.push(v);
     }
@@ -196,7 +219,7 @@ export function planPhrase(spec: TitanSpec, phrase: number, stage: Stage): Phras
     let bar = hr.int(overture ? 4 : 1, 14);
     while (used.has(bar)) bar = (bar % 14) + 1;
     used.add(bar);
-    volleys.push({ id: phrase * 1000 + idx++, kind: "rain", beat: bar * 4 + 2, tele: 2, ink: 1, heavy: false, p: { cols: 2, seed: hr.int(0, 1e6), speed: 5.6 + stage * 0.5, drops: 3 + (stage > 0 ? 1 : 0), every: 0.5, rad: 0.28, hem: 1 } });
+    volleys.push({ id: phrase * 1000 + idx++, kind: "rain", beat: bar * 4 + 2, tele: 2, ink: 1, heavy: false, sub: 1, p: { cols: 2, seed: hr.int(0, 1e6), speed: 5.6 + stage * 0.5, drops: 3 + (stage > 0 ? 1 : 0), every: 0.5, rad: 0.28, hem: 1 } });
   }
   // Ruin: the titan's signature, twice per phrase
   if (stage === 2) {
@@ -284,28 +307,37 @@ export class Field {
     return p;
   }
 
-  /** Fill `f` with every hazard alive at `t` seconds since the titan woke. */
-  sample(t: number, stage: Stage, f: FieldFrame) {
+  /**
+   * Fill `f` with every hazard alive at `t` seconds since the titan woke. `thin`: a first hunt's grace field
+   * (see Thin), applied to this hunter's own view only; null for the shared page.
+   */
+  sample(t: number, stage: Stage, f: FieldFrame, thin: Thin | null = null) {
     f.bulletCount = f.beamCount = f.ringCount = f.zoneCount = f.markCount = 0;
     const beatLen = this.spec.beat;
     const beatNow = t / beatLen;
     const phraseAbs = Math.floor(beatNow / PHRASE_BEATS);
-    for (let back = 1; back >= 0; back--) {
+    // the phrase before (its volleys still flying), this one, and the next one's first bar: a volley on the
+    // next phrase's downbeat telegraphs in this one's last beats (R6: before, a beam or wall on beat 0 of a
+    // phrase struck with no warning at all)
+    const nextIn = (phraseAbs + 1) * PHRASE_BEATS - beatNow;
+    for (let back = 1; back >= -1; back--) {
       const pa = phraseAbs - back;
-      if (pa < 0) continue;
+      if (pa < 0 || (back < 0 && nextIn > 4)) continue;
       const pl = this.plan(((pa % LOOP_PHRASES) + LOOP_PHRASES) % LOOP_PHRASES, stage);
       const phraseStartBeat = pa * PHRASE_BEATS;
       for (const v of pl.volleys) {
+        if (back < 0 && v.beat >= 4) break; // (sorted by beat) only the downbeat bar can telegraph this early
         const vb = phraseStartBeat + v.beat; // absolute spawn beat
         const age = beatNow - vb; // in beats; negative = still telegraphing
         if (age < -v.tele || age > MAX_LIFE_BEATS) continue;
+        if (thin && thinned(v, vb * beatLen, thin)) continue;
         emit(v, age, beatLen, f, pa);
       }
     }
   }
 
   /** Seconds until every beam sweeping at `t` has finished its sweep (0 if none is live). */
-  beamLeft(t: number, stage: Stage): number {
+  beamLeft(t: number, stage: Stage, thin: Thin | null = null): number {
     const beatLen = this.spec.beat;
     const beatNow = t / beatLen;
     const phraseAbs = Math.floor(beatNow / PHRASE_BEATS);
@@ -316,6 +348,7 @@ export class Field {
       const pl = this.plan(((pa % LOOP_PHRASES) + LOOP_PHRASES) % LOOP_PHRASES, stage);
       for (const v of pl.volleys) {
         if (v.kind !== "beam") continue;
+        if (thin && thinned(v, (pa * PHRASE_BEATS + v.beat) * beatLen, thin)) continue;
         const age = beatNow - (pa * PHRASE_BEATS + v.beat);
         if (age >= 0 && age < v.p.dur) left = Math.max(left, (v.p.dur - age) * beatLen);
       }
@@ -462,6 +495,52 @@ export function gapSight(cx: number, cy: number, a: number, reach: number): { x:
   return floor ? { x: cx + c * t, y: -0.35 } : { x: (c > 0 ? 1 : -1) * (ARENA.W / 2 + 0.35), y };
 }
 
+/** a beam's sweep ends at least this far (from its edge) short of the foot corner it swings toward */
+export const BEAM_POCKET = 1.5;
+/** the farthest a light can reach into a foot corner (hunt.ts clamps x to W/2 - 0.3, y to 0.4) */
+export const FOOT_CORNER = { x: ARENA.W / 2 - 0.3, y: 0.4 };
+
+/**
+ * Where a beam swinging from `a1` toward `a2` must stop: short of the foot corner on the side it swings to,
+ * so a hunter who runs ahead of the sweep into that corner is left a pocket of BEAM_POCKET units. A sweep that
+ * already stops short is unchanged.
+ */
+export function beamStop(ox: number, oy: number, a1: number, a2: number, width: number): number {
+  const dir = Math.sign(a2 - a1) || 1; // +1 swings toward the right rail, -1 toward the left
+  const cx = dir * FOOT_CORNER.x,
+    cy = FOOT_CORNER.y;
+  const ac = Math.atan2(cy - oy, cx - ox);
+  const g = Math.asin(Math.min(1, (BEAM_POCKET + width / 2) / Math.hypot(cx - ox, cy - oy)));
+  const limit = ac - dir * g;
+  let a = dir > 0 ? Math.min(a2, limit) : Math.max(a2, limit);
+  // never a sweep that barely moves (or turns back): at least ~14 degrees of travel
+  if ((a - a1) * dir < 0.25) a = a1 + dir * 0.25;
+  return a;
+}
+
+/** Where a beam at angle `a` from (ox, oy) meets the page's frame: a side rail, or just below the foot. */
+export function beamEndSight(ox: number, oy: number, a: number): { x: number; y: number } {
+  const c = Math.cos(a),
+    s = Math.sin(a);
+  let t = 1e9;
+  if (c > 1e-3) t = (ARENA.W / 2 - ox) / c;
+  else if (c < -1e-3) t = (-ARENA.W / 2 - ox) / c;
+  if (s < -1e-3) {
+    const tf = (0 - oy) / s;
+    if (tf < t) return { x: ox + c * tf, y: -0.35 };
+  }
+  return { x: (c > 0 ? 1 : -1) * (ARENA.W / 2 + 0.35), y: oy + s * t };
+}
+
+/**
+ * Walls and rain spend themselves this far above the foot of the page (like a shockwave at RING_FLOOR): the
+ * bottom lane is never where they finish you (R5: 34 of 64 hits were below y 1.6). They thin out from
+ * INK_FADE down to INK_FLOOR, then they are gone.
+ */
+export const INK_FLOOR = 1;
+export const INK_FADE = 1.8;
+const fadeAt = (y: number) => (y >= INK_FADE ? 1 : 0.35 + (0.65 * (y - INK_FLOOR)) / (INK_FADE - INK_FLOOR));
+
 /** A slam's tread: where the titan's foot comes down at the top of the page (top corners, under its body). */
 export function slamTread(p: Record<string, number>) {
   return { x: (p.cx >= 0 ? 1 : -1) * (ARENA.W / 2 - 1.5), y: ARENA.H - 0.5, R: 2.4 };
@@ -550,11 +629,12 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
           continue;
         }
         const y = ARENA.TOP + 0.5 - p.speed * te;
-        if (y < -1) continue;
+        if (y < INK_FLOOR) continue; // spent above the foot of the page
+        const alpha = fadeAt(y);
         let i = 0;
         for (let x = -W / 2; x <= W / 2; x += p.spacing, i++) {
           if (Math.abs(x - gx) < p.gapW / 2) continue;
-          pushBullet(f, x, y, p.rad, v.ink, 1, bid(pa, vid, row * 128 + i), 0, -p.speed);
+          pushBullet(f, x, y, p.rad, v.ink, alpha, bid(pa, vid, row * 128 + i), 0, -p.speed);
         }
         // while it falls: the gap's posts ride with the wall, the side rails mark its height,
         // and the lane below it stays lit so a hunter at the bottom sees where to stand
@@ -579,7 +659,9 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
         for (let d = 0; d < p.drops; d++) {
           const te = tSec - (d * p.every + (c % 2) * 0.5) * beatLen;
           if (te < 0) continue;
-          pushBullet(f, x, ARENA.TOP + 0.5 - p.speed * te, p.rad, v.ink, 1, bid(pa, vid, c * 16 + d), 0, -p.speed);
+          const y = ARENA.TOP + 0.5 - p.speed * te;
+          if (y < INK_FLOOR) continue; // spent above the foot of the page
+          pushBullet(f, x, y, p.rad, v.ink, fadeAt(y), bid(pa, vid, c * 16 + d), 0, -p.speed);
         }
       });
       return;
@@ -640,14 +722,18 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
       for (let k = 0; k < twin; k++) {
         const a1 = k ? 2 * DOWN - p.a1 : p.a1;
         const a2 = k ? 2 * DOWN - p.a2 : p.a2;
+        // where the sweep will stop, as a gilt tick on the rail or the foot (a GAP mark, like a shockwave's sight)
+        const end = beamEndSight(p.ox, p.oy, a2);
         if (age < 0) {
           // telegraph: live = 0.02..0.98 carries its progress (0 is a hound's aim line), so the
           // guide can thicken as the strike nears; anything below 1 is never a hazard
           pushBeam(f, p.ox, p.oy, p.ox + Math.cos(a1) * p.len, p.oy + Math.sin(a1) * p.len, p.width, 0.02 + 0.96 * tele, v.ink);
+          pushMark(f, end.x, end.y, tele * 0.999, v.ink + GAP);
           continue;
         }
         if (tSec > durSec) continue;
         const k2 = tSec / durSec;
+        pushMark(f, end.x, end.y, 1 + k2 * 0.999, v.ink + GAP);
         const e = k2 * k2 * (3 - 2 * k2);
         const a = a1 + (a2 - a1) * e;
         pushBeam(f, p.ox, p.oy, p.ox + Math.cos(a) * p.len, p.oy + Math.sin(a) * p.len, p.width, 1, v.ink);

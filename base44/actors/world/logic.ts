@@ -37,29 +37,51 @@ export const RUN_SLACK = 60;
 // ---------- titan lifecycle
 
 /**
- * The seed of the nth titan. `avoid` is the archetype of the titan that just ended: the next one always has
- * a different body (deterministic: the first candidate is the old rule's seed, later ones are re-salted).
+ * The seed of the nth titan. `avoid` and `avoidEpithet` are the archetype and epithet of the titan that just
+ * ended: the next one always has a different body and a different title (deterministic: the first candidate
+ * is the old rule's seed, later ones are re-salted; a titan already awake is never renamed).
  */
-export function titanSeed(number: number, salt: string, avoid?: Archetype | null): number {
-  return seedUnlike((k) => (k === 0 ? hash32("titan", number, salt) : hash32("titan", number, salt, k)), avoid);
+export function titanSeed(number: number, salt: string, avoid?: Archetype | null, avoidEpithet?: string | null): number {
+  return seedUnlike((k) => (k === 0 ? hash32("titan", number, salt) : hash32("titan", number, salt, k)), avoid, avoidEpithet);
 }
 
 // ---------- one titan, many hunters
 
 /**
- * The most of one titan's life a single hunter is credited at full strength. Past it the titan shrugs off
- * that hunter: their blows still land and show (and count toward their own runs), but wound it only at
- * SOLO_RESIST. So no titan falls to one hunter alone without a long siege (a 10,000-blow titan takes a lone
- * hunter 4,000 + 6,000 x 4 = 28,000 blows), two hunters bring it down at ~16,000, and three or more never
- * meet the rule. Everyone fells it together, and a lone first visitor still sees their first runs wound it.
+ * Sharing a busy titan. While someone else has struck this titan within SHARED_MS, a hunter is credited at full
+ * strength only up to SOLO_SHARE of its life; past that the titan shrugs that hunter off: their blows still land
+ * and show (and count toward their own runs) but wound it only at SOLO_RESIST, so one person cannot hog a titan
+ * others are fighting. In a quiet world (nobody else struck it in the last SHARED_MS) every blow counts in full:
+ * a lone judge or a lone first visitor can fell the titan on their own (R5: a 40% cap on an empty world told the
+ * only hunter online that the titan "needs more of you").
  */
 export const SOLO_SHARE = 0.4;
 export const SOLO_RESIST = 0.25;
+export const SHARED_MS = 2 * HOUR_MS;
 
-/** How much of a blow of `dmg` wounds the titan, given what this hunter is already credited with on it. */
-export function creditBlow(dmg: number, creditedBefore: number, hpMax: number): number {
+/**
+ * How much of a blow of `dmg` wounds the titan, given what this hunter is already credited with on it, and
+ * whether others are sharing it right now (`shared`: someone else struck it within SHARED_MS).
+ */
+export function creditBlow(dmg: number, creditedBefore: number, hpMax: number, shared = true): number {
+  if (!shared) return dmg;
   const full = Math.max(0, Math.min(dmg, SOLO_SHARE * hpMax - creditedBefore));
   return full + (dmg - full) * SOLO_RESIST;
+}
+
+/** Has anyone but `me` struck this titan within SHARED_MS of `nowMs`? (`strikes`: who -> last accepted blow, ms) */
+export function othersStriking(strikes: Map<string, number>, me: string, nowMs: number): boolean {
+  for (const [who, at] of strikes) if (who !== me && nowMs - at < SHARED_MS) return true;
+  return false;
+}
+
+/**
+ * Who a hunter is for the sharing rule: their account when they are signed in (so one person with several
+ * browser keys is still one hunter), else their browser key. (The runtime gives the actor no network address,
+ * so an anonymous hunter is their key; one connection can carry only one key: onHello.)
+ */
+export function shareId(key: string, userId?: string | null): string {
+  return userId ? "u:" + hash32("user", userId).toString(16) : key;
 }
 
 /** [hourIndex, damage, distinct hunters who struck that hour] buckets for the last 24 h (older saves lack the third) */
@@ -224,6 +246,9 @@ export const LIMITS: Record<string, [perSec: number, burst: number]> = {
   run: [0.2, 2],
   ping: [4, 12],
 };
+
+/** a connection that drops keeps its hunter (key, run ledger, number) this long for a reconnect on the same id */
+export const RESUME_MS = 30_000;
 
 // ---------- identity
 

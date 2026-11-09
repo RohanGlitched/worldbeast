@@ -99,13 +99,15 @@ export function archetypeOf(seed: number): Archetype {
 }
 
 /**
- * The first of `candidate(0), candidate(1), ...` whose archetype differs from `avoid` (the titan just felled),
- * so a fall is always followed by a different body. Deterministic; candidate(0) is kept whenever it already
- * differs, so seeds chosen before this rule are unchanged.
+ * The first of `candidate(0), candidate(1), ...` whose archetype differs from `avoid` (the titan just felled)
+ * and whose epithet differs from `avoidEpithet` (that titan's), so a fall is always followed by a different
+ * body and a different title. Deterministic; candidate(0) is kept whenever it already differs on both, so
+ * seeds chosen before this rule are unchanged, and a titan already awake keeps its name and epithet.
  */
-export function seedUnlike(candidate: (k: number) => number, avoid?: Archetype | null): number {
+export function seedUnlike(candidate: (k: number) => number, avoid?: Archetype | null, avoidEpithet?: string | null): number {
+  const same = (s: number) => (!!avoid && archetypeOf(s) === avoid) || (!!avoidEpithet && titanName(s).epithet === avoidEpithet);
   let s = candidate(0) >>> 0;
-  for (let k = 1; avoid && archetypeOf(s) === avoid && k < 64; k++) s = candidate(k) >>> 0;
+  for (let k = 1; same(s) && k < 64; k++) s = candidate(k) >>> 0;
   return s;
 }
 

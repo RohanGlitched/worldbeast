@@ -23,6 +23,25 @@ const dur = (ms) => {
   const m = Math.max(1, Math.round(ms / 60000));
   return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
 };
+/** how long a titan has been awake: minutes, then hours (a sleeper nobody has struck can stay up for days) */
+const awakeFor = (ms) => {
+  const m = Math.max(1, Math.round(ms / 60000));
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h`;
+};
+
+/**
+ * Run `fn` when the main thread is idle (or after `timeout` ms at most): the Hall's secondary reads (ghost runs,
+ * the latest hunts) wait until the plates have painted. R5: on a phone at 4x they added ~650 ms of main-thread
+ * work during the first seconds.
+ */
+function whenIdle(fn, timeout = 2500) {
+  if (typeof requestIdleCallback === "function") {
+    const id = requestIdleCallback(fn, { timeout });
+    return () => cancelIdleCallback(id);
+  }
+  const id = setTimeout(fn, 400);
+  return () => clearTimeout(id);
+}
 
 /**
  * A titan's engraving, drawn live after the page's first paint on a worker thread (portraitClient.ts), or
@@ -57,21 +76,33 @@ function Plate({ t, live }) {
   const [ghosts, setGhosts] = useState([]);
   useEffect(() => {
     if (!t.number) return;
-    titanEchoes(t.number, t.seed, 3).then((list) =>
-      setGhosts(
-        list
-          .map((e) => {
-            const path = decodePath(e.path || "");
-            if (!path) return null;
-            // an echo starts at a beat of the titan's repeating song: any loop of it holds the same attacks
-            const link = replayUrl({ seed: t.seed, number: t.number, stage: e.stage, startT: (e.loopBeat || 0) * spec.beat, damage: e.damage, sigil: e.sigil, name: e.name, aspect: e.aspect, path });
-            return link && { id: e.id, name: e.name, sigil: e.sigil, damage: e.damage, link: link.replace(location.origin, "") };
-          })
-          .filter(Boolean),
+    let on = true;
+    // (after the plates have painted: decoding paths and packing links is the Hall's heaviest work on a phone)
+    const cancel = whenIdle(() =>
+      titanEchoes(t.number, t.seed, 3).then((list) =>
+        on &&
+        setGhosts(
+          list
+            .map((e) => {
+              const path = decodePath(e.path || "");
+              if (!path) return null;
+              // an echo starts at a beat of the titan's repeating song: any loop of it holds the same attacks
+              const link = replayUrl({ seed: t.seed, number: t.number, stage: e.stage, startT: (e.loopBeat || 0) * spec.beat, damage: e.damage, sigil: e.sigil, name: e.name, aspect: e.aspect, path });
+              return link && { id: e.id, name: e.name, sigil: e.sigil, damage: e.damage, link: link.replace(location.origin, "") };
+            })
+            .filter(Boolean),
+        ),
       ),
     );
+    return () => {
+      on = false;
+      cancel();
+    };
   }, [t.number, t.seed, spec.beat]);
   const status = live ? "awake" : t.status;
+  const dealt = Math.max(0, Math.round(t.damageTotal ?? (t.hpMax || 0) - (t.hp ?? t.hpMax ?? 0)));
+  // the titan awake now, and nobody has landed a blow on it yet: an invitation, not "Wounds 0 · Hunters 0"
+  const unstruck = status === "awake" && dealt === 0 && !t.hunterCount;
   return (
     <article className={"plate status-" + status} style={{ "--plate-body": spec.plate.body, "--plate-accent": spec.plate.accent }}>
       <div className="plate-art">{img ? <img src={img} alt={`An engraving of ${spec.name}`} /> : <div className="plate-ph" role="img" aria-label={`The engraving of ${spec.name} is being drawn`} />}</div>
@@ -80,26 +111,36 @@ function Plate({ t, live }) {
           <span>The {ORD(t.number)} Titan</span>
           <span>{ARCHETYPE_INFO[spec.archetype].label}</span>
         </div>
+        {status === "awake" && (
+          // beside the name, not over the engraving's top corner (it covered the Strider's towers)
+          <Link className="stamp awake" to="/" style={{ position: "relative", top: "auto", right: "auto", float: "right", margin: "6px 2px 0 10px", fontSize: 20 }}>
+            Awake now
+          </Link>
+        )}
         <h3>{spec.name}</h3>
         <div className="epithet">{spec.epithet}</div>
         {status === "felled" && <div className="stamp felled">Felled</div>}
         {status === "escaped" && <div className="stamp escaped">Escaped</div>}
-        {status === "awake" && (
-          <Link className="stamp awake" to="/">
-            Awake now
-          </Link>
+        {unstruck && (
+          <p className="lore wb-unstruck">
+            <Link to="/">Unstruck. Be the first wound.</Link>
+          </p>
         )}
         <dl className="facts">
           {t.wokeAt && (
             <>
-              <dt>Lived</dt>
-              <dd>{dur((t.felledAt || Date.now()) - t.wokeAt)}</dd>
+              <dt>{status === "awake" ? "Awake" : "Lived"}</dt>
+              <dd>{status === "awake" ? awakeFor(Date.now() - t.wokeAt) : dur((t.felledAt || Date.now()) - t.wokeAt)}</dd>
             </>
           )}
-          <dt>Wounds</dt>
-          <dd>{fmt(t.damageTotal ?? (t.hpMax || 0) - (t.hp ?? t.hpMax ?? 0))}</dd>
-          <dt>Hunters</dt>
-          <dd>{fmt(t.hunterCount)}</dd>
+          {!unstruck && (
+            <>
+              <dt>Wounds</dt>
+              <dd>{fmt(dealt)}</dd>
+              <dt>Hunters</dt>
+              <dd>{fmt(t.hunterCount)}</dd>
+            </>
+          )}
           {t.finalBlowName && (
             <>
               <dt>Final blow</dt>
@@ -166,11 +207,17 @@ function FirstPlate({ awake }) {
         </div>
         <h3>No titan has fallen yet</h3>
         {spec ? (
-          <p className="lore">
-            The first plate will be <b>{spec.name}</b>'s. As of its last record it has taken{" "}
-            <b>{pct > 0 && pct < 0.1 ? "<0.1" : pct.toFixed(1)}%</b> of its wounds: {fmt(dealt)} of {fmt(awake.hpMax)} blows
-            {awake.hunterCount ? `, from ${fmt(awake.hunterCount)} ${awake.hunterCount === 1 ? "hunter" : "hunters"}` : ""}. When it falls, its engraving, the final blow and its greatest hunters are written here for good, and the next titan wakes.
-          </p>
+          dealt > 0 ? (
+            <p className="lore">
+              The first plate will be <b>{spec.name}</b>'s. As of its last record it has taken{" "}
+              <b>{pct < 0.1 ? "<0.1" : pct.toFixed(1)}%</b> of its wounds: {fmt(dealt)} of {fmt(awake.hpMax)} blows
+              {awake.hunterCount ? `, from ${fmt(awake.hunterCount)} ${awake.hunterCount === 1 ? "hunter" : "hunters"}` : ""}. When it falls, its engraving, the final blow and its greatest hunters are written here for good, and the next titan wakes.
+            </p>
+          ) : (
+            <p className="lore">
+              The first plate will be <b>{spec.name}</b>'s. Nobody has struck it yet: the first wound could be yours, and in a quiet world every blow you land counts in full. When it falls, its engraving, the final blow and its greatest hunters are written here for good, and the next titan wakes.
+            </p>
+          )
         ) : (
           <p className="lore">When the world fells the titan that is awake, its engraving, its final blow and its greatest hunters are written here for good.</p>
         )}
@@ -219,9 +266,15 @@ export default function Hall() {
   const [runs, setRuns] = useState([]);
   useEffect(() => {
     document.title = "The Hall of Titans · WORLDBEAST";
-    listTitans().then(setTitans);
-    listHunters(12).then(setHunters);
-    recentRuns(base44?.entities, 8).then(setRuns);
+    let on = true;
+    listTitans().then((t) => on && setTitans(t));
+    listHunters(12).then((h) => on && setHunters(h));
+    // the latest hunts sit at the foot of the page: read them once the plates are up
+    const cancel = whenIdle(() => recentRuns(base44?.entities, 8).then((r) => on && setRuns(r)));
+    return () => {
+      on = false;
+      cancel();
+    };
   }, []);
   const list = titans ?? [];
   const awake = list.find((t) => t.status === "awake");
@@ -241,7 +294,10 @@ export default function Hall() {
         <h1>The Hall of Titans</h1>
         <p className="lead">Every titan the world has fought. Each was born from a single number, sang its own song, and will never wake again. The felled are kept here with the names of the hunters who brought them down.</p>
       </header>
-      <section className="plates" aria-label="Titans">
+      <h2 id="wb-plates" className="sr-only">
+        The titans' plates
+      </h2>
+      <section className="plates" aria-labelledby="wb-plates">
         {(awake || fallback) && <Plate t={awake || fallback} live />}
         {rest.map((t) => (
           <Plate key={t.number} t={t} />

@@ -135,14 +135,14 @@ export default function How() {
       <section className="doc-section">
         <h2>Keeping your light</h2>
         <p>
-          You carry three lights; only the bright pip at your star's heart can be struck. Brushing past ink fills Resonance, and a full Resonance Surges your light. A lost light returns after fifteen seconds unstruck, or on each Surge. Blows struck from the outer margins land at seven tenths: the titan's wounds open toward the middle of the page, so the bold hunt there. Each day brings an omen, one feat that is the same for every hunter on Earth; keep it on consecutive days and the streak grows.
+          You carry three lights; only the bright pip at your star's heart can be struck. Brushing past ink fills Resonance, and a full Resonance Surges your light. A lost light returns after fifteen seconds unstruck, or on a Surge, up to twice a hunt. Blows struck from the outer margins land at seven tenths: the titan's wounds open toward the middle of the page, so the bold hunt there. Each day brings an omen, one feat that is the same for every hunter on Earth; keep it on consecutive days and the streak grows.
         </p>
       </section>
 
       <section className="doc-section wb-fall-section" id="fall">
         <h2>How a titan falls</h2>
         <p>
-          A titan falls when the world has struck all its wounds. Its size is set when it wakes, from the world actor's own record of recent hunting: enough to last about two hours at the last few hours' pace, more for every hunter who came at once, and never less than {fmtN(10_000)} blows. So in a quiet world a handful of hunters brings one down in a session, and when many hunt it lasts. It is meant to be felled together: one hunter's blows count in full up to two fifths of a titan's life, after which it shrugs off a lone hunter and their blows wound it at a quarter. If the world wounds it but can't fell it within eight hours, it escapes; a titan nobody has struck sleeps on. The final blow, the greatest hunters and an epitaph go into the Hall, and twenty seconds later the next titan wakes.
+          A titan falls when the world has struck all its wounds. Its size is set when it wakes, from the world actor's own record of recent hunting: enough to last about two hours at the last few hours' pace, more for every hunter who came at once, and never less than {fmtN(10_000)} blows. So in a quiet world a handful of hunters brings one down in a session, and when many hunt it lasts. It is meant to be felled together, but a quiet world never stops a lone hunter: when no one else has struck it in the last two hours, every blow counts in full. When others are fighting it too, each hunter's blows count in full up to two fifths of its life and at a quarter beyond, so no one hunter can take the fall from the rest. If the world wounds it but can't fell it within eight hours of the first wound, it escapes; a titan nobody has struck sleeps on. The final blow, the greatest hunters and an epitaph go into the Hall, and twenty seconds later the next titan wakes.
         </p>
         <p>
           To see a fall now, rehearse one: a titan of your own, woken near death in your browser alone. Only your blows wound it, it falls with the same ceremony, and nothing of it is written in the Hall.

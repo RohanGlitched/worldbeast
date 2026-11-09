@@ -145,3 +145,115 @@ describe("World client", () => {
     w.close();
   });
 });
+
+// Several sockets at once: each connect() is its own connection (as the SDK gives a fresh ref per call).
+function multiClient() {
+  const conns: Array<{ id: string; sent: any[]; fn: ((m: any) => void) | null; closed: boolean; push(m: any): void }> = [];
+  const client = {
+    actors: {
+      world: () => ({
+        connect: (o: { id: string }) => {
+          const c = { id: o.id, sent: [] as any[], fn: null as ((m: any) => void) | null, closed: false, push: (m: any) => c.fn?.(m) };
+          conns.push(c);
+          return { subscribe: (fn: (m: any) => void) => ((c.fn = fn), { unsubscribe() {} }), send: (m: any) => !c.closed && c.sent.push(m), close: () => (c.closed = true) };
+        },
+      }),
+    },
+    entities: { Echo: { filter: async () => [] } },
+  };
+  return { client, conns };
+}
+
+/** for `ms` of time, answer every ping sent on `c` exactly `rtt` ms after it left (server clock = performance clock) */
+function pongs(c: { sent: any[]; push(m: any): void }, rtt: number, ms = 2000) {
+  const answered = new Set<any>();
+  for (let t = 0; t < ms; t += 10) {
+    vi.advanceTimersByTime(10);
+    for (const p of c.sent) if (p.t === "ping" && !answered.has(p) && performance.now() - p.c >= rtt) {
+      answered.add(p);
+      c.push({ t: "pong", n: p.c + rtt / 2, c: p.c });
+    }
+  }
+}
+
+describe("World client: one socket at a time", () => {
+  it("probes a slow route make-before-break: the socket in use stays until a faster one is welcomed, the old one says bye", () => {
+    const { client, conns } = multiClient();
+    const w = new World({ client: client as any });
+    w.connect();
+    w.setIdentity({ name: "Ana", sigil: 3, aspect: "ember" });
+    const [A] = conns;
+    A.push(welcome(performance.now()));
+    pongs(A, 300); // a slow route
+    expect(conns).toHaveLength(2); // a candidate is tried...
+    const B = conns[1];
+    expect(B.id).not.toBe(A.id);
+    expect(A.closed).toBe(false); // ...while the old socket stays in use
+    expect(w.clockSettled).toBe(false);
+    B.push(welcome(performance.now(), { you: 4 }));
+    B.push({ t: "s", n: performance.now(), hp: 149_000, c: 3, h: [] }); // news while it proves itself
+    pongs(B, 80);
+    expect(A.sent.at(-1)).toEqual({ t: "bye" });
+    expect(A.closed).toBe(true);
+    expect(w.you).toBe(4);
+    expect(w.hp).toBe(149_000); // the candidate's buffered news was applied
+    expect(B.sent.find((m) => m.t === "hello")).toMatchObject({ name: "Ana" });
+    // what the world sends on the new socket now counts
+    B.push({ t: "s", n: performance.now(), hp: 148_000, c: 3, h: [] });
+    expect(w.hp).toBe(148_000);
+    w.close();
+    expect(B.sent.at(-1)).toEqual({ t: "bye" });
+  });
+
+  it("keeps the socket in use when the candidate is no faster, and the candidate says bye", () => {
+    const { client, conns } = multiClient();
+    const w = new World({ client: client as any });
+    w.connect();
+    const [A] = conns;
+    A.push(welcome(performance.now()));
+    pongs(A, 300);
+    const B = conns[1];
+    B.push(welcome(performance.now(), { you: 4 }));
+    pongs(B, 290);
+    expect(B.sent.at(-1)).toEqual({ t: "bye" });
+    expect(B.closed).toBe(true);
+    expect(A.closed).toBe(false);
+    expect(w.you).toBe(1);
+    // the route was no faster: the distance is the network's, so there is no second probe
+    pongs(A, 300, 4000);
+    expect(conns).toHaveLength(2);
+    expect(w.clockSettled).toBe(true);
+    // a candidate that never answers is dropped too
+    const before = conns.length;
+    w.close();
+    expect(conns.length).toBe(before);
+  });
+
+  it("sends a hit batch again, once, when the actor refused it for a missing hello (a redialled socket)", () => {
+    const { client, conns } = multiClient();
+    const w = new World({ client: client as any });
+    w.connect();
+    const [A] = conns;
+    A.push(welcome(performance.now()));
+    w.setIdentity({ name: "Ana", sigil: 3, aspect: "ember" });
+    w.addHit(1, 10, 100);
+    vi.advanceTimersByTime(260);
+    const sent = A.sent.filter((m) => m.t === "hit");
+    expect(sent).toHaveLength(1);
+    expect(sent[0].q).toBeGreaterThan(0);
+    // the socket redialled: a fresh welcome, and the queued batch was refused before the hello landed
+    A.push(welcome(performance.now()));
+    A.push({ t: "ack", n: performance.now(), ok: 0, bad: 1, why: "noHello", hp: 150_000, q: sent[0].q });
+    vi.advanceTimersByTime(260);
+    const again = A.sent.filter((m) => m.t === "hit");
+    expect(again).toHaveLength(2);
+    expect(again[1].hits).toEqual(sent[0].hits);
+    const helloAt = A.sent.lastIndexOf(A.sent.filter((m) => m.t === "hello").at(-1));
+    expect(A.sent.indexOf(again[1])).toBeGreaterThan(helloAt);
+    // refused again: not sent a third time
+    A.push({ t: "ack", n: performance.now(), ok: 0, bad: 1, why: "noHello", hp: 150_000, q: again[1].q });
+    vi.advanceTimersByTime(260);
+    expect(A.sent.filter((m) => m.t === "hit")).toHaveLength(2);
+    w.close();
+  });
+});

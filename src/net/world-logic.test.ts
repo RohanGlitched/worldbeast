@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { coreOpen, LOOP_BEATS, makeTitan, PHRASE_BEATS } from "@/core/titan";
 import { maxDps } from "@/core/hunt";
 import {
-  ACTIVITY_H, addDamage, checkHit, checkRun, creditBlow, DmgBuckets, SOLO_RESIST, SOLO_SHARE, titanSeed, echoEviction, hashKey, HOUR_MS, HP_CAP, HP_FLOOR, HP_PER_HUNTER, hpMaxFor,
+  ACTIVITY_H, addDamage, checkHit, checkRun, creditBlow, DmgBuckets, othersStriking, SHARED_MS, shareId, SOLO_RESIST, SOLO_SHARE, titanSeed, echoEviction, hashKey, HOUR_MS, HP_CAP, HP_FLOOR, HP_PER_HUNTER, hpMaxFor,
   LIFETIME_H, loopKey, maxHitDmg, prepareEcho, RATE_BUDGET, RateWindow, recentActivity, resizeTitan, Bucket, sanitizeName, segDist, stageAtT,
 } from "../../base44/actors/world/logic";
 import { decodePath, encodePath } from "./pathcodec";
@@ -93,14 +93,31 @@ describe("adaptive hp", () => {
     // a judge alone (2-3 runs of 1.5-5k blows) wounds a fresh floor titan to 40% struck at full strength
     expect(3 * 3_500).toBeGreaterThanOrEqual(HP_FLOOR * SOLO_SHARE);
   });
-  it("credits one hunter in full up to 40% of the titan's life, then at a quarter", () => {
+  it("while others share a titan, credits one hunter in full up to 40% of its life, then at a quarter", () => {
     expect(SOLO_SHARE).toBe(0.4);
     expect(SOLO_RESIST).toBe(0.25);
     expect(creditBlow(50, 0, 10_000)).toBe(50);
     expect(creditBlow(50, 3_990, 10_000)).toBe(10 + 40 * 0.25);
     expect(creditBlow(50, 5_000, 10_000)).toBe(12.5);
+    expect(creditBlow(50, 5_000, 10_000, true)).toBe(12.5);
   });
-  it("no titan falls to one hunter without a long siege; two need far less; three never meet the rule", () => {
+  it("in a quiet world every blow counts in full: a lone judge can fell a titan alone", () => {
+    expect(creditBlow(50, 3_990, 10_000, false)).toBe(50);
+    expect(creditBlow(50, 9_000, 10_000, false)).toBe(50);
+    expect(SHARED_MS).toBe(2 * HOUR_MS);
+    const now = 50 * HOUR_MS;
+    const strikes = new Map([["me", now - 10], ["you", now - SHARED_MS - 1]]);
+    expect(othersStriking(strikes, "me", now)).toBe(false); // only me lately: quiet
+    strikes.set("you", now - SHARED_MS + 60_000);
+    expect(othersStriking(strikes, "me", now)).toBe(true); // someone else within 2 h: shared
+    expect(othersStriking(strikes, "you", now)).toBe(true);
+    expect(othersStriking(new Map(), "me", now)).toBe(false);
+    // a signed-in hunter is one hunter however many browser keys they use
+    expect(shareId("k1", "user-9")).toBe(shareId("k2", "user-9"));
+    expect(shareId("k1", null)).toBe("k1");
+    expect(shareId("k1", "user-9")).not.toBe(shareId("k1", "user-8"));
+  });
+  it("no titan others are fighting falls to one hunter without a long siege; two need far less; three never meet the rule", () => {
     const blowsToFell = (hunters: number, hp = HP_FLOOR) => {
       const credited = new Array(hunters).fill(0);
       let left = hp, raw = 0, i = 0;
@@ -117,14 +134,20 @@ describe("adaptive hp", () => {
     expect(blowsToFell(2)).toBeLessThan(17_000);
     expect(blowsToFell(3)).toBe(HP_FLOOR);
   });
-  it("the next titan's seed avoids the archetype just felled, deterministically", () => {
+  it("the next titan's seed avoids the archetype and the epithet just ended, deterministically", () => {
     for (let n = 2; n < 200; n++) {
-      const prev = makeTitan(titanSeed(n - 1, "salt"), n - 1).archetype;
-      const s = titanSeed(n, "salt", prev);
-      expect(makeTitan(s, n).archetype).not.toBe(prev);
-      expect(titanSeed(n, "salt", prev)).toBe(s);
+      const prev = makeTitan(titanSeed(n - 1, "salt"), n - 1);
+      const s = titanSeed(n, "salt", prev.archetype, prev.epithet);
+      expect(makeTitan(s, n).archetype).not.toBe(prev.archetype);
+      expect(makeTitan(s, n).epithet).not.toBe(prev.epithet);
+      expect(titanSeed(n, "salt", prev.archetype, prev.epithet)).toBe(s);
     }
     expect(titanSeed(1, "salt")).toBe(titanSeed(1, "salt", null)); // the first titan's seed is unchanged
+  });
+  it("the live titan keeps its name and epithet (Orthargek, Who Unmakes the Tides)", () => {
+    const live = makeTitan(2870491872, 1);
+    expect(live.name).toBe("Orthargek");
+    expect(live.epithet).toBe("Who Unmakes the Tides");
   });
   it("grows with recent damage (lives ~LIFETIME_H at the last ACTIVITY_H hours' rate) and with the crowd", () => {
     const b: DmgBuckets = [];

@@ -1547,3 +1547,76 @@ button {
   padding: 0;
   cursor: pointer;
 }
+
+/* ------------------------------------------------------------------ live world, honestly (counts, chronicle times, falls, rehearsals) */
+.hunter-chip.wb-flying {
+  color: var(--ink);
+}
+.hunter-chip.wb-flying::after {
+  content: "";
+  width: 0.4em;
+  height: 0.4em;
+  border-radius: 50%;
+  background: var(--gold);
+  box-shadow: 0 0 4px var(--gold-2);
+  margin-left: 0.15em;
+}
+.hunter-chip.wb-resting {
+  opacity: 0.6;
+}
+.wb-ago {
+  color: var(--ink-3);
+  font-style: italic;
+  font-size: 0.9em;
+}
+.wb-moved {
+  margin-top: 0.35em;
+  font-family: var(--fell);
+  font-style: italic;
+  color: var(--ink-2);
+}
+.wb-moved b {
+  font-family: var(--text);
+  font-style: normal;
+  color: #8a6512;
+}
+.wb-rehearse-live {
+  display: inline-block;
+  margin-top: 0.5em;
+  color: var(--vermilion);
+  font-style: italic;
+  text-decoration: none;
+  border-bottom: 1px dotted var(--vermilion);
+}
+.felled-line.wb-felled-note {
+  font-size: 0.95em;
+  color: var(--ink-2);
+}
+.wb-first-plate .lore b {
+  color: var(--ink);
+}
+.wb-rehearse {
+  margin-top: 0.8em;
+  font-size: 0.92em;
+  font-style: italic;
+  color: var(--ink-3);
+}
+.wb-rehearse a,
+.lore a {
+  color: var(--vermilion);
+}
+.wb-recent li {
+  grid-template-columns: 26px 1fr auto auto;
+}
+@media (max-width: 560px) {
+  .wb-recent li {
+    grid-template-columns: 26px 1fr auto;
+  }
+  .wb-recent .roll-r {
+    grid-column: 2 / -1;
+    font-size: 0.85em;
+  }
+}
+.wb-fall-section .join small {
+  font-size: 0.5em;
+}

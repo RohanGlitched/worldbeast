@@ -3,7 +3,10 @@ import { portrait } from "@/game/portrait";
 
 // The closed codex: tooled leather, a gilded title, a clasp. Opening it unlocks sound and wakes the page.
 
-export default function Cover({ rect, onOpen, online, spec }) {
+const coarse = () => typeof matchMedia !== "undefined" && matchMedia("(pointer: coarse)").matches;
+
+// `meta`: an honest line about who is here (see chronicle.js presence); `replay`: a ghost link's run, if any
+export default function Cover({ rect, onOpen, meta, spec, replay }) {
   const [opening, setOpening] = useState(false);
   const [img, setImg] = useState(null);
   useEffect(() => {
@@ -33,7 +36,7 @@ export default function Cover({ rect, onOpen, online, spec }) {
   const style = rect ? { left: rect.x, top: rect.y, width: rect.w, height: rect.h } : { inset: 0 };
   return (
     <div className={"cover-wrap" + (opening ? " opening" : "")} style={style}>
-      <button className="cover" onClick={open} aria-label="Open the codex and join the hunt">
+      <button className="cover" onClick={open} aria-label={replay ? "Open the codex and watch the recorded run" : "Open the codex and join the hunt"}>
         <svg className="cover-tooling" viewBox="0 0 400 560" preserveAspectRatio="none" aria-hidden="true">
           <rect x="18" y="18" width="364" height="524" />
           <rect x="30" y="30" width="340" height="500" />
@@ -42,11 +45,19 @@ export default function Cover({ rect, onOpen, online, spec }) {
           <path d="M70 430 H330 M90 444 H310" />
         </svg>
         <span className="medallion" aria-hidden="true">{img ? <img src={img} alt="" /> : null}</span>
-        {spec && <span className="cover-awake">Awake now: {spec.name}, {spec.epithet}</span>}
+        {replay ? (
+          <span className="cover-awake">
+            A ghost run: {replay.name}, {Math.round(replay.damage).toLocaleString("en-US")} blows{spec ? ` against ${spec.name}` : ""}
+          </span>
+        ) : (
+          spec && <span className="cover-awake">Awake now: {spec.name}, {spec.epithet}</span>
+        )}
         <span className="cover-title">Worldbeast</span>
         <span className="cover-sub">One titan · everyone online · the same moment</span>
-        <span className="cover-open">{opening ? "…" : "Open the codex"}</span>
-        <span className="cover-meta">{online > 1 ? `${online} hunters inside right now` : "A living bestiary"} · sound on · Enter opens</span>
+        <span className="cover-open">{opening ? "…" : replay ? `Watch ${replay.name}'s run${spec ? ` against ${spec.name}` : ""}` : "Open the codex"}</span>
+        <span className="cover-meta">
+          {meta || "A living bestiary"} · sound on{coarse() ? "" : " · Enter opens"}
+        </span>
         <span className="clasp" aria-hidden="true" />
       </button>
     </div>

@@ -15,6 +15,7 @@ import { Floats, Labels } from "./Overlays";
 import { unpackReplay, replayUrl } from "./replay";
 import { Seal, SEALS, judgeSeals } from "./seals";
 import { omenFor, judgeOmen, liveStreak, untilNext, dayIndex } from "./omen";
+import { fmtAgo, presence } from "./chronicle";
 
 const ORD = (n) => {
   const s = ["th", "st", "nd", "rd"],
@@ -66,7 +67,8 @@ export default function Hunt() {
   const [shareMsg, setShareMsg] = useState(null);
   const [closed, setClosed] = useState(() => {
     try {
-      return !sessionStorage.getItem("wb-opened") && !new URLSearchParams(location.search).has("open");
+      const q = new URLSearchParams(location.search);
+      return !sessionStorage.getItem("wb-opened") && !q.has("open") && !q.has("rehearse");
     } catch {
       return true;
     }
@@ -94,6 +96,7 @@ export default function Hunt() {
   };
   const [felled, setFelled] = useState(null);
   const [revived, setRevived] = useState(null);
+  const runMark = useRef(null); // the world's accepted blows when this run began (for "your blows moved the world")
 
   useEffect(() => {
     const g = new Game(canvasRef.current);
@@ -110,26 +113,30 @@ export default function Hunt() {
     g.events.onTitan = (spec, field) => audio?.setTitan(spec, field);
     g.events.onFrame = (t, stage, hp, playing, danger) => audio?.update(t, stage, hp, { playing, nearDanger: danger });
     g.events.onSfx = (n, x, str) => audio?.sfx(n, x, str);
-    // a dev/test titan can be pinned with ?seed=; otherwise the live Base44 world decides
+    // a dev/test titan can be pinned with ?seed=, ?rehearse opens a rehearsal against a near-dead titan of
+    // your own, a ghost link replays its run; otherwise the live Base44 world decides
     const q = new URLSearchParams(location.search);
+    const hooks = {
+      onFelled: (end) => {
+        setFelled(end);
+        setTimeout(() => setFelled(null), 9000);
+      },
+      onRevived: (by) => {
+        clearTimeout(runTimer.current);
+        runTimer.current = null;
+        pendingRun.current = null;
+        setSummary(null);
+        setRevived(by || "a hunter");
+        setTimeout(() => setRevived(null), 3000);
+      },
+    };
     const w = replay
-      ? createLocalWorld(g, { seed: replay.seed, number: replay.number })
+      ? createLocalWorld(g, { seed: replay.seed, number: replay.number, replay })
+      : q.has("rehearse")
+      ? createLocalWorld(g, { rehearsal: true, audio }, hooks)
       : q.has("seed")
-      ? createLocalWorld(g)
-      : createLiveWorld(g, audio, {
-          onFelled: (end) => {
-            setFelled(end);
-            setTimeout(() => setFelled(null), 9000);
-          },
-          onRevived: (by) => {
-            clearTimeout(runTimer.current);
-            runTimer.current = null;
-            pendingRun.current = null;
-            setSummary(null);
-            setRevived(by || "a hunter");
-            setTimeout(() => setRevived(null), 3000);
-          },
-        });
+      ? createLocalWorld(g, { audio }, hooks)
+      : createLiveWorld(g, audio, hooks);
     worldRef.current = w;
     w.onChange = (s) => setWorld({ ...s });
     g.events.onLayout = setLayout;
@@ -150,9 +157,10 @@ export default function Hunt() {
         Promise.resolve(w.sendRun(s)).then((r) => r && setSummary((cur) => (cur && cur.startT === s.startT ? { ...cur, recorded: r.damage } : cur)));
       }, s.felled ? 0 : 8600);
       setProfile((p) => {
-        const freshSeals = judgeSeals(p, s);
+        // a titan of your own falling (a rehearsal, a pinned titan) is not a world titan: no Witness seal for it
+        const freshSeals = judgeSeals(p, w.state.local && s.felled ? { ...s, felled: false } : s);
         const omen = judgeOmen(p, s);
-        setSummary({ ...s, worldShare: w.shareOf(s.damage), freshSeals, omen });
+        setSummary({ ...s, worldShare: w.shareOf(s.damage), mark: runMark.current, titanName: g.spec?.name, titanSpec: g.spec, freshSeals, omen });
         const n = { ...p, ...(omen || {}), runs: p.runs + 1, total: p.total + s.damage, best: Math.max(p.best, s.damage), fresh: false, seals: [...(p.seals || []), ...freshSeals] };
         saveProfile(n);
         return n;
@@ -165,7 +173,8 @@ export default function Hunt() {
     document.title = "WORLDBEAST · one titan, everyone, right now";
     g.holdReveal = closedRef.current;
     w.start();
-    if (replay) g.startReplay(replay);
+    // a ghost run starts when the book opens, not behind the cover
+    if (replay && !closedRef.current) g.startReplay(replay);
     g.run();
     setLayout(g.layout());
     const onHide = () => {
@@ -195,6 +204,7 @@ export default function Hunt() {
     // the previous run's report goes now if its spark was still waiting
     flushRun();
     worldRef.current?.identify?.(profile);
+    runMark.current = worldRef.current?.runMark?.() ?? null;
     setSummary(null);
     // a first hunt starts half-charged, so the first Surge comes early
     g.start(profile.aspect, { resonance: (profile.runs || 0) === 0 ? 55 : 0, gentle: (profile.runs || 0) < 2 });
@@ -251,11 +261,21 @@ export default function Hunt() {
   const u = layout ? layout.pxPerUnit : 26;
   const styleU = { "--u": u + "px" };
 
+  // what kind of world this page shows, so nothing reads as live that isn't
+  const rehearsal = !!world?.rehearsal;
+  const recorded = world?.replay ?? null;
+  const pinned = !!world?.pinned;
+  const live = !!world && !world.local;
+  const who = world ? presence(world) : null;
+  const struckPct = (1 - hpFrac) * 100;
+  // never "100.0% struck" while wounds remain, never "0.0%" once a blow has landed
+  const struckTxt = hpFrac > 0 && struckPct > 99.9 ? ">99.9" : struckPct > 0 && struckPct < 0.1 ? "<0.1" : struckPct.toFixed(1);
+
   const leafBody = spec && (
     <>
       <div className="folio">
         <span>WORLDBEAST · a living bestiary</span>
-        <span>The {ORD(spec.number)} Titan</span>
+        <span>{recorded ? "A recorded run" : rehearsal ? "A rehearsal titan · yours alone" : `The ${ORD(spec.number)} Titan`}</span>
       </div>
       <div>
         <h1>{spec.name}</h1>
@@ -265,24 +285,48 @@ export default function Hunt() {
         <span className="dropcap" aria-hidden="true">
           {spec.name[0]}
         </span>
-        {ARCHETYPE_INFO[spec.archetype].blurb} It woke {world.wokeAgo} and sings at {spec.bpm} beats a minute in {NOTE[spec.root % 12]} {spec.mode}. Every hunter online fights it now, on the same beat, in the same moment.
+        {ARCHETYPE_INFO[spec.archetype].blurb}{" "}
+        {recorded ? (
+          <>
+            It sings at {spec.bpm} beats a minute in {NOTE[spec.root % 12]} {spec.mode}. What you see is a recorded run against it, recomputed from its seed: not the live world.
+          </>
+        ) : rehearsal ? (
+          <>
+            This one is yours alone, woken near death so you can see a titan fall: only your blows wound it and nothing here is written in the Hall. <a href="/">The live titan</a> is fought by everyone online.
+          </>
+        ) : (
+          <>
+            It woke {world.wokeAgo} and sings at {spec.bpm} beats a minute in {NOTE[spec.root % 12]} {spec.mode}. {live ? "Every hunter online fights it now, on the same beat, in the same moment." : "Only your blows wound it here."}
+          </>
+        )}
       </p>
-      <section className="wounds" aria-label="The titan's wounds">
-        <div className="rubric">Its wounds</div>
-        <div className="bar">
-          <div className="fill" style={{ width: (1 - hpFrac) * 100 + "%" }} />
-          <div className="stagemarks">
-            <i style={{ left: "34%" }} />
-            <i style={{ left: "67%" }} />
+      {recorded ? (
+        <section className="wounds" aria-label="The recorded run">
+          <div className="rubric">A recorded run</div>
+          <div className="caption">
+            <span>
+              <Sigil id={recorded.sigil} size={u * 0.45} /> <b>{recorded.name}</b> struck {fmt(recorded.damage)} blows in {recorded.duration.toFixed(0)} s. The live world's wounds are not shown during a recorded run.
+            </span>
           </div>
-        </div>
-        <div className="caption">
-          <span>
-            {((1 - hpFrac) * 100).toFixed(1)}% struck · {fmt(world.hp)} of {fmt(world.hpMax)} left
-          </span>
-          <span className={"stage-name stage-" + stage}>{STAGE_NAMES[stage]}</span>
-        </div>
-      </section>
+        </section>
+      ) : (
+        <section className="wounds" aria-label="The titan's wounds">
+          <div className="rubric">{rehearsal ? "Its wounds · a rehearsal" : "Its wounds"}</div>
+          <div className="bar">
+            <div className="fill" style={{ width: struckPct + "%" }} />
+            <div className="stagemarks">
+              <i style={{ left: "34%" }} />
+              <i style={{ left: "67%" }} />
+            </div>
+          </div>
+          <div className="caption">
+            <span>
+              {world.interlude ? `Wakes in ${world.interlude} s · ${fmt(world.hpMax)} to strike` : `${struckTxt}% struck · ${fmt(world.hp)} of ${fmt(world.hpMax)} left`}
+            </span>
+            <span className={"stage-name stage-" + stage}>{STAGE_NAMES[stage]}</span>
+          </div>
+        </section>
+      )}
       <section aria-label="The Canticle">
         <div className="rubric" style={{ display: "flex", justifyContent: "space-between" }}>
           <span>The Canticle</span>
@@ -292,24 +336,37 @@ export default function Hunt() {
         </div>
         <Canticle game={gameRef.current} height={u * 3.1} />
       </section>
-      <section>
+      <section hidden={!!recorded}>
         <div className="rubric">
-          {world.online} {world.online === 1 ? "hunter" : "hunters"} in the hunt{world.echoes ? ` · ${world.echoes} echoes` : ""}
+          {rehearsal
+            ? "Only you · a rehearsal"
+            : pinned
+            ? "Only you · a titan pinned to this page"
+            : world.mode === "offline"
+            ? "Out of reach of the world · only you"
+            : who.header}
         </div>
-        <div className="hunters">
-          {world.hunters.slice(0, 10).map((h) => (
-            <span className="hunter-chip" key={h.id}>
-              <Sigil id={h.sigil} size={u * 0.5} /> {h.name}
-            </span>
-          ))}
-        </div>
+        {live && world.hunters.length > 0 && (
+          <div className="hunters">
+            {world.hunters.slice(0, 10).map((h) => (
+              <span className={"hunter-chip" + (h.flying ? " wb-flying" : " wb-resting")} key={h.id} title={h.flying ? "in flight now" : "between runs"}>
+                <Sigil id={h.sigil} size={u * 0.5} /> {h.name}
+                {h.me ? " (you)" : ""}
+              </span>
+            ))}
+          </div>
+        )}
       </section>
       <section style={{ minHeight: 0, flex: 1, display: "flex", flexDirection: "column" }}>
         <div className="rubric">The chronicle</div>
         <ul className="chronicle">
           {world.feed.slice(-7).reverse().map((f) => (
-            <li key={f.id} dangerouslySetInnerHTML={{ __html: f.html }} />
+            <li key={f.id}>
+              <span dangerouslySetInnerHTML={{ __html: f.html }} />
+              {f.n ? <span className="wb-ago"> · {fmtAgo(Date.now() - f.n)}</span> : null}
+            </li>
           ))}
+          {live && world.feed.length === 0 && <li className="wb-ago">Nothing is written here yet: the next hunter to join writes the first line.</li>}
         </ul>
       </section>
     </>
@@ -403,7 +460,15 @@ export default function Hunt() {
       )}
       <button className="join" onClick={begin} disabled={!!world?.interlude || !!gameRef.current?.revealing}>
         {world?.interlude ? `The next titan stirs… ${world.interlude}` : gameRef.current?.revealing ? "The titan is being engraved…" : "Join the hunt"}
-        <small>{world?.mode === "offline" ? "The world is out of reach: you hunt this titan alone for now" : world?.online > 1 ? `${world.online - 1} ${world.online - 1 === 1 ? "other is" : "others are"} watching or fighting it now` : "Your echo will fly with the hunters after you"}</small>
+        <small>
+          {world?.mode === "offline"
+            ? "The world is out of reach: you hunt this titan alone for now"
+            : rehearsal
+            ? "A rehearsal against a titan of your own: nothing here is written in the Hall"
+            : pinned
+            ? "A titan pinned to this page: only your blows count, nothing is sent"
+            : who?.join ?? ""}
+        </small>
       </button>
     </section>
   );
@@ -441,15 +506,20 @@ export default function Hunt() {
       {closed && (
         <Cover
           rect={L ? (L.spread && L.left ? { x: L.left.x, y: L.left.y - 4, w: L.right.x + L.right.w - L.left.x, h: L.left.h + 8 } : null) : null}
-          online={world?.online ?? 1}
+          meta={recorded ? "a recorded run, not the live world" : rehearsal ? "a rehearsal" : who?.cover}
           spec={world?.spec}
+          replay={replay}
           onOpen={() => {
             try {
               sessionStorage.setItem("wb-opened", "1");
             } catch {}
             gameRef.current.holdReveal = false;
             gameRef.current.events.onSfx?.("ui");
-            setTimeout(() => setClosed(false), 1350);
+            setTimeout(() => {
+              setClosed(false);
+              // the ghost run begins as the book opens, so its first seconds are seen
+              if (replay) gameRef.current.startReplay(replay);
+            }, 1350);
           }}
         />
       )}
@@ -469,10 +539,12 @@ export default function Hunt() {
         <>
           <div className="topbar">
             <span className="name">{spec.name}</span>
-            <span className="bar">
-              <i style={{ width: hpFrac * 100 + "%" }} />
-            </span>
-            <span>{world.online} online</span>
+            {!recorded && (
+              <span className="bar">
+                <i style={{ width: hpFrac * 100 + "%" }} />
+              </span>
+            )}
+            <span>{recorded ? "a recorded run" : rehearsal ? "a rehearsal" : pinned ? "only you" : who.topbar}</span>
           </div>
           {phase !== "playing" && phase !== "replay" && !summary && (
             <div className="sheet leaf" style={{ position: "absolute", "--u": "30px" }}>
@@ -521,15 +593,34 @@ export default function Hunt() {
         <div className="summary" style={{ left: arena.x + arena.w * 0.08, width: arena.w * 0.84, top: arena.y + arena.h * (summary.felled ? 0.42 : 0.2) }} role="dialog" aria-label="Your run">
           <h2>{summary.felled ? "The titan is felled!" : "Your light went out"}</h2>
           <div className="rubric">
-            against {spec?.name}, after {summary.time.toFixed(1)} s{!summary.felled && summary.killer ? `, struck down by ${killerOf(summary.killer)[0]}` : ""}
+            against {summary.titanName ?? spec?.name}, after {summary.time.toFixed(1)} s{!summary.felled && summary.killer ? `, struck down by ${killerOf(summary.killer)[0]}` : ""}
           </div>
           {!summary.felled && summary.killer && <p className="tip-line">{killerOf(summary.killer)[1]}</p>}
-          {!summary.felled && world && !world.local && world.online > 1 && <div className="rubric">Your spark lingers for 8 s: a hunter who flies through it rekindles you.</div>}
+          {!summary.felled && live && who && who.others > 0 && <div className="rubric">Your spark lingers for 8 s: a hunter who flies through it rekindles you.</div>}
           <div className="big">{fmt(summary.damage)}</div>
           <div style={{ fontStyle: "italic", color: "var(--ink-2)" }}>
-            blows struck{summary.worldShare ? ` · ${summary.worldShare} of the world's today` : ""}
+            blows struck
+            {live && summary.felled && summary.worldShare ? ` · ${summary.worldShare} of the blows that felled it` : ""}
             {summary.recorded != null && Math.abs(summary.recorded - summary.damage) > 1 ? ` · ${fmt(summary.recorded)} reached the titan` : summary.recorded != null ? " · written in the Hall" : ""}
+            {rehearsal ? " · a rehearsal, not written in the Hall" : pinned ? " · on this page only, not written in the Hall" : ""}
           </div>
+          {(() => {
+            // the real share of the live titan's life that the world accepted from this run
+            const m = live ? worldRef.current?.moved?.(summary.mark) : null;
+            if (!(m > 0)) return null;
+            const pct = m * 100;
+            return (
+              <div className="wb-moved">
+                Your blows moved the world <b>{pct >= 0.1 ? pct.toFixed(1) : pct >= 0.01 ? pct.toFixed(2) : "<0.01"}%</b>
+                {summary.felled ? "" : ` · ${fmt(world.hp)} of ${fmt(world.hpMax)} left`}
+              </div>
+            );
+          })()}
+          {rehearsal && summary.felled && (
+            <a className="wb-rehearse-live" href="/">
+              Now hunt the live titan, with everyone
+            </a>
+          )}
           <dl className="facts" style={{ marginTop: "0.7em" }}>
             <dt>Grazes</dt>
             <dd>{summary.grazes}</dd>
@@ -576,8 +667,9 @@ export default function Hunt() {
               style={{ flex: 1 }}
               onClick={async () => {
                 setShareMsg("Engraving your card…");
-                const link = replayUrl({ seed: spec.seed, number: spec.number, stage: summary.stage, startT: summary.startT, damage: summary.damage, sigil: profile.sigil, name: profile.name, aspect: summary.aspect, path: summary.path });
-                const r = await shareRun({ spec, summary, profile, share: summary.worldShare, link });
+                const sp = summary.titanSpec ?? spec;
+                const link = replayUrl({ seed: sp.seed, number: sp.number, stage: summary.stage, startT: summary.startT, damage: summary.damage, sigil: profile.sigil, name: profile.name, aspect: summary.aspect, path: summary.path });
+                const r = await shareRun({ spec: sp, summary, profile, share: live ? summary.worldShare : null, link });
                 setShareMsg(r === "shared" ? "Shared." : r === "saved+copied" ? "Card saved; link copied." : "Card saved.");
                 setTimeout(() => setShareMsg(null), 3000);
               }}
@@ -598,7 +690,7 @@ export default function Hunt() {
       {replay && arena && phase === "replay" && (
         <div className="replay-banner" style={{ left: arena.x, top: arena.y + 6, width: arena.w }}>
           <div>
-            <span className="rubric">A ghost run</span> <Sigil id={replay.sigil} size={u * 0.5} /> <b>{replay.name}</b> against {spec?.name}: {fmt(replay.damage)} blows, {replay.duration.toFixed(0)} s.
+            <span className="rubric">A ghost run · a recorded run, not live</span> <Sigil id={replay.sigil} size={u * 0.5} /> <b>{replay.name}</b> against {spec?.name}: {fmt(replay.damage)} blows, {replay.duration.toFixed(0)} s.
           </div>
           <div className="replay-sub">The very attacks they faced, replayed from the titan's seed and the moment they began. (Their hounds are not shown.)</div>
           <a className="join" href="/" style={{ fontSize: "1.05em", marginTop: "0.4em", display: "inline-block", width: "auto", textDecoration: "none", padding: "0.2em 0.8em" }}>
@@ -618,7 +710,13 @@ export default function Hunt() {
               "The world brought it down together."
             )}
           </div>
-          {felled.top?.length > 0 && (
+          {felled.local && (
+            <div className="felled-line wb-felled-note">
+              {felled.top?.[0] ? `Top hunter, from this run alone: ${felled.top[0].name}, ${fmt(felled.top[0].damage)} blows. ` : ""}
+              {felled.rehearsal ? "A rehearsal: it is not written in the Hall." : "Only your blows, on this page: it is not written in the Hall."}
+            </div>
+          )}
+          {!felled.local && felled.top?.length > 0 && (
             <ol className="felled-top">
               {felled.top.slice(0, 3).map((t, i) => (
                 <li key={i}>

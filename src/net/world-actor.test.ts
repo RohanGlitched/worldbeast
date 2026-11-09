@@ -186,9 +186,21 @@ describe("world actor (in-process)", () => {
     expect(w.titan.status).toBe("awake");
   });
 
-  it("lets a wounded titan the world could not finish escape after 8 hours", async () => {
+  it("starts the escape clock at the first wound: a 9-hour sleeper struck now stays awake", async () => {
+    const n = w.titan.number;
+    vi.setSystemTime(w.titan.wokeAt + 9 * 3600_000);
+    w.titan.hp = w.titan.hpMax - 500; // the first blow lands now
+    await w.handleWake("escape");
+    await settle(w);
+    expect(w.titan.number).toBe(n);
+    expect(w.titan.status).toBe("awake");
+    expect(w.titan.firstWoundAt).toBeGreaterThan(0);
+  });
+
+  it("lets a wounded titan the world could not finish escape 8 hours after its first wound", async () => {
     w.titan.hp = w.titan.hpMax - 500;
-    vi.setSystemTime(w.titan.wokeAt + 8 * 3600_000 + 10);
+    w.titan.firstWoundAt = w.titan.wokeAt + 1000;
+    vi.setSystemTime(w.titan.firstWoundAt + 8 * 3600_000 + 10);
     await w.handleWake("escape");
     await settle(w);
     expect(A.last("felled").end).toMatchObject({ number: 2, status: "escaped", blow: null });

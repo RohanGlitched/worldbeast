@@ -29,7 +29,7 @@ audio.heardTime();                    // the titan time coming out of the speake
 AudioEngine.renderExcerpt(spec, field, { t0, seconds, stage }); // offline render, an AudioBuffer
 ```
 
-Sfx names: `start`, `dash`, `graze` (strength = number of grazes), `hurt`, `surge`, `strike` (strength 0..1), `down`, `core-open`, `felled`, `wake`, `revive`, `ui`, `ui-hover`. `beat` is accepted and ignored, because the Canticle already keeps the beat.
+Sfx names: `start`, `dash`, `graze` (strength = number of grazes), `hurt`, `surge`, `strike` (strength 0..1), `down`, `core-open`, `felled`, `wake`, `revive`, `relight`, `ui`, `ui-hover`. `beat` is accepted and ignored, because the Canticle already keeps the beat.
 
 ## Timing
 
@@ -88,6 +88,8 @@ Every volley in `field.plan()` is voiced from the same deterministic plan the fi
   - **Sweep** (beam, wall, cross): a bowed-glass tone.
   - Each kind has its own scale degree. Heavy volleys add a lower octave.
 - **Swell**: heavy volleys with a 2-beat tell get a bowed-metal crescendo over the whole telegraph. The Ruin signature (3-beat tell) adds a bell toll and a choir swell.
+- **Beam warning**: a beam adds two high strikes the moment its guide is drawn and a thin whistle rising through the whole telegraph (3 beats in Calm and Wrath) to the moment it fires.
+- **Landing tick** on the beat: every impact (and every later wave of the same volley) gets a short, bright click (band-passed noise at 4.3 kHz with a 2-3.6 kHz ping on the chord), so "it lands on the beat" survives laptop and phone speakers.
 - **Impact** on the beat, per kind. Rings clang, slams hit taiko, sub and a crash, walls flam, and fans clack per wave. Spirals unspool as an arpeggio, beams roar and sweep across the stereo field, blooms burst after their seed flies, and rain patters per drop. Heavy impacts duck the music for a moment.
 
 In the lobby (`playing: false`) the music is muffled behind the page (low-pass 1.1 kHz), tells are silent, and impacts play at 45%.
@@ -102,13 +104,16 @@ In the lobby (`playing: false`) the music is muffled behind the page (low-pass 1
 | `hurt` | A thud with a minor-second clang, and the cathedral goes muffled for half a second |
 | `down` | Three falling tolls under a long muffle |
 | `revive` | A psaltery arpeggio and a bell |
+| `relight` | A rising peal of five bells, zills and a breath of choir: thirty clean seconds gave a light back |
 | `felled` | A gong, a peal tumbling down the scale, and a Picardy major chord |
 | `wake` | A gong and a bowed-metal rise into a toll |
 | `core-open` | Two soft bells and zills. With `autoCores` (the default) the engine plays this on the beat each core window opens |
 
 ## Mix and CPU
 
-- **Graph.** Channels (perc, bass, mel, bell, choir, bourdon, cue, impact, sfx) feed the reverb sends and two buses. Music goes through lobby low-pass, duck, danger duck and volume. Sfx go through their own volume. Both buses then pass high-pass, glue compressor, makeup, limiter, a soft ceiling at -1.1 dBFS (a waveshaper; nothing can pass it) and master.
+- **Graph.** Channels (perc, bass, mel, bell, choir, bourdon, cue, impact, sfx) feed the reverb sends and two buses. Music goes through lobby low-pass, duck, danger duck and volume. Sfx go through their own volume. Both buses then pass a 50 Hz high-pass, a -7 dB low shelf at 130 Hz, glue compressor, makeup, limiter, a stage trim, a soft ceiling at -1.1 dBFS (a waveshaper; nothing can pass it) and master.
+- **Tone for small speakers.** Laptop and phone speakers cannot play the cathedral's floor, and that energy only made the compressors pump the bells. So the low end is high-passed and shelved, the bourdon and bass channels are high-passed (90 / 55 Hz), and the voices that carry the song and the tells get a presence lift: melody +5.5 dB at 2.6 kHz, bells +5 dB at 2.4 kHz, tells +4.5 dB at 2.8 kHz, impacts +3 dB at 3 kHz, sfx +2.5 dB.
+- **Loudness.** Measured on the master in a hunt (Nov 9, 24 s, autopilot): about -13.5 LUFS integrated, true peak about -2.5 dBFS. Offline excerpts (`renderExcerpt`) land between -13 and -16 LUFS; the stage trim (Calm x1.08, Ruin x0.88) keeps the stages within about 3 LU of each other. The 1-3 kHz band now sits level with the band below 330 Hz (it was 5-13 dB under).
 - **Voice caps** apply per group (74 total). Important notes steal the oldest voice; others are dropped.
 - **Sample bank.** Struck instruments replay from the bank (a buffer and a gain per note) and stop at about -48 dB.
 - **Pan positions** are 11 shared persistent panners per channel, not a panner per note.

@@ -27,7 +27,7 @@ function Plate({ t, live }) {
   const [ghosts, setGhosts] = useState([]);
   useEffect(() => {
     if (!t.number) return;
-    titanEchoes(t.number, 3).then((list) =>
+    titanEchoes(t.number, t.seed, 3).then((list) =>
       setGhosts(
         list
           .map((e) => {

@@ -112,7 +112,7 @@ describe("a local titan falls", () => {
     const g = fakeGame();
     const w = createLocalWorld(g, { rehearsal: true, search: "?rehearse=1" });
     w.start();
-    expect(w.state).toMatchObject({ rehearsal: true, nearDeath: true, local: true, hpMax: REHEARSAL_HP, hp: Math.round(REHEARSAL_HP * REHEARSAL_LEFT), counts: false, huntOpts: { forgiving: true, resonance: REHEARSAL_RESONANCE } });
+    expect(w.state).toMatchObject({ rehearsal: true, nearDeath: true, local: true, hpMax: REHEARSAL_HP, hp: Math.round(REHEARSAL_HP * REHEARSAL_LEFT), counts: false, huntOpts: { forgiving: true, resonance: REHEARSAL_RESONANCE, gentle: false } });
     // 600-800 blows from falling (a 10-15 s fight with one Surge), and it fights in Wrath (its wounds alone would say Ruin)
     expect(w.state.hp).toBeGreaterThanOrEqual(600);
     expect(w.state.hp).toBeLessThanOrEqual(800);

@@ -32,7 +32,8 @@ function preloadHunt() {
         const urls = JSON.stringify(files.map((f) => base + f));
         const css = JSON.stringify([...(hunt.viteMetadata?.importedCss ?? [])].map((f) => base + f));
         const js = `(function(){var p=location.pathname;if(p!=="/"&&p!=="")return;var h=document.head;${urls}.forEach(function(u){var l=document.createElement("link");l.rel="modulepreload";l.crossOrigin="";l.href=u;h.appendChild(l)});${css}.forEach(function(u){var l=document.createElement("link");l.rel="preload";l.as="style";l.href=u;h.appendChild(l)})})();`;
-        return { html, tags: [{ tag: 'script', children: js, injectTo: 'head' }] };
+        // first in <head>: an inline script after a stylesheet would wait for it before running
+        return { html, tags: [{ tag: 'script', children: js, injectTo: 'head-prepend' }] };
       },
     },
   };

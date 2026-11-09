@@ -1,9 +1,19 @@
 import * as THREE from "three";
 
-// Geometry helpers for titan anatomy. Every part gets `aLines`: how many engraved lines run
-// along u and v of its surface, so line spacing reads the same on big and small parts.
+// Geometry helpers for titan anatomy. Every part gets `aLines`: the base line count along u and v of
+// its surface. The shader rescales that count by powers of two to hold a constant pitch on screen, so
+// the counts are rounded up to a multiple of 8: closed surfaces then meet their own seam on a line at
+// every density level the shader can pick. `exact` keeps the given values (planar, world-unit uvs).
+// `tube` marks surfaces whose u runs around a thin axis (sweeps, cylinders, cones, capsules): where
+// such a tube is narrow on screen the shader cuts its lines lengthwise instead of as rings, so a
+// beard strand or a spike never reads as a screw thread. (Stored as the sign of the u count.)
 
-export function eng<T extends THREE.BufferGeometry>(geo: T, lu: number, lv: number): T {
+export function eng<T extends THREE.BufferGeometry>(geo: T, lu: number, lv: number, exact = false, tube = false): T {
+  if (!exact) {
+    lu = Math.max(8, Math.ceil(lu / 8) * 8);
+    lv = Math.max(8, Math.ceil(lv / 8) * 8);
+  }
+  if (tube) lu = -lu;
   const n = geo.attributes.position.count;
   const a = new Float32Array(n * 2);
   for (let i = 0; i < n; i++) {
@@ -19,7 +29,7 @@ export function eng<T extends THREE.BufferGeometry>(geo: T, lu: number, lv: numb
 
 /** UV sphere with gentle organic displacement (keeps clean uv for engraving). */
 export function orb(lu = 48, lv = 30, seed = 1, lump = 0.05, ws = 48, hs = 32) {
-  const g = new THREE.SphereGeometry(1, ws, hs);
+  const g = new THREE.SphereGeometry(1, ws, hs, -Math.PI / 2); // uv seam at the back, out of sight
   if (lump > 0) {
     const p = g.attributes.position as THREE.BufferAttribute;
     const v = new THREE.Vector3();
@@ -34,8 +44,14 @@ export function orb(lu = 48, lv = 30, seed = 1, lump = 0.05, ws = 48, hs = 32) {
   return eng(g, lu, lv);
 }
 
+/** A profile resampled along a centripetal Catmull-Rom spline: round rims instead of facets. */
+export function smoothProfile(profile: Array<[number, number]>, n = 32): Array<[number, number]> {
+  const curve = new THREE.CatmullRomCurve3(profile.map(([r, y]) => new THREE.Vector3(r, y, 0)), false, "centripetal");
+  return curve.getSpacedPoints(n - 1).map((p) => [Math.max(0.01, p.x), p.y] as [number, number]);
+}
+
 /** Lathe from a profile of [radius, y] pairs, with optional radial folds (robes, petals). */
-export function lathe(profile: Array<[number, number]>, lu: number, lv: number, segments = 64, folds = 0, foldAmt = 0, phiLength = Math.PI * 2, phiStart = 0) {
+export function lathe(profile: Array<[number, number]>, lu: number, lv: number, segments = 64, folds = 0, foldAmt = 0, phiLength = Math.PI * 2, phiStart = phiLength >= Math.PI * 2 ? Math.PI : 0) {
   const pts = profile.map(([r, y]) => new THREE.Vector2(r, y));
   const g = new THREE.LatheGeometry(pts, segments, phiStart, phiLength);
   if (folds > 0) {
@@ -57,33 +73,41 @@ export function lathe(profile: Array<[number, number]>, lu: number, lv: number, 
   return eng(g, lu, lv);
 }
 
-/** Pointed gothic arch (with lancet windows cut through), extruded. */
-export function gothicArch(w: number, h: number, depth: number, windows = 3) {
+/** Pointed gothic arch (with lancet windows cut through), or a round Romanesque apse, extruded. */
+export function gothicArch(w: number, h: number, depth: number, windows = 3, pointed = true) {
   const s = new THREE.Shape();
   const hw = w / 2;
-  const spring = h - hw * 1.1;
+  const spring = pointed ? h - hw * 1.1 : h - hw;
   s.moveTo(-hw, 0);
   s.lineTo(-hw, spring);
-  s.quadraticCurveTo(-hw, h - hw * 0.15, 0, h);
-  s.quadraticCurveTo(hw, h - hw * 0.15, hw, spring);
+  if (pointed) {
+    s.quadraticCurveTo(-hw, h - hw * 0.15, 0, h);
+    s.quadraticCurveTo(hw, h - hw * 0.15, hw, spring);
+  } else s.absarc(0, spring, hw, Math.PI, 0, true);
   s.lineTo(hw, 0);
   s.lineTo(-hw, 0);
   for (let i = 0; i < windows; i++) {
+    const mid = i === (windows - 1) / 2;
     const cx = (i - (windows - 1) / 2) * (w / (windows + 0.6));
-    const ww = w / (windows + 1) * 0.42;
-    const top = spring + (i === (windows - 1) / 2 ? hw * 0.55 : hw * 0.25);
+    const ww = (w / (windows + 1)) * (windows === 1 ? 0.3 : 0.42);
+    const top = Math.min(spring + (mid ? hw * 0.55 : hw * 0.25), h - ww * 1.6) - (mid ? 0 : Math.abs(cx) * 0.25);
     const bot = h * 0.38;
     const hole = new THREE.Path();
     hole.moveTo(cx - ww, bot);
-    hole.lineTo(cx - ww, top - ww * 1.4);
-    hole.quadraticCurveTo(cx - ww, top - ww * 0.2, cx, top);
-    hole.quadraticCurveTo(cx + ww, top - ww * 0.2, cx + ww, top - ww * 1.4);
+    if (pointed) {
+      hole.lineTo(cx - ww, top - ww * 1.4);
+      hole.quadraticCurveTo(cx - ww, top - ww * 0.2, cx, top);
+      hole.quadraticCurveTo(cx + ww, top - ww * 0.2, cx + ww, top - ww * 1.4);
+    } else {
+      hole.lineTo(cx - ww, top - ww);
+      hole.absarc(cx, top - ww, ww, Math.PI, 0, true);
+    }
     hole.lineTo(cx + ww, bot);
     hole.lineTo(cx - ww, bot);
     s.holes.push(hole);
   }
   const g = new THREE.ExtrudeGeometry(s, { depth, bevelEnabled: true, bevelThickness: 0.25, bevelSize: 0.22, bevelSegments: 3, curveSegments: 18 });
-  // planar uv in world-ish units so the stone gets horizontal coursing lines
+  // planar uv; uv × aLines is in world units, so the stone gets level coursing and true-size ashlar
   const p = g.attributes.position as THREE.BufferAttribute;
   const uv = new Float32Array(p.count * 2);
   for (let i = 0; i < p.count; i++) {
@@ -91,7 +115,7 @@ export function gothicArch(w: number, h: number, depth: number, windows = 3) {
     uv[i * 2 + 1] = p.getY(i) / h;
   }
   g.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
-  return eng(g, w * 1.1, h * 1.2);
+  return eng(g, w, h, true);
 }
 
 /** A tube with a radius per point, rebuilt in place when the spine moves. */
@@ -125,7 +149,7 @@ export class Sweep {
     this.geo.setAttribute("normal", new THREE.BufferAttribute(this.nor, 3).setUsage(THREE.DynamicDrawUsage));
     this.geo.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
     this.geo.setIndex(idx);
-    eng(this.geo, lu, lv);
+    eng(this.geo, lu, lv, false, true);
   }
   private t = new THREE.Vector3();
   private nrm = new THREE.Vector3();
@@ -144,7 +168,7 @@ export class Sweep {
       this.nrm.crossVectors(this.bin, this.t).normalize();
       const r = radii[i];
       for (let j = 0; j <= radial; j++) {
-        const ang = (j / radial) * Math.PI * 2;
+        const ang = (j / radial) * Math.PI * 2 + Math.PI; // uv seam on the far side of the tube
         const c = Math.cos(ang),
           s = Math.sin(ang);
         const nx = this.nrm.x * c + this.bin.x * s,

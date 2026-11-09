@@ -632,7 +632,8 @@ export class World {
     if (L.hp > 0) return;
     const now = this.serverNow();
     const t = this.titan;
-    const end: TitanEnd = { ...t, status: "felled", endedAt: now, blow: this.identity ? { name: this.identity.name, sigil: this.identity.sigil } : null, top: [], damageTotal: t.hpMax, hunterCount: 1 };
+    // fought in this browser alone while the world was out of reach: marked local, so it is never shown as the world's
+    const end: TitanEnd & { local: true } = { ...t, status: "felled", endedAt: now, blow: this.identity ? { name: this.identity.name, sigil: this.identity.sigil } : null, top: [], damageTotal: t.hpMax, hunterCount: 1, local: true };
     this.last = end;
     L.hp = LOCAL_HP;
     const next: TitanInfo = { number: 0, seed: hash32(t.seed, "next"), wokeAt: now + INTERLUDE_MS, hpMax: LOCAL_HP, status: "awake" };

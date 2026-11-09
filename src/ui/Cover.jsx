@@ -11,15 +11,20 @@ export default function Cover({ rect, onOpen, meta, spec, replay }) {
   const [img, setImg] = useState(null);
   useEffect(() => {
     if (!spec) return;
-    // drawn by the game's renderer once the titan's programs are linked (the key-art medallion shows until then)
+    // drawn by the game's renderer once the titan's programs are linked; until then the medallion is blank
+    // vellum, and only the titan awake now ever inks into it (never another titan's art, never a cross-fade)
     let live = true;
-    portraitAsync(spec.seed, spec.number, { w: 420, h: 420 })
-      .then((url) => live && setImg(url))
+    // at the size it is shown (the image overhangs the medallion by 18%), not larger
+    const css = typeof window !== "undefined" ? Math.round(Math.min(window.innerHeight * 0.34, 300) * 1.18) : 354;
+    const size = Math.max(160, Math.min(420, css));
+    portraitAsync(spec.seed, spec.number, { w: size, h: size })
+      .then((url) => live && setImg({ seed: spec.seed, url }))
       .catch(() => {});
     return () => {
       live = false;
     };
   }, [spec?.seed, spec?.number]);
+  const shown = img && spec && img.seed === spec.seed ? img.url : null;
   const open = () => {
     if (opening) return;
     setOpening(true);
@@ -46,7 +51,7 @@ export default function Cover({ rect, onOpen, meta, spec, replay }) {
           <path d="M60 60 q30 10 40 40 M340 60 q-30 10 -40 40 M60 500 q30 -10 40 -40 M340 500 q-30 -10 -40 -40" />
           <path d="M70 430 H330 M90 444 H310" />
         </svg>
-        <span className="medallion" aria-hidden="true">{img ? <img src={img} alt="" /> : null}</span>
+        <span className="medallion" aria-hidden="true">{shown ? <img key={img.seed} src={shown} alt="" /> : null}</span>
         {replay ? (
           <span className="cover-awake">
             A ghost run: {replay.name}, {Math.round(replay.damage).toLocaleString("en-US")} blows{spec ? ` against ${spec.name}` : ""}

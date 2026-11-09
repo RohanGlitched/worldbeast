@@ -1,0 +1,263 @@
+/* ------------------------------------------------------------------ layout: the playfield and its overlays
+   The page-anchored overlays live in one layer that rides the camera's lean-in on a CSS transform (set by
+   the game each frame of the glide), then is laid out afresh, once, when the camera settles. */
+
+.world-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  transform-origin: 0 0;
+}
+.world-layer.folding,
+.world-layer.unfolding {
+  will-change: transform;
+}
+
+/* the open leaf's words lift off as it folds; the strip's as it opens again */
+:where(.leaf) > * {
+  transition: opacity 0.22s ease;
+}
+.world-layer.folding .leaf.open > *,
+.world-layer.unfolding .leaf.strip > * {
+  opacity: 0;
+}
+/* (zero specificity: notes and the summary keep their own entrances) */
+:where(.leaf.open, .leaf.strip) > * {
+  animation: leafInk 0.45s ease both;
+}
+@keyframes leafInk {
+  from {
+    opacity: 0;
+  }
+}
+
+/* ------------------------------------------------------------------ the folded leaf beside the fight */
+.leaf.strip {
+  padding: calc(var(--u) * 0.85) calc(var(--u) * 0.75) calc(var(--u) * 0.7);
+  gap: calc(var(--u) * 0.5);
+  font-size: calc(var(--u) * 0.5);
+}
+.leaf.strip .folio {
+  font-size: 0.95em;
+  align-items: baseline;
+}
+.leaf.strip .strip-name {
+  font-size: 2.3em;
+  line-height: 1;
+  overflow-wrap: anywhere;
+}
+.leaf.strip .wounds .bar {
+  height: calc(var(--u) * 0.42);
+}
+.leaf.strip .wounds .caption {
+  font-size: 0.92em;
+  color: var(--ink-2);
+}
+.leaf.strip .strip-chronicle {
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  font-size: 0.92em;
+  -webkit-mask-image: linear-gradient(#000 70%, transparent);
+  mask-image: linear-gradient(#000 70%, transparent);
+}
+.leaf.strip .gauges {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--u) * 0.4);
+  padding-top: calc(var(--u) * 0.45);
+  border-top: 1px solid rgba(35, 28, 23, 0.25);
+}
+.leaf.strip .lives {
+  gap: 0.55em;
+  font-size: 1.35em;
+}
+.leaf.strip .reso {
+  flex: none;
+  width: 100%;
+  height: calc(var(--u) * 0.62);
+}
+.leaf.strip .reso em {
+  font-size: 1.05em;
+}
+.leaf.strip .ledger {
+  margin-top: 0;
+  border-top: 0;
+  padding-top: 0;
+}
+.leaf.strip .ledger .rubric {
+  display: none;
+}
+.leaf.strip .ledger-big {
+  font-size: 2.7em;
+}
+.leaf.strip .ledger-row {
+  gap: 0.15em 0.9em;
+  font-size: 0.95em;
+}
+
+/* ------------------------------------------------------------------ the run's summary on the open leaf */
+.summary.in-leaf {
+  position: absolute;
+  left: calc(var(--u) * 0.85);
+  right: calc(var(--u) * 0.85);
+  bottom: calc(var(--u) * 0.85);
+  max-height: 74%;
+  overflow-y: auto;
+  font-size: calc(var(--u) * 0.6);
+  z-index: 2;
+}
+.summary.in-leaf .facts {
+  font-size: 1em;
+}
+
+/* ------------------------------------------------------------------ a phone on its side */
+.side-sheet.sheet {
+  left: auto;
+  max-height: none;
+  border-top: 0;
+  border-left: 2px solid var(--ink);
+  box-shadow: -0.5em 0 2em rgba(0, 0, 0, 0.35), inset 3px 0 0 rgba(214, 165, 49, 0.6);
+  padding: calc(10px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) calc(64px + env(safe-area-inset-bottom)) 16px;
+  font-size: 14px;
+  gap: 8px;
+  animation: sideIn 0.45s cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+.side-sheet.sheet h1 {
+  font-size: 28px;
+}
+@keyframes sideIn {
+  from {
+    transform: translateX(100%);
+  }
+}
+.summary.in-side {
+  position: absolute;
+  margin: calc(8px + env(safe-area-inset-top)) calc(10px + env(safe-area-inset-right)) calc(58px + env(safe-area-inset-bottom)) 0;
+  overflow-y: auto;
+  font-size: 13px;
+}
+.hud-side {
+  position: absolute;
+  transform: translateY(-50%);
+  width: clamp(120px, 24vw, 220px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--vellum);
+  font-size: 14px;
+  pointer-events: none;
+}
+.hud-side-name {
+  font-family: var(--display);
+  font-size: 20px;
+  line-height: 1;
+}
+.hud-side .hp {
+  height: 6px;
+  border: 1px solid var(--vellum);
+  position: relative;
+}
+.hud-side .hp i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--vermilion);
+}
+.hud-side .gauges,
+.hud-band .gauges {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.hud-side .gauges {
+  flex-direction: column;
+  align-items: stretch;
+}
+.hud-side .lives,
+.hud-band .lives {
+  font-size: 15px;
+  gap: 0.5em;
+}
+.hud-side .life,
+.hud-band .life {
+  border-color: var(--vellum);
+}
+.hud-side .reso,
+.hud-band .reso {
+  height: 16px;
+  font-size: 13px;
+}
+.hud-side .dmg,
+.hud-band .dmg {
+  color: var(--vellum);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.6);
+  text-align: left;
+  font-size: 26px;
+}
+.hud-band .dmg {
+  text-align: right;
+  font-size: 22px;
+  min-width: 3.2em;
+}
+.hud-side .dmg small,
+.hud-band .dmg small {
+  color: rgba(239, 228, 204, 0.7);
+}
+.dashbtn.side {
+  width: 78px;
+  height: 78px;
+  font-size: 17px;
+}
+
+/* ------------------------------------------------------------------ tall screens: the band under the page */
+.hud-band {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px calc(14px + env(safe-area-inset-right)) 0 calc(14px + env(safe-area-inset-left));
+  pointer-events: none;
+}
+.hud-band-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.hud-band-row .gauges {
+  flex: 1;
+}
+.hud-band-row .reso {
+  flex: 1;
+}
+.dashbtn.band {
+  position: relative;
+  align-self: flex-start;
+  width: auto;
+  height: 40px;
+  min-width: 120px;
+  padding: 0 24px;
+  border-radius: 20px;
+  font-size: 17px;
+}
+
+/* ------------------------------------------------------------------ the cover medallion: the key art until the
+   living titan is drawn (by the game's renderer, once its programs are linked) */
+.medallion {
+  background: radial-gradient(circle, rgba(243, 233, 211, 0.15) 50%, rgba(226, 210, 174, 0.55)), url(/art/thumb.png) center 36% / 132% no-repeat, #f3e9d3;
+}
+.medallion img {
+  background: radial-gradient(circle, #f3e9d3 58%, #e2d2ae);
+}
+
+/* ------------------------------------------------------------------ phones: the ribbons hang below the notch */
+@media (max-width: 760px) {
+  .ribbon {
+    padding: calc(7px + env(safe-area-inset-top)) 9px 12px;
+    transform: translateY(-3px);
+  }
+  .ribbon:hover,
+  .ribbon.here {
+    transform: none;
+  }
+}

@@ -219,6 +219,10 @@ describe("World client: one socket at a time", () => {
     expect(B.closed).toBe(true);
     expect(A.closed).toBe(false);
     expect(w.you).toBe(1);
+    // the route was no faster: the distance is the network's, so there is no second probe
+    pongs(A, 300, 4000);
+    expect(conns).toHaveLength(2);
+    expect(w.clockSettled).toBe(true);
     // a candidate that never answers is dropped too
     const before = conns.length;
     w.close();

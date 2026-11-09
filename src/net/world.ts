@@ -364,6 +364,8 @@ export class World {
   private settleRoute(c: NonNullable<World["cand"]>) {
     const playing = performance.now() - (this.pos?.at ?? -1e9) < 2000;
     const better = median(c.rtts) < this.rtt - CAND_GAIN_MS;
+    // a route that is no faster means the distance is the network's, not the route's: no second probe
+    if (!better) this.probes = MAX_PROBES;
     // a run never changes connection: the actor bounds a run by the blows it saw on one connection
     if (!better || playing || this.mode !== "online" || !this.conn || !c.welcome) return this.dropCandidate();
     this.flushHits(); // anything queued goes out on the old route first, while it is still open

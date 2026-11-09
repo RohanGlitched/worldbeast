@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { makeTitan, ARCHETYPE_INFO } from "@/core/titan";
 import { hash32 } from "@/core/rng";
 import { plateImg } from "./plates";
+import { portraitOffThread } from "@/game/portraitClient";
 import { listTitans, listHunters, titanEchoes } from "./data";
 import { decodePath } from "@/net/pathcodec";
 import { replayUrl } from "./replay";
@@ -24,9 +25,9 @@ const dur = (ms) => {
 };
 
 /**
- * A titan's engraving, drawn live after the page's first paint: three.js and the engraver load only then,
- * and the plates are drawn one per idle slot on one offscreen renderer (portrait.ts), so the Hall reads
- * and scrolls while they come in. Until then the plate shows its hatched placeholder.
+ * A titan's engraving, drawn live after the page's first paint on a worker thread (portraitClient.ts), or
+ * where a worker cannot draw, one step per idle slot on the page: the Hall reads and scrolls while the
+ * plates come in. Until then the plate shows its hatched placeholder.
  */
 function useLivePortrait(seed, number, crack) {
   const [img, setImg] = useState(null);
@@ -35,8 +36,7 @@ function useLivePortrait(seed, number, crack) {
     let live = true;
     setImg(null);
     const id = setTimeout(() => {
-      import("@/game/portrait")
-        .then((m) => m.portraitAsync(seed, number, { crack }))
+      portraitOffThread(seed, number, { crack })
         .then((url) => live && setImg(url))
         .catch(() => {});
     }, 60);

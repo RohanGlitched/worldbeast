@@ -41,4 +41,6 @@ function preloadHunt() {
 
 export default defineConfig({
   plugins: [base44(), react(), preloadHunt()],
+  // the Hall's portrait worker (src/game/portraitWorker.ts) is a module worker
+  worker: { format: 'es' },
 });

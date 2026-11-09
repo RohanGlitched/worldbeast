@@ -66,9 +66,13 @@ let renderer: THREE.WebGLRenderer | null = null;
 /** the last titan drawn stays alive until the next is drawn: its programs stay linked for the next one */
 let kept: Titan | null = null;
 
+const inWorker = typeof document === "undefined";
+
 function offscreen() {
   if (!renderer) {
-    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true, powerPreference: "low-power" });
+    // in a worker (portraitWorker.ts) the renderer draws into an OffscreenCanvas
+    const canvas = inWorker ? (new OffscreenCanvas(1, 1) as unknown as HTMLCanvasElement) : undefined;
+    renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer: true, powerPreference: "low-power" });
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.setClearColor(0x000000, 0);
     // three would otherwise read every shader's log right after linking: a stall per program
@@ -77,19 +81,24 @@ function offscreen() {
   return renderer;
 }
 
-function prepared(seed: number, number: number, o: Opts) {
+/** size the shared renderer for this portrait and pose the titan in its frame */
+function staged(r: THREE.WebGLRenderer, titan: Titan, seed: number, o: Opts) {
   const w = o.w ?? 360,
     h = o.h ?? 300;
-  const r = offscreen();
   r.setPixelRatio(dprOf(o));
   r.setSize(w, h, false);
   const scene = new THREE.Scene();
-  const titan = new Titan(makeTitan(seed, number));
   scene.add(titan.group);
   const { cam, px } = frame(w, h, o.view);
   titan.u.uPx.value = px;
   pose(titan, seed, o.crack ?? 0);
-  return { r, scene, cam, titan };
+  return { scene, cam };
+}
+
+function prepared(seed: number, number: number, o: Opts) {
+  const r = offscreen();
+  const titan = new Titan(makeTitan(seed, number));
+  return { r, titan, ...staged(r, titan, seed, o) };
 }
 
 function retire(titan: Titan) {
@@ -106,27 +115,37 @@ export function portraitSync(seed: number, number: number, opts: Opts = {}): str
   return url;
 }
 
+/** the next idle slot on the page; in a worker nothing else runs, so just the next task */
 const idle = (timeout = 600) =>
   new Promise<void>((res) => {
     const ric = (globalThis as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback;
-    if (ric) ric(() => res(), { timeout });
-    else setTimeout(res, 16);
+    if (ric && !inWorker) ric(() => res(), { timeout });
+    else setTimeout(res, inWorker ? 0 : 16);
   });
 
-const encode = (cv: HTMLCanvasElement) =>
-  new Promise<string>((res) => {
-    // toBlob encodes off the main thread; the data URL is the fallback
-    if (cv.toBlob)
-      cv.toBlob((b) => res(b ? URL.createObjectURL(b) : cv.toDataURL("image/png")), "image/png");
-    else res(cv.toDataURL("image/png"));
-  });
+/** a PNG, encoded off the main thread (a data URL string only where neither toBlob nor convertToBlob exists) */
+const encode = (cv: HTMLCanvasElement | OffscreenCanvas) =>
+  "convertToBlob" in cv
+    ? cv.convertToBlob({ type: "image/png" })
+    : new Promise<Blob | string>((res) => {
+        if (cv.toBlob) cv.toBlob((b) => res(b ?? cv.toDataURL("image/png")), "image/png");
+        else res(cv.toDataURL("image/png"));
+      });
 
-// one portrait at a time, each in its own idle slots: build, link off-thread, draw, encode
+// one portrait at a time, each step in its own idle slot: (the context,) the anatomy, the programs (linked
+// off the main thread), the drawing, then the PNG (encoded off it)
 let queue: Promise<unknown> = Promise.resolve();
-function queued(seed: number, number: number, o: Opts): Promise<string> {
+function drawQueued(seed: number, number: number, o: Opts): Promise<Blob | string> {
   const job = queue.then(async () => {
     await idle();
-    const { r, scene, cam, titan } = prepared(seed, number, o);
+    if (!renderer) {
+      offscreen();
+      await idle();
+    }
+    const titan = new Titan(makeTitan(seed, number));
+    await idle();
+    const r = offscreen();
+    const { scene, cam } = staged(r, titan, seed, o);
     try {
       await r.compileAsync(scene, cam);
     } catch {
@@ -135,13 +154,19 @@ function queued(seed: number, number: number, o: Opts): Promise<string> {
     await idle();
     r.render(scene, cam);
     // the canvas keeps its drawing (preserveDrawingBuffer) until the next portrait clears it: encode it now
-    const url = await encode(r.domElement);
+    const out = await encode(r.domElement as HTMLCanvasElement | OffscreenCanvas);
     retire(titan);
-    return url;
+    return out;
   });
   queue = job.catch(() => {});
   return job;
 }
+
+const queued = (seed: number, number: number, o: Opts) => drawQueued(seed, number, o).then((b) => (typeof b === "string" ? b : URL.createObjectURL(b)));
+
+/** For portraitWorker.ts: a portrait as PNG bytes, drawn on the worker's own OffscreenCanvas renderer. */
+export const portraitBlob = (seed: number, number: number, opts: Opts = {}) =>
+  drawQueued(seed, number, opts).then((b) => (typeof b === "string" ? fetch(b).then((r) => r.blob()) : b));
 
 /**
  * A portrait: drawn by the game's renderer once its programs are linked, or queued on the shared offscreen
@@ -257,5 +282,6 @@ async function viaHost(hst: PortraitHost, seed: number, number: number, opts: Op
       o.drawImage(cv, 0, 0, out.width, out.height);
     } else out = cv;
   }
-  return encode(out);
+  const b = await encode(out);
+  return typeof b === "string" ? b : URL.createObjectURL(b);
 }

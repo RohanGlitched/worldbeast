@@ -1,5 +1,5 @@
 import { ARENA, coreOpen, Stage, TitanSpec } from "./titan";
-import { Field, FieldFrame, newFrame, pushPersonal, pushPersonalAim, pushPersonalMark, touch, Touch, STRIDE } from "./field";
+import { Field, FieldFrame, INK_FLOOR, newFrame, pushPersonal, pushPersonalAim, pushPersonalMark, Thin, touch, Touch } from "./field";
 import { rngFor } from "./rng";
 
 // One hunter's run: movement, dash, grazes, resonance, darts and damage. Pure logic, no DOM.
@@ -35,12 +35,20 @@ const INVULN_BEAM_MAX = 4.5;
 export const SPAWN_GRACE = 3;
 /** seconds without being struck that rekindle a lost light (R4: at 30 s it never fired in 20 runs) */
 export const RELIGHT_AFTER = 15;
-/** the most lights one run can win back */
-export const MAX_RELIGHTS = 3;
+/** the most lights one run can win back (R5: at 3, seven of 17 hunts used them all: a skilled run had 6 lights) */
+export const MAX_RELIGHTS = 2;
 /** in a forgiving hunt (a rehearsal) a hit costs this much Resonance instead of a light */
 export const FORGIVE_COST = 35;
 /** where a fresh light enters the page: low, but above the bottom lane where walls finish */
 export const SPAWN_Y = 5;
+/**
+ * A first hunt (`gentle`): the titan holds back for this hunter alone. For GENTLE_S seconds of the run each bar
+ * keeps only its lead volley (the overture's density) and the hunter's own hounds stay quiet; walls and beams
+ * are held until GENTLE_HEAVY_S; the spawn grace is GENTLE_GRACE. See field.ts Thin.
+ */
+export const GENTLE_S = 20;
+export const GENTLE_HEAVY_S = 12;
+export const GENTLE_GRACE = 4;
 /** the most a grace may be held open while an attack is passing over you, seconds */
 const GRACE_HOLD = 1.5;
 const RESONANCE_PER_GRAZE = 9;
@@ -152,12 +160,27 @@ export class Hunt {
   readonly forgiving: boolean;
   /** hits a forgiving hunt took without losing a light */
   forgiven = 0;
+  /** a first hunt: the titan holds back for this hunter's first GENTLE_S seconds (see GENTLE_S) */
+  readonly gentle: boolean;
+  /** this hunter's grace field while gentle (set when the light is placed), else null */
+  thin: Thin | null = null;
+  private lastT = 0;
 
-  constructor(spec: TitanSpec, field: Field, aspect: AspectId, opts: { forgiving?: boolean } = {}) {
+  constructor(spec: TitanSpec, field: Field, aspect: AspectId, opts: { forgiving?: boolean; gentle?: boolean } = {}) {
     this.spec = spec;
     this.field = field;
     this.aspect = ASPECTS[aspect] ?? ASPECTS.ember;
     this.forgiving = !!opts.forgiving;
+    this.gentle = !!opts.gentle;
+    if (this.gentle) {
+      this.invuln = this.graceMax = GENTLE_GRACE;
+      this.houndsAfter = GENTLE_S;
+    }
+  }
+
+  /** seconds left of a first hunt's grace field: 0 once the titan stops holding back (or if not gentle) */
+  get gentleLeft(): number {
+    return this.thin ? Math.max(0, this.thin.until - this.lastT) : 0;
   }
 
   /** Advance one frame. `t` = seconds since the titan woke (synced), `dt` = frame seconds. */
@@ -168,7 +191,8 @@ export class Hunt {
       this.autoSpawn = false;
       this.pickSpawn(t, stage);
     }
-    this.field.sample(t, stage, this.frame);
+    this.lastT = t;
+    this.field.sample(t, stage, this.frame, this.thin);
     if (!this.alive) return;
     this.time += dt;
     this.lastBeat = beat;
@@ -239,7 +263,9 @@ export class Hunt {
         this.lastHitAt = this.time;
         this.hitLog.push(this.lastHitKind);
         // a beam sweeps on after it strikes you: stay safe until its sweep ends, so one beam is one light
-        this.invuln = tc.hitKind === "beam" ? Math.max(INVULN_AFTER_HIT, Math.min(INVULN_BEAM_MAX, this.field.beamLeft(t, stage) + 0.25)) : INVULN_AFTER_HIT;
+        // (in Calm for the whole sweep, however long it is; from Wrath on, up to INVULN_BEAM_MAX)
+        const beamLeft = tc.hitKind === "beam" ? this.field.beamLeft(t, stage, this.thin) + 0.25 : 0;
+        this.invuln = Math.max(INVULN_AFTER_HIT, stage === 0 ? beamLeft : Math.min(INVULN_BEAM_MAX, beamLeft));
         this.combo = 0;
         // a hit costs a light, not your Resonance
         if (this.hits >= MAX_HITS) {
@@ -331,7 +357,8 @@ export class Hunt {
     this.lastX = this.x;
     this.lastY = this.y;
     this.stillT = moved < dt * 1.2 ? this.stillT + dt : 0;
-    const hugging = Math.abs(this.x) > ARENA.W / 2 - MARGIN || this.y > ARENA.H - 3;
+    // (the foot counts too: walls and rain spend themselves above it, so it must not become a hiding place)
+    const hugging = Math.abs(this.x) > ARENA.W / 2 - MARGIN || this.y > ARENA.H - 3 || this.y < INK_FLOOR + 0.2;
     this.edgeT = hugging ? this.edgeT + dt : Math.max(0, this.edgeT - dt * 2);
     // interval in beats: shorter as the run goes on, in harder stages, and much shorter for a hunter who sits still
     const runRamp = Math.min(1, this.time / 90);
@@ -419,6 +446,8 @@ export class Hunt {
    */
   private pickSpawn(t: number, stage: Stage) {
     this.graceMax = Math.max(this.invuln, 0.001);
+    // a first hunt's grace field starts with the run, for this hunter's view only
+    if (this.gentle) this.thin = { until: t + GENTLE_S, heavyUntil: t + GENTLE_HEAVY_S };
     const probe = newFrame(2048);
     const tc: Touch = { hit: false, grazes: [], nearest: 99 };
     const xs = [0, -0.9, 0.9, -1.8, 1.8, -2.7, 2.7, -3.6, 3.6]; // central: clear of phone controls at the sides
@@ -428,7 +457,7 @@ export class Hunt {
     const during = new Array(xs.length * ys.length).fill(9);
     const after = new Array(xs.length * ys.length).fill(9);
     for (let s = 0; s <= horizon + 1e-6; s += 0.1) {
-      this.field.sample(t + s, stage, probe);
+      this.field.sample(t + s, stage, probe, this.thin);
       let k = 0;
       for (const y of ys)
         for (const x of xs) {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ARENA, archetypeOf, makeTitan, PHRASE_BEATS, LOOP_PHRASES, seedUnlike, Stage } from "./titan";
-import { Field, gapSight, GAP, newFrame, planPhrase, rainColumns, RING_FLOOR, touch, Touch } from "./field";
-import { FORGIVE_COST, Hunt, marginMul, MAX_HITS, MAX_RELIGHTS, RELIGHT_AFTER } from "./hunt";
+import { BEAM_POCKET, beamEndSight, Field, FOOT_CORNER, gapSight, GAP, INK_FLOOR, newFrame, planPhrase, rainColumns, RING_FLOOR, thinned, touch, Touch } from "./field";
+import { FORGIVE_COST, GENTLE_GRACE, GENTLE_HEAVY_S, GENTLE_S, Hunt, marginMul, MAX_HITS, MAX_RELIGHTS, RELIGHT_AFTER } from "./hunt";
 
 // R5 tuning: a gentler Calm, shockwaves that never trap you on the floor, relights you can see, a rehearsal
 // that cannot fail, and titans that never repeat a body.
@@ -105,6 +105,126 @@ describe("shockwaves", () => {
   });
 });
 
+describe("R6: beams, the foot of the page, first hunts", () => {
+  const each = (stage: Stage, fn: (v: any, spec: any, ph: number) => void) => {
+    for (const seed of [LIVE, 2, 7, 10, 14, 33, 99, 1234, 777, 4242]) {
+      const spec = makeTitan(seed, 1);
+      for (let ph = 0; ph < LOOP_PHRASES; ph++) for (const v of planPhrase(spec, ph, stage).volleys) fn(v, spec, ph);
+    }
+  };
+
+  it("a beam's sweep stops at least BEAM_POCKET short of the foot corner it swings toward", () => {
+    let n = 0;
+    for (const stage of [0, 1, 2] as Stage[])
+      each(stage, (v) => {
+        if (v.kind !== "beam" || v.p.twin) return;
+        n++;
+        const dir = Math.sign(v.p.a2 - v.p.a1);
+        const cx = dir * FOOT_CORNER.x, cy = FOOT_CORNER.y;
+        // distance from the corner to the beam's centre line at its last angle
+        const ux = Math.cos(v.p.a2), uy = Math.sin(v.p.a2);
+        const d = Math.abs((cx - v.p.ox) * uy - (cy - v.p.oy) * ux);
+        expect(d - v.p.width / 2).toBeGreaterThanOrEqual(BEAM_POCKET - 1e-6);
+        expect(Math.abs(v.p.a2 - v.p.a1)).toBeGreaterThanOrEqual(0.25 - 1e-9);
+      });
+    expect(n).toBeGreaterThan(10);
+  });
+
+  it("marks where a beam's sweep will stop with a gilt tick, from its telegraph to its end", () => {
+    each(0, (v, spec, ph) => {
+      if (v.kind !== "beam") return;
+      const field = new Field(spec);
+      for (const age of [-1, 0.5, v.p.dur - 0.5]) {
+        const f = newFrame();
+        field.sample(((ph + LOOP_PHRASES) * PHRASE_BEATS + v.beat + age) * spec.beat, 0, f);
+        const end = beamEndSight(v.p.ox, v.p.oy, v.p.a2);
+        let found = false;
+        for (let i = 0; i < f.markCount; i++) if (f.marks[i * 4 + 3] >= GAP && Math.abs(f.marks[i * 4] - end.x) < 1e-3 && Math.abs(f.marks[i * 4 + 1] - end.y) < 1e-3) found = true;
+        expect(found).toBe(true);
+      }
+    });
+  });
+
+  it("walls and rain spend themselves above the foot of the page (INK_FLOOR), fading as they go", () => {
+    for (const stage of [0, 1, 2] as Stage[])
+      for (const seed of [LIVE, 14, 10]) {
+        const spec = makeTitan(seed, 1);
+        const field = new Field(spec);
+        const f = newFrame();
+        const WALL = 3, RAIN = 4; // KIND_LIST indices
+        for (let b = 0; b < PHRASE_BEATS * 2; b += 0.25) {
+          field.sample((PHRASE_BEATS + b) * spec.beat, stage, f);
+          for (let i = 0; i < f.bulletCount; i++) {
+            const k = f.bullets[i * 8 + 5];
+            if (k !== WALL && k !== RAIN) continue;
+            expect(f.bullets[i * 8 + 1]).toBeGreaterThanOrEqual(INK_FLOOR);
+            if (f.bullets[i * 8 + 1] < 1.5) expect(f.bullets[i * 8 + 4]).toBeLessThan(1);
+          }
+        }
+      }
+  });
+
+  it("a first hunt's grace field: lead volleys only for 20 s, no walls or beams for 12 s, then the full page", () => {
+    const spec = makeTitan(LIVE, 1);
+    const field = new Field(spec);
+    const t0 = 6400;
+    const h = new Hunt(spec, field, "ember", { gentle: true });
+    expect(h.invuln).toBe(GENTLE_GRACE);
+    expect(h.houndsAfter).toBe(GENTLE_S);
+    h.place(t0, 0);
+    expect(h.thin).toEqual({ until: t0 + GENTLE_S, heavyUntil: t0 + GENTLE_HEAVY_S });
+    let hidden = 0, kept = 0;
+    each(0, (v) => {
+      for (const s of [t0 - 5, t0 + 5, t0 + 15, t0 + 25]) {
+        const out = thinned(v, s, h.thin);
+        if (s >= t0 + GENTLE_S) expect(out).toBe(false);
+        else if ((v.sub ?? 0) > 0) expect(out).toBe(true);
+        else if (s < t0 + GENTLE_HEAVY_S && (v.kind === "wall" || v.kind === "beam")) expect(out).toBe(true);
+        else expect(out).toBe(false);
+        out ? hidden++ : kept++;
+      }
+    });
+    expect(hidden).toBeGreaterThan(0);
+    expect(kept).toBeGreaterThan(hidden);
+    // what this hunter sees is thinner than the shared page in the first seconds, and the same after
+    const shared = newFrame(), mine = newFrame();
+    let less = 0;
+    for (let s = 0; s < GENTLE_S; s += 0.5) {
+      field.sample(t0 + s, 0, shared);
+      field.sample(t0 + s, 0, mine, h.thin);
+      expect(mine.bulletCount + mine.beamCount).toBeLessThanOrEqual(shared.bulletCount + shared.beamCount);
+      if (mine.bulletCount + mine.beamCount < shared.bulletCount + shared.beamCount) less++;
+    }
+    expect(less).toBeGreaterThan(5);
+    field.sample(t0 + 60, 0, shared);
+    field.sample(t0 + 60, 0, mine, h.thin);
+    expect(mine.bulletCount).toBe(shared.bulletCount);
+    expect(new Hunt(spec, field, "ember").thin).toBeNull();
+  });
+
+  it("in Calm a beam's hit keeps you safe until its sweep ends, however long", () => {
+    const spec = makeTitan(LIVE, 1);
+    const field = new Field(spec);
+    field.beamLeft = () => 5.6;
+    const sit = (stage: Stage) => {
+      const h = new Hunt(spec, field, "ember");
+      h.invuln = 0;
+      h.inGrace = false;
+      h.autoSpawn = false;
+      h.houndsAfter = 1e9;
+      field.sample = (_t, _s, f) => {
+        f.bulletCount = f.ringCount = f.zoneCount = f.markCount = 0;
+        f.beamCount = 1;
+        f.beams.set([h.x, h.y + 5, h.x, h.y - 5, 0.5, 1, 0], 0);
+      };
+      h.step(100, 1 / 60, { mx: 0, my: 0, dash: false }, stage);
+      return h.invuln;
+    };
+    expect(sit(0)).toBeGreaterThan(5.5);
+    expect(sit(1)).toBeLessThanOrEqual(4.5);
+  });
+});
+
 describe("lights", () => {
   const still = (h: Hunt, secs: number, t0: number) => {
     for (let i = 0; i < secs * 60; i++) h.step(t0 + i / 60, 1 / 60, { mx: 0, my: 0, dash: false }, 0);
@@ -199,5 +319,22 @@ describe("the next titan", () => {
     const a = archetypeOf(12345);
     const other = (["coil", "strider", "bloom", "throne", "swarmheart"] as const).find((x) => x !== a)!;
     expect(seedUnlike((k) => 12345 + k, other)).toBe(12345);
+  });
+
+  it("never repeats the epithet of the titan just ended either (R5: two 'Salt Regent's in a row)", () => {
+    let moved = 0;
+    for (let s = 1; s < 400; s++) {
+      const prev = makeTitan(s, 1);
+      const next = seedUnlike((k) => (s * 7919 + k * 104729) >>> 0, prev.archetype, prev.epithet);
+      const spec = makeTitan(next, 2);
+      expect(spec.archetype).not.toBe(prev.archetype);
+      expect(spec.epithet).not.toBe(prev.epithet);
+      if (next !== seedUnlike((k) => (s * 7919 + k * 104729) >>> 0, prev.archetype)) moved++;
+    }
+    expect(moved).toBeGreaterThan(0); // the rule did bite somewhere
+    // a candidate that already differs on both is kept (an awake titan's name never changes)
+    const a = makeTitan(12345, 1);
+    const other = makeTitan(777, 1);
+    if (other.archetype !== a.archetype && other.epithet !== a.epithet) expect(seedUnlike(() => 12345, other.archetype, other.epithet)).toBe(12345);
   });
 });

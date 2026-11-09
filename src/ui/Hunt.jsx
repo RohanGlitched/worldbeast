@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Game } from "@/game/Game";
 import { ARCHETYPE_INFO, STAGE_NAMES, stageFor } from "@/core/titan";
 import { ASPECTS } from "@/core/hunt";
@@ -54,6 +54,9 @@ const ASPECT_ICON = {
 export default function Hunt() {
   const canvasRef = useRef(null);
   const gameRef = useRef(null);
+  // overlays pinned to the page (leaf, HUD, summary, notes): they ride the camera's lean-in on a CSS
+  // transform, and are laid out afresh once it settles
+  const layerRef = useRef(null);
   const worldRef = useRef(null);
   const [profile, setProfile] = useState(loadProfile);
   const [layout, setLayout] = useState(null);
@@ -110,7 +113,8 @@ export default function Hunt() {
     }
     audioRef.current = audio;
     window.__audio = audio;
-    g.events.onTitan = (spec, field) => audio?.setTitan(spec, field);
+    // (the song is composed in its own task, not inside the titan's first frame: a quarter-second less freeze)
+    g.events.onTitan = (spec, field) => setTimeout(() => audio?.setTitan(spec, field), 0);
     g.events.onFrame = (t, stage, hp, playing, danger) => audio?.update(t, stage, hp, { playing, nearDanger: danger });
     g.events.onSfx = (n, x, str) => audio?.sfx(n, x, str);
     // a dev/test titan can be pinned with ?seed=, ?rehearse opens a rehearsal against a near-dead titan of
@@ -140,6 +144,13 @@ export default function Hunt() {
     worldRef.current = w;
     w.onChange = (s) => setWorld({ ...s });
     g.events.onLayout = setLayout;
+    g.events.onCamera = (m) => {
+      const el = layerRef.current;
+      if (!el) return;
+      el.style.transform = `translate3d(${m.tx}px, ${m.ty}px, 0) scale(${m.s})`;
+      el.classList.toggle("folding", m.dir > 0);
+      el.classList.toggle("unfolding", m.dir < 0);
+    };
     g.events.onHud = (h) => {
       setHud(h);
       setPhase(h.phase);
@@ -197,9 +208,18 @@ export default function Hunt() {
     };
   }, []);
 
+  // the new layout is in the DOM: drop the lean-in's interim transform in the same paint
+  useLayoutEffect(() => {
+    const el = layerRef.current;
+    if (!el) return;
+    el.style.transform = "";
+    el.classList.remove("folding", "unfolding");
+  }, [layout]);
+
   const begin = useCallback(() => {
     const g = gameRef.current;
-    if (g.falling || g.revealing || (world && world.interlude > 0)) return;
+    // (joining while the titan is still being engraved finishes the engraving at once)
+    if (g.falling || !g.ready || (world && world.interlude > 0)) return;
     audioRef.current?.unlock().catch(() => {});
     // the previous run's report goes now if its spark was still waiting
     flushRun();
@@ -458,8 +478,8 @@ export default function Hunt() {
           </li>
         </ul>
       )}
-      <button className="join" onClick={begin} disabled={!!world?.interlude || !!gameRef.current?.revealing}>
-        {world?.interlude ? `The next titan stirs… ${world.interlude}` : gameRef.current?.revealing ? "The titan is being engraved…" : "Join the hunt"}
+      <button className="join" onClick={begin} disabled={!!world?.interlude || !gameRef.current?.ready}>
+        {world?.interlude ? `The next titan stirs… ${world.interlude}` : !gameRef.current?.ready ? "The titan is being engraved…" : "Join the hunt"}
         <small>
           {world?.mode === "offline"
             ? "The world is out of reach: you hunt this titan alone for now"
@@ -498,14 +518,178 @@ export default function Hunt() {
     </section>
   );
 
+  // your lights and Resonance: kept outside the arena, where nothing is ever thrown
+  const gauges = hud && phase === "playing" && (
+    <div className="gauges">
+      <div className="lives" aria-label={`${hud.maxHits - hud.hits} of ${hud.maxHits} lights left`}>
+        {Array.from({ length: hud.maxHits }, (_, i) => (
+          <span key={i} className={"life" + (i < hud.maxHits - hud.hits ? "" : " lost")} />
+        ))}
+      </div>
+      <span className={"reso" + (hud.resonance >= 99 || hud.surging ? " full" : "")} aria-label="Resonance">
+        <i style={{ width: (hud.surging ? 100 : hud.resonance) + "%" }} />
+        <em>{hud.surging ? "Surge!" : hud.combo > 1 ? `×${hud.combo}` : "Resonance"}</em>
+      </span>
+    </div>
+  );
+  const dash = (cls, style) => (
+    <button className={"dashbtn " + cls} style={style} onPointerDown={(e) => (e.preventDefault(), gameRef.current.input.queueDash())} aria-label="Dash">
+      dash
+    </button>
+  );
+
+  // the folded leaf beside the fight: the titan, its song, and your hunt
+  const stripBody = spec && (
+    <>
+      <div className="folio">
+        <span>The {ORD(spec.number)} Titan</span>
+        <span className={"stage-name stage-" + stage}>{STAGE_NAMES[stage]}</span>
+      </div>
+      <h1 className="strip-name">{spec.name}</h1>
+      <section className="wounds" aria-label="The titan's wounds">
+        <div className="bar">
+          <div className="fill" style={{ width: (1 - hpFrac) * 100 + "%" }} />
+          <div className="stagemarks">
+            <i style={{ left: "34%" }} />
+            <i style={{ left: "67%" }} />
+          </div>
+        </div>
+        <div className="caption">
+          <span>{((1 - hpFrac) * 100).toFixed(1)}% struck</span>
+          <span>
+            {recorded ? "a recorded run" : rehearsal ? "a rehearsal" : pinned ? "only you" : who?.topbar}
+          </span>
+        </div>
+      </section>
+      <section aria-label="The Canticle">
+        <div className="rubric" style={{ display: "flex", justifyContent: "space-between" }}>
+          <span>The Canticle</span>
+          <span style={{ color: "var(--ink-3)", fontStyle: "italic" }}>{(hud?.phrase ?? 0) + 1} of 8</span>
+        </div>
+        <Canticle game={gameRef.current} height={u * 2.7} />
+      </section>
+      <section className="strip-chronicle" aria-label="The chronicle">
+        <div className="rubric">The chronicle</div>
+        <ul className="chronicle">
+          {world.feed.slice(-4).reverse().map((f) => (
+            <li key={f.id} dangerouslySetInnerHTML={{ __html: f.html }} />
+          ))}
+        </ul>
+      </section>
+      {gauges}
+      {runStats}
+    </>
+  );
+
+  // the run's summary: on the open leaf beside the titan (wide screens), in the side panel (a phone on its
+  // side), or as a sealed note over the arena (tall screens)
+  const summaryCard = (cls, style) => (
+    <div className={"summary " + cls} style={style} role="dialog" aria-label="Your run">
+      <h2>{summary.felled ? "The titan is felled!" : "Your light went out"}</h2>
+      <div className="rubric">
+        against {summary.titanName ?? spec?.name}, after {summary.time.toFixed(1)} s{!summary.felled && summary.killer ? `, struck down by ${killerOf(summary.killer)[0]}` : ""}
+      </div>
+      {!summary.felled && summary.killer && <p className="tip-line">{killerOf(summary.killer)[1]}</p>}
+      {!summary.felled && live && who && who.others > 0 && <div className="rubric">Your spark lingers for 8 s: a hunter who flies through it rekindles you.</div>}
+      <div className="big">{fmt(summary.damage)}</div>
+      <div style={{ fontStyle: "italic", color: "var(--ink-2)" }}>
+        blows struck
+        {live && summary.felled && summary.worldShare ? ` · ${summary.worldShare} of the blows that felled it` : ""}
+        {summary.recorded != null && Math.abs(summary.recorded - summary.damage) > 1 ? ` · ${fmt(summary.recorded)} reached the titan` : summary.recorded != null ? " · written in the Hall" : ""}
+        {rehearsal ? " · a rehearsal, not written in the Hall" : pinned ? " · on this page only, not written in the Hall" : ""}
+      </div>
+      {(() => {
+        // the real share of the live titan's life that the world accepted from this run
+        const m = live ? worldRef.current?.moved?.(summary.mark) : null;
+        if (!(m > 0)) return null;
+        const pct = m * 100;
+        return (
+          <div className="wb-moved">
+            Your blows moved the world <b>{pct >= 0.1 ? pct.toFixed(1) : pct >= 0.01 ? pct.toFixed(2) : "<0.01"}%</b>
+            {summary.felled ? "" : ` · ${fmt(world.hp)} of ${fmt(world.hpMax)} left`}
+          </div>
+        );
+      })()}
+      {rehearsal && summary.felled && (
+        <a className="wb-rehearse-live" href="/">
+          Now hunt the live titan, with everyone
+        </a>
+      )}
+      <dl className="facts" style={{ marginTop: "0.7em" }}>
+        <dt>Grazes</dt>
+        <dd>{summary.grazes}</dd>
+        <dt>Best chain</dt>
+        <dd>{summary.bestCombo}</dd>
+        <dt>Surges</dt>
+        <dd>{summary.surges}</dd>
+        <dt>Your best</dt>
+        <dd>{fmt(Math.max(profile.best, summary.damage))}</dd>
+      </dl>
+      {summary.omen && (
+        <div className="omen done fresh">
+          <span className="rubric">The omen is fulfilled</span>
+          <div className="omen-text">{omenFor(summary.omen.omenDay).text}</div>
+          <div className="omen-streak">
+            {summary.omen.omenStreak === 1 ? "Your first day kept. Return tomorrow for a new omen." : `${summary.omen.omenStreak} days kept in a row.`}
+          </div>
+        </div>
+      )}
+      {summary.freshSeals?.length > 0 && (
+        <div className="fresh-seals">
+          {summary.freshSeals.map((id) => {
+            const i = SEALS.findIndex((x) => x.id === id);
+            return (
+              <span key={id} className="fresh-seal">
+                <Seal i={i} earned fresh size={u * 1.5} />
+                <span>
+                  <b>{SEALS[i].name}</b>
+                  <br />
+                  <i>{SEALS[i].line}</i>
+                </span>
+              </span>
+            );
+          })}
+        </div>
+      )}
+      {shareMsg && <div className="rubric" style={{ marginTop: "0.5em" }}>{shareMsg}</div>}
+      <div className="row">
+        <button className="join" style={{ flex: 2, fontSize: "1.3em" }} onClick={begin} autoFocus>
+          Hunt again
+        </button>
+        <button
+          className="ghost"
+          style={{ flex: 1 }}
+          onClick={async () => {
+            setShareMsg("Engraving your card…");
+            const sp = summary.titanSpec ?? spec;
+            const link = replayUrl({ seed: sp.seed, number: sp.number, stage: summary.stage, startT: summary.startT, damage: summary.damage, sigil: profile.sigil, name: profile.name, aspect: summary.aspect, path: summary.path });
+            const r = await shareRun({ spec: sp, summary, profile, share: live ? summary.worldShare : null, link });
+            setShareMsg(r === "shared" ? "Shared." : r === "saved+copied" ? "Card saved; link copied." : "Card saved.");
+            setTimeout(() => setShareMsg(null), 3000);
+          }}
+        >
+          Share
+        </button>
+        <button className="ghost" style={{ flex: 1 }} onClick={() => setSummary(null)}>
+          Rest
+        </button>
+      </div>
+    </div>
+  );
+
   const L = layout;
   const arena = L?.arena;
+  const mode = L?.mode ?? "spread";
+  const page = L?.right;
+  // the side panel beside the page on a phone held sideways
+  const sideBox = L && page && mode === "side" ? { left: page.x + page.w + 14, top: 0, bottom: 0, right: 0 } : null;
+  const playing = phase === "playing";
   return (
-    <div className="stage" style={styleU}>
-      {phase !== "playing" && phase !== "replay" && !closed && L?.spread && <Bookmarks />}
+    <div className={"stage mode-" + mode + (L?.focus ? " is-focus" : "")} style={styleU}>
+      {phase !== "playing" && phase !== "replay" && !closed && L?.spread && !L.focus && <Bookmarks />}
       {closed && (
         <Cover
-          rect={L ? (L.spread && L.left ? { x: L.left.x, y: L.left.y - 4, w: L.right.x + L.right.w - L.left.x, h: L.left.h + 8 } : null) : null}
+          rect={L ? (L.spread && L.left && !L.focus ? { x: L.left.x, y: L.left.y - 4, w: L.right.x + L.right.w - L.left.x, h: L.left.h + 8 } : null) : null}
           meta={recorded ? "a recorded run, not the live world" : rehearsal ? "a rehearsal" : who?.cover}
           spec={world?.spec}
           replay={replay}
@@ -525,29 +709,123 @@ export default function Hunt() {
       )}
       <canvas ref={canvasRef} tabIndex={0} aria-label="The hunt. Move with WASD, the arrow keys, or by dragging. Dash with Space." />
 
-      {/* the bestiary leaf (wide screens) */}
-      {L?.spread && L.left && spec && (
-        <div className="leaf" style={{ left: L.left.x, top: L.left.y, width: L.left.w, height: L.left.h }}>
-          {leafBody}
-          {phase === "playing" && tip && <div className="margin-note in-leaf" key={tip.id} dangerouslySetInnerHTML={{ __html: '<span class="manicule">☞</span> ' + tip.html }} />}
-          {phase === "playing" ? runStats : !summary && !replay && lobbyControls}
-        </div>
-      )}
+      <div className="world-layer" ref={layerRef}>
+        {/* the bestiary leaf (wide screens); during a run it is folded to a strip beside the fight */}
+        {L?.spread && L.left && spec && (
+          <div className={"leaf" + (L.focus ? " strip" : " open")} key={L.focus ? "strip" : "open"} style={{ left: L.left.x, top: L.left.y, width: L.left.w, height: L.left.h }}>
+            {L.focus ? (
+              stripBody
+            ) : (
+              <>
+                {leafBody}
+                {playing && tip && <div className="margin-note in-leaf" key={tip.id} dangerouslySetInnerHTML={{ __html: '<span class="manicule">☞</span> ' + tip.html }} />}
+                {playing ? runStats : summary ? summaryCard("in-leaf", null) : !replay && lobbyControls}
+              </>
+            )}
+          </div>
+        )}
 
-      {/* phones: slim header + bottom sheet */}
-      {L && !L.spread && spec && (
-        <>
-          <div className="topbar">
-            <span className="name">{spec.name}</span>
-            {!recorded && (
-              <span className="bar">
+        {/* the run's gauges: beside the page (sideways phone) or in the band under it (tall screens) */}
+        {L && spec && playing && hud && mode === "side" && page && (
+          <>
+            <div className="hud-side" style={{ right: L.vw - page.x + 14, top: L.vh / 2 }}>
+              <div className="hud-side-name">{spec.name}</div>
+              <span className="hp">
                 <i style={{ width: hpFrac * 100 + "%" }} />
               </span>
-            )}
-            <span>{recorded ? "a recorded run" : rehearsal ? "a rehearsal" : pinned ? "only you" : who.topbar}</span>
+              {gauges}
+              <div className="dmg">
+                {fmt(hud.damage)}
+                <small>blows</small>
+              </div>
+            </div>
+            {dash("side", { left: page.x + page.w + Math.max(12, (L.vw - page.x - page.w) / 2 - 39), top: L.vh * 0.5 })}
+          </>
+        )}
+        {L && spec && playing && hud && mode === "single" && page && (
+          <div className="hud-band" style={{ left: 0, right: 0, top: page.y + page.h + 4, height: Math.max(56, L.vh - page.y - page.h - 4) }}>
+            <div className="hud-band-row">
+              {gauges}
+              <div className="dmg">
+                {fmt(hud.damage)}
+                <small>blows</small>
+              </div>
+            </div>
+            {dash("band", null)}
           </div>
+        )}
+
+        {/* run summary */}
+        {summary && arena && mode === "single" && summaryCard("", { left: arena.x + arena.w * 0.06, width: arena.w * 0.88, top: arena.y + arena.h * (summary.felled ? 0.42 : 0.14) })}
+        {summary && sideBox && !L.focus && summaryCard("in-side", sideBox)}
+
+        {tip && arena && playing && (!L?.spread || L.focus) && (
+          <div className="margin-note" style={{ left: arena.x + arena.w * 0.06, width: arena.w * 0.88, top: arena.y + 4 }} key={tip.id} dangerouslySetInnerHTML={{ __html: tip.html }} />
+        )}
+
+        {replay && arena && phase === "replay" && (
+          <div className="replay-banner" style={{ left: arena.x, top: arena.y + 6, width: arena.w }}>
+            <div>
+              <span className="rubric">A ghost run · a recorded run, not live</span> <Sigil id={replay.sigil} size={u * 0.5} /> <b>{replay.name}</b> against {spec?.name}: {fmt(replay.damage)} blows, {replay.duration.toFixed(0)} s.
+            </div>
+            <div className="replay-sub">The very attacks they faced, replayed from the titan's seed and the moment they began. (Their hounds are not shown.)</div>
+            <a className="join" href="/" style={{ fontSize: "1.05em", marginTop: "0.4em", display: "inline-block", width: "auto", textDecoration: "none", padding: "0.2em 0.8em" }}>
+              Hunt the titan awake now
+            </a>
+          </div>
+        )}
+        {felled && arena && (
+          <div className="felled-stamp" style={{ left: arena.x, top: arena.y + arena.h * 0.12, width: arena.w }} role="status">
+            <div className="felled-word">Felled</div>
+            <div className="felled-line">
+              {felled.blow ? (
+                <>
+                  The final blow: <Sigil id={felled.blow.sigil} size={u * 0.6} /> <b>{felled.blow.name}</b>
+                </>
+              ) : (
+                "The world brought it down together."
+              )}
+            </div>
+            {felled.local && (
+              <div className="felled-line wb-felled-note">
+                {felled.top?.[0] ? `Top hunter, from this run alone: ${felled.top[0].name}, ${fmt(felled.top[0].damage)} blows. ` : ""}
+                {felled.rehearsal ? "A rehearsal: it is not written in the Hall." : "Only your blows, on this page: it is not written in the Hall."}
+              </div>
+            )}
+            {!felled.local && felled.top?.length > 0 && (
+              <ol className="felled-top">
+                {felled.top.slice(0, 3).map((t, i) => (
+                  <li key={i}>
+                    <Sigil id={t.sigil} size={u * 0.5} /> {t.name} <span>{fmt(t.damage)}</span>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
+        )}
+        {revived && arena && (
+          <div className="margin-note" style={{ left: arena.x + arena.w * 0.1, width: arena.w * 0.8, top: arena.y + arena.h * 0.4 }}>
+            <b>{revived}</b> flew through your spark. You rise again.
+          </div>
+        )}
+      </div>
+
+      {/* tall screens: slim header + bottom sheet; a phone on its side: the lobby in a side panel */}
+      {L && !L.spread && spec && (
+        <>
+          {mode === "single" && (
+            <div className="topbar">
+              <span className="name">{spec.name}</span>
+              {!recorded && (
+                <span className="bar">
+                  <i style={{ width: hpFrac * 100 + "%" }} />
+                </span>
+              )}
+              <span>{recorded ? "a recorded run" : rehearsal ? "a rehearsal" : pinned ? "only you" : who?.topbar}</span>
+            </div>
+          )}
           {phase !== "playing" && phase !== "replay" && !summary && (
-            <div className="sheet leaf" style={{ position: "absolute", "--u": "30px" }}>
+            <div className={"sheet leaf" + (sideBox ? " side-sheet" : "")} style={{ position: "absolute", "--u": "30px", ...(sideBox || {}) }}>
               <div>
                 <h1>{spec.name}</h1>
                 <div className="epithet">{spec.epithet}</div>
@@ -560,177 +838,6 @@ export default function Hunt() {
             </div>
           )}
         </>
-      )}
-
-      {/* HUD over the arena */}
-      {arena && phase === "playing" && hud && (
-        <div className="hud" style={{ left: arena.x, top: arena.y, width: arena.w, height: arena.h }}>
-          <div className="hud-bottom">
-            <div className="lives" aria-label={`${hud.maxHits - hud.hits} of ${hud.maxHits} lights left`}>
-              {Array.from({ length: hud.maxHits }, (_, i) => (
-                <span key={i} className={"life" + (i < hud.maxHits - hud.hits ? "" : " lost")} />
-              ))}
-            </div>
-            <span className={"reso" + (hud.resonance >= 99 || hud.surging ? " full" : "")} aria-label="Resonance">
-              <i style={{ width: (hud.surging ? 100 : hud.resonance) + "%" }} />
-              <em>{hud.surging ? "Surge!" : hud.combo > 1 ? `×${hud.combo}` : "Resonance"}</em>
-            </span>
-            <div className="dmg">
-              {fmt(hud.damage)}
-              <small>blows</small>
-            </div>
-          </div>
-          {L && !L.spread && (
-            <button className="dashbtn" style={{ right: u * 0.5, bottom: 70 + u * 1.5 }} onPointerDown={(e) => (e.preventDefault(), gameRef.current.input.queueDash())}>
-              dash
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* run summary */}
-      {summary && arena && (
-        <div className="summary" style={{ left: arena.x + arena.w * 0.08, width: arena.w * 0.84, top: arena.y + arena.h * (summary.felled ? 0.42 : 0.2) }} role="dialog" aria-label="Your run">
-          <h2>{summary.felled ? "The titan is felled!" : "Your light went out"}</h2>
-          <div className="rubric">
-            against {summary.titanName ?? spec?.name}, after {summary.time.toFixed(1)} s{!summary.felled && summary.killer ? `, struck down by ${killerOf(summary.killer)[0]}` : ""}
-          </div>
-          {!summary.felled && summary.killer && <p className="tip-line">{killerOf(summary.killer)[1]}</p>}
-          {!summary.felled && live && who && who.others > 0 && <div className="rubric">Your spark lingers for 8 s: a hunter who flies through it rekindles you.</div>}
-          <div className="big">{fmt(summary.damage)}</div>
-          <div style={{ fontStyle: "italic", color: "var(--ink-2)" }}>
-            blows struck
-            {live && summary.felled && summary.worldShare ? ` · ${summary.worldShare} of the blows that felled it` : ""}
-            {summary.recorded != null && Math.abs(summary.recorded - summary.damage) > 1 ? ` · ${fmt(summary.recorded)} reached the titan` : summary.recorded != null ? " · written in the Hall" : ""}
-            {rehearsal ? " · a rehearsal, not written in the Hall" : pinned ? " · on this page only, not written in the Hall" : ""}
-          </div>
-          {(() => {
-            // the real share of the live titan's life that the world accepted from this run
-            const m = live ? worldRef.current?.moved?.(summary.mark) : null;
-            if (!(m > 0)) return null;
-            const pct = m * 100;
-            return (
-              <div className="wb-moved">
-                Your blows moved the world <b>{pct >= 0.1 ? pct.toFixed(1) : pct >= 0.01 ? pct.toFixed(2) : "<0.01"}%</b>
-                {summary.felled ? "" : ` · ${fmt(world.hp)} of ${fmt(world.hpMax)} left`}
-              </div>
-            );
-          })()}
-          {rehearsal && summary.felled && (
-            <a className="wb-rehearse-live" href="/">
-              Now hunt the live titan, with everyone
-            </a>
-          )}
-          <dl className="facts" style={{ marginTop: "0.7em" }}>
-            <dt>Grazes</dt>
-            <dd>{summary.grazes}</dd>
-            <dt>Best chain</dt>
-            <dd>{summary.bestCombo}</dd>
-            <dt>Surges</dt>
-            <dd>{summary.surges}</dd>
-            <dt>Your best</dt>
-            <dd>{fmt(Math.max(profile.best, summary.damage))}</dd>
-          </dl>
-          {summary.omen && (
-            <div className="omen done fresh">
-              <span className="rubric">The omen is fulfilled</span>
-              <div className="omen-text">{omenFor(summary.omen.omenDay).text}</div>
-              <div className="omen-streak">
-                {summary.omen.omenStreak === 1 ? "Your first day kept. Return tomorrow for a new omen." : `${summary.omen.omenStreak} days kept in a row.`}
-              </div>
-            </div>
-          )}
-          {summary.freshSeals?.length > 0 && (
-            <div className="fresh-seals">
-              {summary.freshSeals.map((id) => {
-                const i = SEALS.findIndex((x) => x.id === id);
-                return (
-                  <span key={id} className="fresh-seal">
-                    <Seal i={i} earned fresh size={u * 1.5} />
-                    <span>
-                      <b>{SEALS[i].name}</b>
-                      <br />
-                      <i>{SEALS[i].line}</i>
-                    </span>
-                  </span>
-                );
-              })}
-            </div>
-          )}
-          {shareMsg && <div className="rubric" style={{ marginTop: "0.5em" }}>{shareMsg}</div>}
-          <div className="row">
-            <button className="join" style={{ flex: 2, fontSize: "1.3em" }} onClick={begin} autoFocus>
-              Hunt again
-            </button>
-            <button
-              className="ghost"
-              style={{ flex: 1 }}
-              onClick={async () => {
-                setShareMsg("Engraving your card…");
-                const sp = summary.titanSpec ?? spec;
-                const link = replayUrl({ seed: sp.seed, number: sp.number, stage: summary.stage, startT: summary.startT, damage: summary.damage, sigil: profile.sigil, name: profile.name, aspect: summary.aspect, path: summary.path });
-                const r = await shareRun({ spec: sp, summary, profile, share: live ? summary.worldShare : null, link });
-                setShareMsg(r === "shared" ? "Shared." : r === "saved+copied" ? "Card saved; link copied." : "Card saved.");
-                setTimeout(() => setShareMsg(null), 3000);
-              }}
-            >
-              Share
-            </button>
-            <button className="ghost" style={{ flex: 1 }} onClick={() => setSummary(null)}>
-              Rest
-            </button>
-          </div>
-        </div>
-      )}
-
-      {tip && arena && phase === "playing" && !L?.spread && (
-        <div className="margin-note" style={{ left: arena.x + arena.w * 0.06, width: arena.w * 0.88, top: arena.y + 4 }} key={tip.id} dangerouslySetInnerHTML={{ __html: tip.html }} />
-      )}
-
-      {replay && arena && phase === "replay" && (
-        <div className="replay-banner" style={{ left: arena.x, top: arena.y + 6, width: arena.w }}>
-          <div>
-            <span className="rubric">A ghost run · a recorded run, not live</span> <Sigil id={replay.sigil} size={u * 0.5} /> <b>{replay.name}</b> against {spec?.name}: {fmt(replay.damage)} blows, {replay.duration.toFixed(0)} s.
-          </div>
-          <div className="replay-sub">The very attacks they faced, replayed from the titan's seed and the moment they began. (Their hounds are not shown.)</div>
-          <a className="join" href="/" style={{ fontSize: "1.05em", marginTop: "0.4em", display: "inline-block", width: "auto", textDecoration: "none", padding: "0.2em 0.8em" }}>
-            Hunt the titan awake now
-          </a>
-        </div>
-      )}
-      {felled && arena && (
-        <div className="felled-stamp" style={{ left: arena.x, top: arena.y + arena.h * 0.12, width: arena.w }} role="status">
-          <div className="felled-word">Felled</div>
-          <div className="felled-line">
-            {felled.blow ? (
-              <>
-                The final blow: <Sigil id={felled.blow.sigil} size={u * 0.6} /> <b>{felled.blow.name}</b>
-              </>
-            ) : (
-              "The world brought it down together."
-            )}
-          </div>
-          {felled.local && (
-            <div className="felled-line wb-felled-note">
-              {felled.top?.[0] ? `Top hunter, from this run alone: ${felled.top[0].name}, ${fmt(felled.top[0].damage)} blows. ` : ""}
-              {felled.rehearsal ? "A rehearsal: it is not written in the Hall." : "Only your blows, on this page: it is not written in the Hall."}
-            </div>
-          )}
-          {!felled.local && felled.top?.length > 0 && (
-            <ol className="felled-top">
-              {felled.top.slice(0, 3).map((t, i) => (
-                <li key={i}>
-                  <Sigil id={t.sigil} size={u * 0.5} /> {t.name} <span>{fmt(t.damage)}</span>
-                </li>
-              ))}
-            </ol>
-          )}
-        </div>
-      )}
-      {revived && arena && (
-        <div className="margin-note" style={{ left: arena.x + arena.w * 0.1, width: arena.w * 0.8, top: arena.y + arena.h * 0.4 }}>
-          <b>{revived}</b> flew through your spark. You rise again.
-        </div>
       )}
 
       <Labels game={gameRef.current} world={worldRef.current} u={u} hidden={!!summary} />

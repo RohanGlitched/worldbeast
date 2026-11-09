@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { ARENA, Plate } from "@/core/titan";
 import { NOISE } from "./glsl";
-import { PAGE } from "./stage";
+import { PAGE, Rect } from "./stage";
 
 // The vellum leaf, its ruling and margins, and the dark desk beyond it.
 
@@ -92,18 +92,29 @@ export class PageLayer {
       depthWrite: false,
       depthTest: false,
     });
-    // the expensive paper is baked once per layout; the live layer only adds the beat, wrath and hurt
+    // The expensive paper is baked once per layout, in world space, for both views: the open book (A) and
+    // the run, with the leaf folded to a strip (B). The live layer samples them by world position, so the
+    // camera can lean in and out with no re-bake, and a crease sweeps across the leaf as it folds.
     const geo = new THREE.PlaneGeometry(2, 2);
     this.bakeMesh = new THREE.Mesh(geo, this.mat);
     this.bakeMesh.frustumCulled = false;
     this.bakeScene.add(this.bakeMesh);
-    this.rt = new THREE.WebGLRenderTarget(4, 4, { depthBuffer: false, type: THREE.HalfFloatType });
+    // 8-bit sRGB storage: the GPU encodes on write and decodes on read, so the dark desk doesn't band
+    const rtOpts = { depthBuffer: false, colorSpace: THREE.SRGBColorSpace };
+    this.rtA = new THREE.WebGLRenderTarget(4, 4, rtOpts);
+    this.rtB = new THREE.WebGLRenderTarget(4, 4, rtOpts);
     this.live = new THREE.ShaderMaterial({
       uniforms: {
-        uTex: { value: this.rt.texture },
-        uRes: { value: new THREE.Vector2(1, 1) },
-        uRect: this.mat.uniforms.uRect,
+        uTexA: { value: this.rtA.texture },
+        uTexB: { value: this.rtB.texture },
+        uU: { value: new THREE.Vector4(-10, -10, 10, 10) },
+        uRect: { value: new THREE.Vector4(-10, -10, 10, 10) },
         uArena: this.mat.uniforms.uArena,
+        uFold: { value: 0 },
+        uCrease: { value: 1e4 },
+        uLeafX0: { value: -1e4 },
+        uLeafX1: { value: -1e4 },
+        uLeafY: { value: new THREE.Vector2(0, 0) },
         uStage: { value: 0 },
         uPulse: { value: 0 },
         uHurt: { value: 0 },
@@ -116,11 +127,31 @@ export class PageLayer {
       `,
       fragmentShader: /* glsl */ `
         precision highp float;
-        uniform sampler2D uTex; uniform vec2 uRes; uniform vec4 uArena;
-        uniform float uStage, uPulse, uHurt; uniform vec3 uGold, uAccent;
+        uniform sampler2D uTexA, uTexB; uniform vec4 uU, uArena; uniform vec2 uLeafY;
+        uniform float uStage, uPulse, uHurt, uFold, uCrease, uLeafX0, uLeafX1; uniform vec3 uGold, uAccent;
         varying vec2 vW;
         void main(){
-          vec3 col = texture2D(uTex, gl_FragCoord.xy / uRes).rgb;
+          vec2 uv = (vW - uU.xy) / (uU.zw - uU.xy);
+          // the part of the leaf not yet folded away still shows the open book; everything else the run's paper
+          float inLeafY = step(uLeafY.x, vW.y) * step(vW.y, uLeafY.y);
+          float leafPart = step(uCrease, vW.x) * step(vW.x, uLeafX1) * inLeafY;
+          // the leaf's outer half folds over onto its inner half: the flap (its back, the same vellum
+          // mirrored) lies from the crease to crease + w, and at the end exactly covers the strip
+          float w = max(uCrease - uLeafX0, 0.);
+          float on = step(.001, w);
+          float fx0 = vW.x - uCrease;
+          float onFlap = leafPart * step(fx0, w) * on;
+          vec2 uvM = vec2((2. * uCrease - vW.x - uU.x) / (uU.z - uU.x), uv.y);
+          // (the strip that stays settles into the run's paper over the last of the fold)
+          float useB = uFold > 0. ? mix(1. - leafPart, 1., smoothstep(.85, 1., uFold)) : 0.;
+          vec3 col = mix(texture2D(uTexA, mix(uv, uvM, onFlap)).rgb, texture2D(uTexB, uv).rgb, useB);
+          // the flap is shaded toward the fold and catches the light along its free edge
+          col *= 1. - onFlap * .3 * (1. - smoothstep(0., w * .8 + .01, fx0));
+          col += onFlap * vec3(.07, .06, .04) * (1. - smoothstep(0., .22, w - fx0));
+          // its shadow on the leaf beyond, and the fold's on the desk
+          float past = fx0 - w;
+          col *= 1. - .32 * leafPart * on * step(0., past) * (1. - smoothstep(0., 1.3, past)) * (1. - smoothstep(.85, 1., uFold));
+          col *= 1. - .45 * inLeafY * on * step(fx0, 0.) * (1. - smoothstep(0., 1.2, -fx0)) * (1. - smoothstep(.85, 1., uFold));
           float inA = step(uArena.x, vW.x) * step(vW.x, uArena.z) * step(uArena.y, vW.y) * step(vW.y, uArena.w);
           col *= 1. - .05 * uStage * inA;
           col += uGold * .03 * uPulse * inA;
@@ -146,25 +177,66 @@ export class PageLayer {
     scene.add(this.mesh);
   }
   private bakeScene = new THREE.Scene();
+  private bakeCam = new THREE.OrthographicCamera(-1, 1, 1, -1, -200, 200);
   private bakeMesh: THREE.Mesh;
-  private rt: THREE.WebGLRenderTarget;
+  private rtA: THREE.WebGLRenderTarget;
+  private rtB: THREE.WebGLRenderTarget;
   private live: THREE.ShaderMaterial;
   private dirty = true;
   private key = "";
+  /** how many papers have been baked (each is a full-screen noise pass) */
+  bakes = 0;
+  /** link the bake's program off the main thread (as the variant that renders into the paper target) */
+  compileBake(renderer: THREE.WebGLRenderer): Promise<unknown> {
+    const prev = renderer.getRenderTarget();
+    renderer.setRenderTarget(this.rtA);
+    try {
+      return renderer.compileAsync(this.bakeScene, this.bakeCam);
+    } finally {
+      renderer.setRenderTarget(prev);
+    }
+  }
 
-  /** Re-bake the paper if the layout or the plate changed. */
-  bake(renderer: THREE.WebGLRenderer, camera: THREE.Camera) {
-    const size = renderer.getDrawingBufferSize(new THREE.Vector2());
-    const u = this.mat.uniforms;
-    const k = [size.x, size.y, u.uRect.value.toArray().map((v: number) => v.toFixed(3)).join(","), u.uSpread.value, u.uVellum.value.getHexString(), u.uAccent.value.getHexString()].join("|");
-    if (!this.dirty && k === this.key) return;
+  /**
+   * Bake the papers if the layout or the plate changed: A, the open book at the lobby's density; B, the
+   * leaf folded to its strip at the run's density. Both cover `u` (world units).
+   */
+  bake(renderer: THREE.WebGLRenderer, o: { u: Rect; densA: number; densB: number; leaf: Rect | null; strip: Rect | null; needB: boolean }) {
+    const vel = this.mat.uniforms;
+    const k = [o.u.x0, o.u.y0, o.u.x1, o.u.y1, o.densA, o.densB, o.leaf?.x0 ?? 0, o.strip?.x0 ?? 0].map((v) => v.toFixed(3)).join(",") + o.needB;
+    if (!this.dirty && k === this.key) return false;
     this.key = k;
     this.dirty = false;
-    if (this.rt.width !== size.x || this.rt.height !== size.y) this.rt.setSize(size.x, size.y);
-    (this.live.uniforms.uRes.value as THREE.Vector2).copy(size);
-    renderer.setRenderTarget(this.rt);
-    renderer.render(this.bakeScene, camera);
-    renderer.setRenderTarget(null);
+    const max = Math.min(4096, renderer.capabilities.maxTextureSize || 4096);
+    const W = o.u.x1 - o.u.x0,
+      H = o.u.y1 - o.u.y0;
+    const size = (d: number) => {
+      const s = Math.min(1, max / (W * d), max / (H * d));
+      return [Math.max(4, Math.round(W * d * s)), Math.max(4, Math.round(H * d * s))];
+    };
+    (this.live.uniforms.uU.value as THREE.Vector4).set(o.u.x0, o.u.y0, o.u.x1, o.u.y1);
+    vel.uRect.value.set(o.u.x0, o.u.y0, o.u.x1, o.u.y1);
+    const c = this.bakeCam;
+    c.left = o.u.x0;
+    c.right = o.u.x1;
+    c.bottom = o.u.y0;
+    c.top = o.u.y1;
+    c.position.set(0, 0, 50);
+    c.updateProjectionMatrix();
+    const prev = renderer.getRenderTarget();
+    const pass = (rt: THREE.WebGLRenderTarget, d: number, leaf: Rect | null) => {
+      const [w, h] = size(d);
+      if (rt.width !== w || rt.height !== h) rt.setSize(w, h);
+      vel.uSpread.value = leaf ? 1 : 0;
+      if (leaf) vel.uLeft.value.set(leaf.x0, leaf.y0, leaf.x1, leaf.y1);
+      renderer.setRenderTarget(rt);
+      renderer.render(this.bakeScene, c);
+      this.bakes++;
+    };
+    pass(this.rtA, o.densA, o.leaf);
+    if (o.needB) pass(this.rtB, o.densB, o.strip);
+    renderer.setRenderTarget(prev);
+    return true;
   }
   setPlate(p: Plate) {
     const u = this.mat.uniforms;
@@ -175,13 +247,19 @@ export class PageLayer {
     u.uGold.value.set(p.gold);
     this.dirty = true;
   }
-  update(rect: { x0: number; y0: number; x1: number; y1: number }, time: number, stage: number, pulse: number, hurt: number, left: { x0: number; y0: number; x1: number; y1: number } | null = null) {
-    const u = this.mat.uniforms;
-    u.uSpread.value = left ? 1 : 0;
-    if (left) u.uLeft.value.set(left.x0, left.y0, left.x1, left.y1);
-    u.uRect.value.set(rect.x0, rect.y0, rect.x1, rect.y1);
-    u.uTime.value = time;
+  /**
+   * Per frame: the live layer covers the camera's rect. `fold` (0 the open book .. 1 the run's paper) and
+   * the crease's x, sweeping across the open `leaf` toward its strip, drive the leaf folding away.
+   */
+  update(rect: Rect, stage: number, pulse: number, hurt: number, fold = 0, crease = 0, leaf: Rect | null = null) {
     const l = this.live.uniforms;
+    // a little beyond the view, so camera shake never shows an edge
+    (l.uRect.value as THREE.Vector4).set(rect.x0 - 1.5, rect.y0 - 1.5, rect.x1 + 1.5, rect.y1 + 1.5);
+    l.uFold.value = fold;
+    l.uCrease.value = leaf ? crease : 1e4;
+    l.uLeafX0.value = leaf ? leaf.x0 : -1e4;
+    l.uLeafX1.value = leaf ? leaf.x1 : -1e4;
+    (l.uLeafY.value as THREE.Vector2).set(leaf ? leaf.y0 : 0, leaf ? leaf.y1 : 0);
     l.uStage.value = stage;
     l.uPulse.value = pulse;
     l.uHurt.value = hurt;

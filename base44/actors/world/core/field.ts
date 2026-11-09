@@ -92,15 +92,15 @@ function planVolley(spec: TitanSpec, r: Rng, kind: Kind, beat: number, idx: numb
     }
     case "beam": {
       const side = r.chance(0.5) ? 1 : -1;
-      const from = DOWN + side * r.range(0.5, 0.95);
-      const to = DOWN - side * r.range(0.3, 0.95);
-      v.p = { ox: o.x, oy: o.y, a1: from, a2: to, len: ARENA.H * 1.45, width: r.range(0.45, 0.7), dur: r.pick([4, 6, 8]) };
+      const from = DOWN + side * r.range(0.45, 0.8);
+      const to = DOWN - side * r.range(0.25, 0.7);
+      v.p = { ox: o.x, oy: o.y, a1: from, a2: to, len: ARENA.H * 1.45, width: r.range(0.4, 0.58), dur: r.pick([6, 8, 8]) };
       v.tele = 2;
       v.heavy = true;
       break;
     }
     case "slam": {
-      v.p = { cx: r.range(-ARENA.W * 0.35, ARENA.W * 0.35), cy: r.range(3, ARENA.H * 0.6), speed: sp(5.5, 7.5), width: 0.38, gapA: r.range(0, TAU), gapW: Math.max(0.55, r.range(0.75, 1.05) - hard * 0.1), gapB: r.range(0, TAU), rings: hard > 1 ? 2 : 1 };
+      v.p = { cx: r.range(-ARENA.W * 0.35, ARENA.W * 0.35), cy: r.range(3, ARENA.H * 0.6), speed: sp(5, 6.5), width: 0.32, gapA: r.range(0, TAU), gapW: Math.max(0.95, r.range(1.15, 1.45) - hard * 0.1), gapB: r.range(0, TAU), rings: hard > 1 ? 2 : 1, reach: r.range(9, 12) };
       v.tele = 2;
       v.heavy = true;
       break;
@@ -179,7 +179,7 @@ function signature(spec: TitanSpec, r: Rng, beat: number, idx: number, phrase: n
     case "coil":
       return { ...base, kind: "beam", p: { ox: 0, oy: ARENA.TOP + 0.6, a1: DOWN + 1.1, a2: DOWN - 1.1, len: ARENA.H * 1.5, width: 0.9, dur: 8, twin: 1 } };
     case "strider":
-      return { ...base, kind: "slam", p: { cx: 0, cy: ARENA.H * 0.42, speed: 6.5, width: 0.45, gapA: r.range(0, TAU), gapW: 0.8, gapB: r.range(0, TAU), rings: 3 } };
+      return { ...base, kind: "slam", p: { cx: 0, cy: ARENA.H * 0.42, speed: 6, width: 0.38, gapA: r.range(0, TAU), gapW: 1.1, gapB: r.range(0, TAU), rings: 3, reach: 13 } };
     case "bloom":
       return { ...base, kind: "spiral", p: { ox: 0, oy: ARENA.TOP + 0.6, n: 48, speed: 3.6, turns: 2.5, dur: 8, dir: 1, a0: 0, rad: 0.24, twin: 1 } };
     case "throne":
@@ -193,7 +193,7 @@ function signature(spec: TitanSpec, r: Rng, beat: number, idx: number, phrase: n
 // Sampling: where is everything at time t?
 
 export interface FieldFrame {
-  // bullets: x, y, radius, ink (0/1/2 = gold seed), alpha
+  // bullets: x, y, radius, ink (0/1/2 = gold seed), alpha, kind, vx, vy
   bullets: Float32Array;
   bulletIds: Uint32Array;
   bulletCount: number;
@@ -211,7 +211,7 @@ export interface FieldFrame {
   markCount: number;
 }
 
-const B = 7,
+const B = 8,
   BM = 7,
   RG = 9,
   ZN = 5,
@@ -272,7 +272,10 @@ export class Field {
   }
 }
 
-function pushBullet(f: FieldFrame, x: number, y: number, r: number, ink: number, alpha: number, id: number) {
+let curKind = 0;
+export const KIND_LIST: Kind[] = ["ring", "spiral", "fan", "wall", "rain", "wave", "curve", "bloom", "beam", "slam", "glyph", "cross"];
+
+function pushBullet(f: FieldFrame, x: number, y: number, r: number, ink: number, alpha: number, id: number, vx = 0, vy = 0) {
   if (!inArena(x, y, r) || f.bulletCount * B >= f.bullets.length) return;
   const o = f.bulletCount * B;
   f.bullets[o] = x;
@@ -280,8 +283,9 @@ function pushBullet(f: FieldFrame, x: number, y: number, r: number, ink: number,
   f.bullets[o + 2] = r;
   f.bullets[o + 3] = ink;
   f.bullets[o + 4] = alpha;
-  f.bullets[o + 5] = 0;
-  f.bullets[o + 6] = 0;
+  f.bullets[o + 5] = curKind;
+  f.bullets[o + 6] = vx;
+  f.bullets[o + 7] = vy;
   f.bulletIds[f.bulletCount] = id >>> 0;
   f.bulletCount++;
 }
@@ -339,6 +343,7 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
   const tSec = age * beatLen; // seconds since spawn (negative while telegraphing)
   const tele = age < 0 ? 1 + age / v.tele : 1; // 0..1 telegraph progress
   const vid = v.id;
+  curKind = KIND_LIST.indexOf(v.kind);
   switch (v.kind) {
     case "ring": {
       const echoes = p.echoes ?? 1;
@@ -353,7 +358,7 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
         for (let i = 0; i < n; i++) {
           const a = DOWN - p.arc / 2 + (p.arc * (i + 0.5)) / n + (e % 2 ? p.arc / n / 2 : 0) + Math.sin(p.a0) * 0.05;
           const d = p.speed * te;
-          pushBullet(f, p.ox + Math.cos(a) * d, p.oy + Math.sin(a) * d, p.rad, v.ink, 1, bid(pa, vid, e * 64 + i));
+          pushBullet(f, p.ox + Math.cos(a) * d, p.oy + Math.sin(a) * d, p.rad, v.ink, 1, bid(pa, vid, e * 64 + i), Math.cos(a) * p.speed, Math.sin(a) * p.speed);
         }
       }
       return;
@@ -374,7 +379,7 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
           // fold upward shots downward so nothing is wasted off the top of the page
           if (Math.sin(a) > 0.1) a = -a;
           const d = p.speed * te;
-          pushBullet(f, p.ox + Math.cos(a) * d, p.oy + Math.sin(a) * d, p.rad, v.ink, 1, bid(pa, vid, k * 256 + i));
+          pushBullet(f, p.ox + Math.cos(a) * d, p.oy + Math.sin(a) * d, p.rad, v.ink, 1, bid(pa, vid, k * 256 + i), Math.cos(a) * p.speed, Math.sin(a) * p.speed);
         }
       }
       return;
@@ -391,7 +396,7 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
         for (let i = 0; i < p.n; i++) {
           const a = base - p.spread / 2 + (p.spread * i) / Math.max(1, p.n - 1) + (w % 2 ? p.spread / (p.n - 1) / 2 : 0);
           const d = p.speed * te;
-          pushBullet(f, p.ox + Math.cos(a) * d, p.oy + Math.sin(a) * d, p.rad, v.ink, 1, bid(pa, vid, w * 32 + i));
+          pushBullet(f, p.ox + Math.cos(a) * d, p.oy + Math.sin(a) * d, p.rad, v.ink, 1, bid(pa, vid, w * 32 + i), Math.cos(a) * p.speed, Math.sin(a) * p.speed);
         }
       }
       return;
@@ -413,7 +418,7 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
         let i = 0;
         for (let x = -W / 2; x <= W / 2; x += p.spacing, i++) {
           if (Math.abs(x - gx) < p.gapW / 2) continue;
-          pushBullet(f, x, y, p.rad, v.ink, 1, bid(pa, vid, row * 128 + i));
+          pushBullet(f, x, y, p.rad, v.ink, 1, bid(pa, vid, row * 128 + i), 0, -p.speed);
         }
       }
       return;
@@ -430,7 +435,7 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
         for (let d = 0; d < p.drops; d++) {
           const te = tSec - (d * p.every + (c % 2) * 0.5) * beatLen;
           if (te < 0) continue;
-          pushBullet(f, x, ARENA.TOP + 0.5 - p.speed * te, p.rad, v.ink, 1, bid(pa, vid, c * 16 + d));
+          pushBullet(f, x, ARENA.TOP + 0.5 - p.speed * te, p.rad, v.ink, 1, bid(pa, vid, c * 16 + d), 0, -p.speed);
         }
       });
       return;
@@ -445,7 +450,7 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
         if (te < 0) break;
         const y = p.oy - p.speed * te;
         const x = p.ox + Math.sin(p.phase + te * p.freq * TAU) * p.amp + Math.sin(i * 1.7) * 0.4;
-        pushBullet(f, x, y, p.rad, v.ink, 1, bid(pa, vid, i));
+        pushBullet(f, x, y, p.rad, v.ink, 1, bid(pa, vid, i), Math.cos(p.phase + te * p.freq * TAU) * p.amp * p.freq * TAU, -p.speed);
       }
       return;
     }
@@ -460,7 +465,7 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
         const R = p.speed / w;
         const x = p.ox + R * (Math.sin(a0 + w * tSec) - Math.sin(a0));
         const y = p.oy - R * (Math.cos(a0 + w * tSec) - Math.cos(a0));
-        pushBullet(f, x, y, p.rad, v.ink, 1, bid(pa, vid, i));
+        pushBullet(f, x, y, p.rad, v.ink, 1, bid(pa, vid, i), p.speed * Math.cos(a0 + w * tSec), p.speed * Math.sin(a0 + w * tSec));
       }
       return;
     }
@@ -473,7 +478,7 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
       if (tSec < travel) {
         const k = tSec / travel;
         const e = 1 - (1 - k) * (1 - k);
-        pushBullet(f, p.ox + (p.tx - p.ox) * e, p.oy + (p.ty - p.oy) * e, p.seedRad, 2, 1, bid(pa, vid, 4000));
+        pushBullet(f, p.ox + (p.tx - p.ox) * e, p.oy + (p.ty - p.oy) * e, p.seedRad, 2, 1, bid(pa, vid, 4000), ((p.tx - p.ox) * 2 * (1 - k)) / travel, ((p.ty - p.oy) * 2 * (1 - k)) / travel);
         pushZone(f, p.tx, p.ty, 0.9, k * 0.999, v.ink);
         return;
       }
@@ -481,7 +486,7 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
       for (let i = 0; i < p.n; i++) {
         const a = (TAU * i) / p.n + p.tx;
         const d = p.speed * te;
-        pushBullet(f, p.tx + Math.cos(a) * d, p.ty + Math.sin(a) * d, p.rad, v.ink, 1, bid(pa, vid, i));
+        pushBullet(f, p.tx + Math.cos(a) * d, p.ty + Math.sin(a) * d, p.rad, v.ink, 1, bid(pa, vid, i), Math.cos(a) * p.speed, Math.sin(a) * p.speed);
       }
       return;
     }
@@ -512,7 +517,7 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
         const te = tSec - k * beatLen * 2;
         if (te < 0) continue;
         const R = p.speed * te;
-        if (R > ARENA.H * 1.6) continue;
+        if (R > (p.reach ?? ARENA.H * 1.6)) continue; // the shockwave spends itself
         pushRing(f, p.cx, p.cy, R, p.width, p.gapA + k * 1.3, p.gapW, p.gapB + k * 0.7, 1, v.ink);
       }
       if (tSec < beatLen) pushZone(f, p.cx, p.cy, 1.1, 1 + tSec / beatLen, v.ink);
@@ -542,7 +547,7 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
           const x0 = side * (ARENA.W / 2) - side * i * p.spacing * 0.5 + side * 2;
           const y0 = ARENA.TOP + 0.5 + i * p.spacing * 0.85;
           const d = p.speed * te;
-          pushBullet(f, x0 + (dirx / L) * d, y0 + (diry / L) * d, p.rad, v.ink, 1, bid(pa, vid, row * 64 + i));
+          pushBullet(f, x0 + (dirx / L) * d, y0 + (diry / L) * d, p.rad, v.ink, 1, bid(pa, vid, row * 64 + i), (dirx / L) * p.speed, (diry / L) * p.speed);
         }
       }
       return;
@@ -555,6 +560,7 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
 
 export interface Touch {
   hit: boolean;
+  hitKind?: string;
   grazes: number[]; // bullet ids grazed this frame
   nearest: number; // closest clearance to any live hazard
 }
@@ -571,6 +577,7 @@ const angDist = (a: number, b: number) => {
 
 export function touch(f: FieldFrame, x: number, y: number, out: Touch): Touch {
   out.hit = false;
+  out.hitKind = undefined;
   out.grazes.length = 0;
   let nearest = 99;
   for (let i = 0; i < f.bulletCount; i++) {
@@ -579,8 +586,10 @@ export function touch(f: FieldFrame, x: number, y: number, out: Touch): Touch {
     const dy = f.bullets[o + 1] - y;
     const d = Math.sqrt(dx * dx + dy * dy) - f.bullets[o + 2] - PLAYER_R;
     if (d < nearest) nearest = d;
-    if (d < 0) out.hit = true;
-    else if (d < GRAZE_R) out.grazes.push(f.bulletIds[i]);
+    if (d < 0) {
+      out.hit = true;
+      out.hitKind = KIND_LIST[f.bullets[o + 5]] ?? "?";
+    } else if (d < GRAZE_R) out.grazes.push(f.bulletIds[i]);
   }
   for (let i = 0; i < f.beamCount; i++) {
     const o = i * BM;
@@ -594,7 +603,10 @@ export function touch(f: FieldFrame, x: number, y: number, out: Touch): Touch {
     const k = Math.max(0, Math.min(1, ((x - x1) * vx + (y - y1) * vy) / (vx * vx + vy * vy)));
     const d = Math.hypot(x - (x1 + vx * k), y - (y1 + vy * k)) - f.beams[o + 4] / 2 - PLAYER_R;
     if (d < nearest) nearest = d;
-    if (d < 0) out.hit = true;
+    if (d < 0) {
+      out.hit = true;
+      out.hitKind = "beam";
+    }
   }
   for (let i = 0; i < f.ringCount; i++) {
     const o = i * RG;
@@ -606,7 +618,10 @@ export function touch(f: FieldFrame, x: number, y: number, out: Touch): Touch {
     if (d < 0) {
       const a = Math.atan2(dy, dx);
       const inGap = angDist(a, f.rings[o + 4]) < f.rings[o + 5] / 2 || angDist(a, f.rings[o + 6]) < f.rings[o + 5] / 2;
-      if (!inGap) out.hit = true;
+      if (!inGap) {
+        out.hit = true;
+        out.hitKind = "slam";
+      }
     }
   }
   for (let i = 0; i < f.zoneCount; i++) {
@@ -614,7 +629,10 @@ export function touch(f: FieldFrame, x: number, y: number, out: Touch): Touch {
     if (f.zones[o + 3] < 1 || f.zones[o + 4] >= 10) continue;
     const d = Math.hypot(x - f.zones[o], y - f.zones[o + 1]) - f.zones[o + 2] - PLAYER_R;
     if (d < nearest) nearest = d;
-    if (d < 0) out.hit = true;
+    if (d < 0) {
+      out.hit = true;
+      out.hitKind = "zone";
+    }
   }
   out.nearest = nearest;
   return out;

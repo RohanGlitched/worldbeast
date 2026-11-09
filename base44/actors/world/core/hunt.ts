@@ -93,6 +93,13 @@ export class Hunt {
   events: HitEvent[] = []; // drained by the caller
   hurtEvents = 0; // incremented when hit (caller reads deltas)
   mirrorReflects = 0;
+  lastHitKind = "";
+  /** clearance to the nearest live hazard this frame (for the music's danger swell) */
+  nearest = 99;
+  /** longest stretch without being struck, seconds */
+  cleanBest = 0;
+  private lastHitAt = 0;
+  hitLog: string[] = [];
   private dashId = 0;
   private mirroredDash = -1;
   private grazed = new Set<number>();
@@ -153,6 +160,7 @@ export class Hunt {
     // --- hazards
     this.invuln = Math.max(0, this.invuln - dt);
     const tc = touch(this.frame, this.x, this.y, this.tch);
+    this.nearest = tc.nearest;
     const dashing = this.dashT > 0;
     if (tc.hit) {
       if (dashing) {
@@ -160,6 +168,9 @@ export class Hunt {
       } else if (this.invuln <= 0) {
         this.hits++;
         this.hurtEvents++;
+        this.lastHitKind = tc.hitKind ?? "?";
+        this.lastHitAt = this.time;
+        this.hitLog.push(this.lastHitKind);
         this.invuln = INVULN_AFTER_HIT;
         this.combo = 0;
         this.resonance *= 0.5;
@@ -179,11 +190,12 @@ export class Hunt {
       if (this.surgeT <= 0) this.resonance = Math.min(100, this.resonance + RESONANCE_PER_GRAZE);
     }
     if (this.grazed.size > 4000) this.grazed.clear();
+    this.cleanBest = Math.max(this.cleanBest, this.time - this.lastHitAt);
     this.comboT -= dt;
     if (this.comboT <= 0) this.combo = 0;
 
     // --- surge
-    const openCores = this.spec.cores.filter((c) => !coreBroken(c.id) && coreOpen(c, beat, stage));
+    const openCores = t < 0 ? [] : this.spec.cores.filter((c) => !coreBroken(c.id) && coreOpen(c, beat, stage));
     if (this.resonance >= 100 && openCores.length && this.surgeT <= 0) {
       this.surgeT = SURGE_TIME;
       this.surges++;
@@ -234,6 +246,14 @@ export class Hunt {
     }
   }
 
+  /** a passing hunter rekindled this light: back in the fight with one hit left and a moment's grace */
+  revive() {
+    this.alive = true;
+    this.hits = MAX_HITS - 1;
+    this.invuln = 2.5;
+    this.resonance = 0;
+  }
+
   private mirror(stage: Stage) {
     // a perfect dash through an attack sends a gilded shard straight to the best open core
     const beat = this.lastBeat;
@@ -256,11 +276,25 @@ export class Hunt {
 }
 
 /** The most damage per second any aspect can deal (used by the world actor to reject impossible claims). */
-export function maxDps(): number {
+export function maxDps(aspect?: AspectId): number {
   let best = 0;
   for (const a of Object.values(ASPECTS)) {
+    if (aspect && a.id !== aspect) continue;
     const perShot = a.dart * 1.4 * 1.5 * (a.id === "bloom" ? 1.65 : 1) * a.spread * 2.5;
-    best = Math.max(best, perShot / (a.fireEvery * 0.5));
+    best = Math.max(best, perShot / (a.fireEvery * 0.5) + (a.id === "mirror" || !aspect ? (55 * 1.4) / 0.85 : 0));
   }
-  return best + 55 * 1.4 / 0.85;
+  return best;
+}
+
+/**
+ * The most damage an aspect can deal over a 12 s stretch: full reach and combo throughout,
+ * plus one 3.2 s Surge (a Surge needs ~29 grazes, so two cannot fit in 12 s of honest play).
+ */
+export function sustainedBudget(aspect: AspectId, windowS = 12): number {
+  const a = ASPECTS[aspect] ?? ASPECTS.ember;
+  const spreadMul = a.id === "bloom" ? 1.65 : 1;
+  const steady = (a.dart * 1.4 * 1.5 * spreadMul * a.spread) / a.fireEvery;
+  const surge = (a.dart * 1.4 * 1.5 * spreadMul * a.spread * 2.5) / (a.fireEvery * 0.5);
+  const mirror = a.id === "mirror" ? (55 * 1.4) / 0.85 : 0;
+  return (steady + mirror) * windowS + (surge - steady) * 3.2;
 }

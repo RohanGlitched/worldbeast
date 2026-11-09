@@ -39,11 +39,17 @@ export interface HudState {
 
 export interface GameEvents {
   onHud?(h: HudState): void;
-  onHits?(dmg: number, core: number, beat: number): void; // local damage dealt (to send to the world)
+  onHits?(dmg: number, core: number, beat: number, surge?: boolean): void; // local damage dealt (to send to the world)
   onDown?(summary: RunSummary): void;
   onSfx?(name: string, x?: number, strength?: number): void;
   onFloat?(text: string, x: number, y: number, kind: "dmg" | "graze" | "info"): void;
   onLayout?(l: Layout): void;
+  /** every frame while a run is live: send your position to the world */
+  onPos?(x: number, y: number, alive: boolean, flags: number): void;
+  /** every frame: drive the music */
+  onFrame?(t: number, stage: Stage, hpFrac: number, playing: boolean, nearDanger: number): void;
+  /** a new titan was built (rebuild the song) */
+  onTitan?(spec: TitanSpec, field: Field): void;
 }
 
 export interface Layout {
@@ -155,6 +161,7 @@ export class Game {
     this.coreHit = this.spec.cores.map(() => 0);
     this.hunt = null;
     this.phase = "lobby";
+    this.events.onTitan?.(this.spec, this.field);
   }
 
   /** the world felled the titan: it shudders, its seams flood with gold, then the engraving lifts away */
@@ -171,6 +178,19 @@ export class Game {
       this.events.onDown?.(this.summaryOf(h, this.stage, true));
     }
   }
+  /** someone flew through your spark: rise again */
+  revive() {
+    const h = this.hunt;
+    if (!h || this.phase !== "down" || this.fallT >= 0) return false;
+    h.revive();
+    this.phase = "playing";
+    this.lastHurt = h.hurtEvents;
+    this.fx.ring(h.x, h.y, 3, 0, 0.7);
+    this.fx.burst(h.x, h.y, 30, { type: P.Fleck, size: 0.14, speed: 7, life: 1, g: 2 });
+    this.events.onSfx?.("revive", h.x);
+    return true;
+  }
+
   private summaryOf(h: Hunt, stage: Stage, felled: boolean): RunSummary {
     return { damage: h.damage, time: h.time, grazes: h.grazeCount, bestCombo: h.bestCombo, surges: h.surges, aspect: h.aspect.id, path: this.path.slice(), startT: this.runStart, stage, felled, cleanTime: h.cleanBest };
   }
@@ -186,8 +206,10 @@ export class Game {
     if (this.titan) this.titan.u.uReveal.value = 3;
   }
 
+  /** the world decides the stage when online; otherwise it follows the wounds */
+  stageFn: (() => Stage) | null = null;
   get stage(): Stage {
-    return stageFor(this.hpFrac);
+    return this.stageFn ? this.stageFn() : stageFor(this.hpFrac);
   }
 
   setAutopilot(on: boolean, greed = 0.6) {
@@ -337,7 +359,7 @@ export class Game {
           this.titanHurt = Math.min(1, this.titanHurt + (e.surge ? 0.12 : 0.05));
           this.fx.burst(e.x, e.y, e.surge ? 6 : 3, { type: P.Fleck, size: 0.12, speed: 7, life: 0.6, g: -9 });
           this.events.onFloat?.(String(e.dmg), e.x + (Math.random() - 0.5) * 1.4, e.y + 0.6, "dmg");
-          this.events.onHits?.(e.dmg, e.core, e.beat);
+          this.events.onHits?.(e.dmg, e.core, e.beat, e.surge);
         }
         this.events.onSfx?.("strike", h.events[0].x, Math.min(1, sum / 60));
         h.events.length = 0;
@@ -362,6 +384,12 @@ export class Game {
       this.field.sample(t, stage, this.lobbyFrame);
     }
     const frame = h && this.phase === "playing" ? h.frame : this.lobbyFrame;
+
+    if (h && (this.phase === "playing" || this.phase === "down")) {
+      const flags = (h.dashing ? 1 : 0) | (h.surging ? 2 : 0) | (h.invuln > 0 ? 4 : 0);
+      this.events.onPos?.(h.x, h.y, h.alive, flags);
+    }
+    this.events.onFrame?.(t, stage, this.hpFrac, this.phase === "playing", h && this.phase === "playing" ? 1 - Math.max(0, Math.min(1, h.nearest / 1.5)) : 0);
 
     // --- beat events
     const beatInt = Math.floor(beat);

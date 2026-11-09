@@ -12,6 +12,7 @@ import type { Field, Kind } from "../../core/field";
 import { LOOP_PHRASES, Stage, TitanSpec } from "../../core/titan";
 import { AEv, BLOCK_STEPS, buildSong, degToMidi, Lead, PERC_VOICES, PHRASE_STEPS, Song, STEPS_PER_BEAT, volleyEvents } from "./score";
 import { commonItems, renderBank, titanItems } from "./bank";
+import { Lane } from "./lane";
 import { cathedralIR, ceilingCurve, mtof, Synth, SynthStats } from "./synth";
 
 export interface AudioEngineOptions {
@@ -27,6 +28,8 @@ export interface AudioEngineOptions {
   syncTrim?: number;
   /** Keep a trace of scheduled beats for timing tests. */
   debug?: boolean;
+  /** Lighter on CPU for weak phones: shorter cathedral, tighter polyphony, fewer doublings. */
+  lite?: boolean;
 }
 
 export interface UpdateOpts {
@@ -65,33 +68,33 @@ interface Channels {
   sfx: GainNode;
 }
 
+// Every long-lived param is driven through a Lane: ramps that end, so the browser keeps it on
+// the cheap constant path between moves (setTargetAtTime would keep it per-sample forever).
 interface Graph {
   ch: Channels;
-  musicSum: GainNode;
-  lobby: BiquadFilterNode;
-  duck: GainNode; // scheduled ducking under heavy impacts
-  danger: GainNode; // realtime ducking near hazards
-  musicVol: GainNode;
-  titanSfx: GainNode; // cues + impacts (quieter in the lobby)
-  sfxVol: GainNode;
-  verbMusic: GainNode;
-  verbSfx: GainNode;
+  lobby: Lane; // music low-pass: muffled behind the page in the lobby, concussion on hurt
+  duck: Lane; // ducking under heavy impacts
+  danger: Lane; // realtime ducking near hazards
+  musicVol: Lane;
+  verbMusic: Lane;
+  sfxVol: Lane;
+  verbSfx: Lane;
+  titanSfx: Lane; // cues + impacts (quieter in the lobby)
+  trim: Lane; // quiet-mode trim
+  master: Lane;
   verbOut: GainNode;
   glue: DynamicsCompressorNode;
-  limiter: DynamicsCompressorNode;
-  trim: GainNode; // quiet-mode trim
-  master: GainNode;
   nodes: AudioNode[];
 }
 
 interface Drone {
-  fades: GainNode[];
-  choirVoices: Array<{ a: OscillatorNode; b: OscillatorNode; g: GainNode }>;
-  choirOut: GainNode;
-  choirLP: BiquadFilterNode;
-  bourdonOut: GainNode;
+  fades: Lane[];
+  voices: Array<{ a: Lane; b: Lane; g: Lane }>;
+  choirOut: Lane;
+  choirLP: Lane;
+  bourdonOut: Lane;
   buzz: GainNode; // chuffed per eighth
-  buzzOut: GainNode;
+  buzzOut: Lane;
   oscs: OscillatorNode[];
   nodes: AudioNode[];
 }
@@ -131,6 +134,7 @@ export class AudioEngine {
   private syncTrim: number;
   private quiet: boolean;
   private debug: boolean;
+  private lite: boolean;
 
   private offset = 0;
   private raw = 0;
@@ -151,12 +155,16 @@ export class AudioEngine {
   private muffleUntil = 0;
   private persistent = 0;
   private visHandler: (() => void) | null = null;
+  private sinceSync = 0;
+  private clock = { ct: -1, t: 0 }; // last context time seen, and the titan time when it moved
   private chainLatency = 0; // the two compressors look ahead 256 frames each
   private commonBank: Promise<Map<string, AudioBuffer>> | null = null;
   private bankPromise: Promise<void> = Promise.resolve();
 
   /** [step, titanTime, contextTime, rawOffset] for the last scheduled beats (debug only) */
   trace: Array<[number, number, number, number]> = [];
+  /** resync reasons (debug only) */
+  syncLog: Array<[number, number, number, number, string, number, number]> = [];
 
   constructor(opts: AudioEngineOptions = {}) {
     this.lookahead = opts.lookahead ?? 0.12;
@@ -164,6 +172,7 @@ export class AudioEngine {
     this.syncTrim = opts.syncTrim ?? 0;
     this.quiet = !!opts.quiet;
     this.debug = !!opts.debug;
+    this.lite = !!opts.lite;
     if (opts.context) {
       this.ctx = opts.context;
       this.realtime = typeof OfflineAudioContext === "undefined" || !(opts.context instanceof OfflineAudioContext);
@@ -240,11 +249,29 @@ export class AudioEngine {
     this.setDanger(opts.nearDanger ?? 0);
     if (stage !== this.stage) this.changeStage(stage);
 
+    // A context that has just been resumed can report "running" while its clock has not started
+    // (the device is still opening). Scheduling then would pile notes into one burst: wait.
+    if (ctx.currentTime !== this.clock.ct) {
+      this.clock.ct = ctx.currentTime;
+      this.clock.t = t;
+    }
+    if (this.realtime && (ctx.currentTime === 0 || Math.abs(t - this.clock.t) > 0.1)) {
+      this.synced = false;
+      this.lastT = t;
+      return;
+    }
+
     const raw = this.measureOffset(t);
     this.raw = raw;
-    const jumped = !this.synced || Math.abs(raw - this.offset) > RESYNC_AT || t < this.lastT - 0.05 || t - this.lastT > 1;
-    if (jumped) this.resync(t, raw);
-    else this.offset += (raw - this.offset) * SMOOTH;
+    const why = !this.synced ? "unsynced" : t < this.lastT - 0.05 ? "back" : t - this.lastT > 1 ? "gap" : Math.abs(raw - this.offset) > RESYNC_AT ? "drift" : "";
+    if (this.debug && why) this.syncLog.push([performance.now(), t, raw, this.offset, why, (ctx as AudioContext).getOutputTimestamp?.().contextTime ?? -1, ctx.currentTime]);
+    if (why) {
+      this.resync(t, raw);
+      this.sinceSync = 0;
+    } else {
+      // converge fast while the output clock settles after a (re)start, then smooth hard
+      this.offset += (raw - this.offset) * (this.sinceSync++ < 60 ? 0.25 : SMOOTH);
+    }
     this.lastT = t;
     this.scheduleTo(ctx.currentTime + this.lookahead - this.offset);
     this.synth!.countVoices(ctx.currentTime);
@@ -390,7 +417,7 @@ export class AudioEngine {
       resyncs: this.counters.resyncs,
       late: this.counters.late,
       steps: this.counters.steps,
-      persistent: this.persistent + (this.drone?.nodes.length ?? 0),
+      persistent: this.persistent + (this.drone?.nodes.length ?? 0) + s.panBuses,
       contextTime: this.ctx?.currentTime ?? 0,
       state: this.ctx ? ((this.ctx as AudioContext).state ?? "offline") : "none",
     };
@@ -421,6 +448,7 @@ export class AudioEngine {
       playing?: boolean;
       sampleRate?: number;
       quiet?: boolean;
+      lite?: boolean;
       sfx?: Array<{ at: number; name: string; x?: number; strength?: number }>;
       /** diagnostics: only these channels sound (perc, bass, mel, bell, choir, bourdon, cue, impact, sfx) */
       solo?: string[];
@@ -432,7 +460,7 @@ export class AudioEngine {
   ): Promise<AudioBuffer> {
     const sr = o.sampleRate ?? 44100;
     const off = new OfflineAudioContext(2, Math.ceil(sr * o.seconds), sr);
-    const eng = new AudioEngine({ context: off, quiet: o.quiet });
+    const eng = new AudioEngine({ context: off, quiet: o.quiet, lite: o.lite });
     eng.setTitan(spec, field);
     await eng.ready();
     if (o.solo) for (const [k, n] of Object.entries(eng.g!.ch)) if (!o.solo.includes(k)) (n as GainNode).gain.value = 0;
@@ -509,7 +537,7 @@ export class AudioEngine {
     // reverb: one cathedral shared by music and sfx
     const conv = (this.conv = ctx.createConvolver());
     conv.normalize = false;
-    conv.buffer = cathedralIR(ctx);
+    conv.buffer = cathedralIR(ctx, this.lite ? 2 : 3.2);
     nodes.push(conv);
     const verbIn = G(1);
     const verbOut = G(0.55);
@@ -558,9 +586,26 @@ export class AudioEngine {
     };
     this.persistent = nodes.length;
     this.chainLatency = 512 / ctx.sampleRate;
-    this.g = { ch, musicSum, lobby, duck, danger, musicVol, titanSfx, sfxVol, verbMusic, verbSfx, verbOut, glue, limiter, trim, master, nodes };
+    const L = (p: AudioParam, v: number) => new Lane(p, v, ctx);
+    this.g = {
+      ch,
+      lobby: L(lobby.frequency, 1100),
+      duck: L(duck.gain, 1),
+      danger: L(danger.gain, 1),
+      musicVol: L(musicVol.gain, this.vol.music),
+      verbMusic: L(verbMusic.gain, this.vol.music),
+      sfxVol: L(sfxVol.gain, this.vol.sfx),
+      verbSfx: L(verbSfx.gain, this.vol.sfx),
+      titanSfx: L(titanSfx.gain, 1),
+      trim: L(trim.gain, 1),
+      master: L(master.gain, 0.9),
+      verbOut,
+      glue,
+      nodes,
+    };
     this.synth = new Synth(ctx);
     this.synth.quiet = this.quiet;
+    this.synth.capScale = this.lite ? 0.6 : 1;
     this.applyVolumes();
     if (this.spec) {
       this.buildDrone();
@@ -596,7 +641,7 @@ export class AudioEngine {
     const now = ctx.currentTime;
     if (this.drone) {
       const old = this.drone;
-      for (const f of old.fades) f.gain.setTargetAtTime(0, now, 0.4);
+      for (const f of old.fades) f.to(0, now, 1.2);
       for (const o of old.oscs) o.stop(now + 2.5);
       old.oscs[0].onended = () => old.nodes.forEach((n) => n.disconnect());
     }
@@ -627,17 +672,16 @@ export class AudioEngine {
       return b;
     };
     // two fade handles (choir, bourdon) so a new titan crossfades over the old one
+    const L = (p: AudioParam, v: number) => new Lane(p, v, ctx);
     const choirFade = G(0);
     const bourdonFade = G(0);
-    for (const f of [choirFade, bourdonFade]) {
-      if (this.realtime) f.gain.setTargetAtTime(1, now, 0.6);
-      else f.gain.setValueAtTime(1, now);
-    }
+    const fades = [L(choirFade.gain, 0), L(bourdonFade.gain, 0)];
+    for (const f of fades) f.to(1, now, this.realtime ? 1.5 : 0.001);
 
     // --- choir: four voices of paired detuned saws through a vowel's formants
     // (static detune only: modulating detune forces a per-sample exp2 in the oscillator)
     const choirSum = G(1);
-    const choirVoices: Drone["choirVoices"] = [];
+    const voices: Drone["voices"] = [];
     for (let i = 0; i < 4; i++) {
       const f = mtof(degToMidi(song, [0, 2, 4, 7][i], 1));
       const a = O("sawtooth", f, -9 + i);
@@ -646,7 +690,7 @@ export class AudioEngine {
       a.connect(gv);
       b.connect(gv);
       gv.connect(choirSum);
-      choirVoices.push({ a, b, g: gv });
+      voices.push({ a: L(a.frequency, f), b: L(b.frequency, f), g: L(gv.gain, 0) });
     }
     const choirOut = G(0);
     const [f1, f2, f3] = tm.vowel;
@@ -697,7 +741,7 @@ export class AudioEngine {
 
     bourdonOut.connect(bourdonFade).connect(g.ch.bourdon);
 
-    this.drone = { fades: [choirFade, bourdonFade], choirVoices, choirOut, choirLP, bourdonOut, buzz, buzzOut, oscs, nodes };
+    this.drone = { fades, voices, choirOut: L(choirOut.gain, 0), choirLP: L(choirLP.frequency, 1600), bourdonOut: L(bourdonOut.gain, 0), buzz, buzzOut: L(buzzOut.gain, 0), oscs, nodes };
     this.applyStage(now, true);
   }
 
@@ -707,14 +751,14 @@ export class AudioEngine {
     const g = this.g;
     if (!g || !this.ctx) return;
     const now = this.ctx.currentTime;
-    const m = this.muted ? 0 : this.vol.master * (this.quiet ? 0.7 : 1);
-    g.master.gain.setTargetAtTime(m, now, 0.05);
-    g.musicVol.gain.setTargetAtTime(this.vol.music, now, 0.05);
-    g.verbMusic.gain.setTargetAtTime(this.vol.music, now, 0.05);
-    g.sfxVol.gain.setTargetAtTime(this.vol.sfx, now, 0.05);
-    g.verbSfx.gain.setTargetAtTime(this.vol.sfx, now, 0.05);
-    g.trim.gain.setTargetAtTime(this.quiet ? 0.8 : 1, now, 0.05);
-    g.glue.threshold.setTargetAtTime(this.quiet ? -26 : -20, now, 0.05);
+    const T = 0.08;
+    g.master.to(this.muted ? 0 : this.vol.master * (this.quiet ? 0.7 : 1), now, T);
+    g.musicVol.to(this.vol.music, now, T);
+    g.verbMusic.to(this.vol.music, now, T);
+    g.sfxVol.to(this.vol.sfx, now, T);
+    g.verbSfx.to(this.vol.sfx, now, T);
+    g.trim.to(this.quiet ? 0.8 : 1, now, T);
+    g.glue.threshold.setValueAtTime(this.quiet ? -26 : -20, now);
   }
 
   private lobbyCutoff() {
@@ -731,44 +775,34 @@ export class AudioEngine {
     const g = this.g!;
     const f = this.lobbyCutoff();
     const lvl = this.playing ? 1 : 0.45;
-    if (immediate) {
-      g.lobby.frequency.setValueAtTime(f, when);
-      g.titanSfx.gain.setValueAtTime(lvl, when);
-    } else {
-      g.lobby.frequency.cancelScheduledValues(when);
-      g.lobby.frequency.setTargetAtTime(f, when, this.playing ? 0.35 : 0.6);
-      g.titanSfx.gain.setTargetAtTime(lvl, when, 0.3);
-    }
+    g.lobby.to(f, when, immediate ? 0.001 : this.playing ? 1 : 1.6, true);
+    g.titanSfx.to(lvl, when, immediate ? 0.001 : 0.8);
   }
 
   private setDanger(d: number) {
     d = clamp(d, 0, 1);
     if (Math.abs(d - this.danger) < 0.02) return;
     this.danger = d;
-    this.g!.danger.gain.setTargetAtTime(1 - 0.3 * d, this.ctx!.currentTime, 0.12);
+    this.g!.danger.to(1 - 0.3 * d, this.ctx!.currentTime, 0.15);
   }
 
   /** Concussion: the cathedral goes muffled for a moment. */
   private muffle(cut: number, hold: number, when: number) {
-    const p = this.g!.lobby.frequency;
-    p.cancelScheduledValues(when);
-    p.setTargetAtTime(cut, when, 0.03);
-    p.setTargetAtTime(this.lobbyCutoff(), when + hold, 0.45);
+    const p = this.g!.lobby;
+    p.to(cut, when, 0.06, true);
+    p.to(this.lobbyCutoff(), when + hold, 1.4, true);
     this.muffleUntil = when + hold;
   }
 
   private duckMusic(when: number, depth: number, hold: number) {
-    const p = this.g!.duck.gain;
-    p.setTargetAtTime(depth, when, 0.012);
-    p.setTargetAtTime(1, when + hold, 0.25);
+    this.g!.duck.swell(depth, when, 0.015, when + hold, 1, 0.6);
   }
 
   private choirSwell(when: number, mul: number, dur: number) {
     const d = this.drone;
     if (!d) return;
     const base = this.choirLevel();
-    d.choirOut.gain.setTargetAtTime(base * mul, when, dur * 0.25);
-    d.choirOut.gain.setTargetAtTime(base, when + dur, dur * 0.4);
+    d.choirOut.swell(base * mul, when, dur * 0.6, when + dur, base, Math.max(0.8, dur * 0.8));
   }
 
   private choirLevel() {
@@ -802,18 +836,18 @@ export class AudioEngine {
     if (!d || !this.song) return;
     const tm = this.song.timbre;
     const s = this.stage;
-    const set = (p: AudioParam, v: number, k = 0.6) => (immediate ? p.setValueAtTime(v, when) : p.setTargetAtTime(v, when, k));
+    const set = (l: Lane, v: number, T = 2, exp = false) => l.to(v, when, immediate ? 0.001 : T, exp);
     const vg = [
       [1, 1, 1],
       [0.45, 0.75, 0.85],
       [0.8, 0.9, 1],
       [0, 0.28, 0.55],
     ];
-    d.choirVoices.forEach((v, i) => set(v.g.gain, vg[i][s] * 0.05));
-    set(d.choirOut.gain, this.choirLevel());
-    set(d.choirLP.frequency, [1500, 2300, 3600][s], 1);
-    set(d.bourdonOut.gain, [0.022, 0.026, 0.03][s] * tm.bourdon);
-    set(d.buzzOut.gain, [0, 0.018, 0.026][s] * tm.buzz);
+    d.voices.forEach((v, i) => set(v.g, vg[i][s] * 0.05));
+    set(d.choirOut, this.choirLevel());
+    set(d.choirLP, [1500, 2300, 3600][s], 3, true);
+    set(d.bourdonOut, [0.022, 0.026, 0.03][s] * tm.bourdon);
+    set(d.buzzOut, [0, 0.018, 0.026][s] * tm.buzz);
   }
 
   // =========================================================================== timing
@@ -898,15 +932,11 @@ export class AudioEngine {
     this.chord = deg;
     const d = this.drone;
     if (!d || !this.song) return;
-    d.choirVoices.forEach((v, i) => {
+    d.voices.forEach((v, i) => {
+      // voices glide into the new chord, the second of each pair a touch later (a choir, not a synth)
       const f = mtof(degToMidi(this.song!, deg + [0, 2, 4, 7][i], 1));
-      if (immediate) {
-        v.a.frequency.setValueAtTime(f, when);
-        v.b.frequency.setValueAtTime(f, when);
-      } else {
-        v.a.frequency.setTargetAtTime(f, when, 0.07);
-        v.b.frequency.setTargetAtTime(f, when, 0.09);
-      }
+      v.a.to(f, when, immediate ? 0.001 : 0.22, true);
+      v.b.to(f, when, immediate ? 0.001 : 0.32, true);
     });
   }
 
@@ -934,8 +964,9 @@ export class AudioEngine {
     // --- structure: chords, phrase bells, the Canticle's own breath
     if (local % BLOCK_STEPS === 0) {
       this.setChord(chord, when, false);
-      if (stage === 2 && block > 0) sy.bowed(ch.bell, when, when + beatSec * 2, this.midi(chord + 7, 2), 0.55, { ring: 1.2, pan: block % 2 ? 0.4 : -0.4 });
+      if (stage === 2 && block > 0 && !this.lite) sy.bowed(ch.bell, when, when + beatSec * 2, this.midi(chord + 7, 2), 0.55, { ring: 1.2, pan: block % 2 ? 0.4 : -0.4 });
     }
+    if (overture && local === 64) sy.bell(ch.bell, when, this.midi(0, 2), 0.4, { decay: 4 });
     if (local === 0) {
       if (phrase === 0) {
         sy.gong(ch.impact, when, mtof(song.root + 12), 0.8, { decay: 6 });
@@ -943,7 +974,7 @@ export class AudioEngine {
       } else {
         sy.bell(ch.bell, when, this.midi(0, 2), 0.32 + 0.06 * stage, { partials: 6, decay: 3.5 });
       }
-      if (this.drone) this.drone.choirOut.gain.setTargetAtTime(this.choirLevel() * (0.85 + 0.25 * drive), when, beatSec * 4);
+      if (this.drone) this.drone.choirOut.to(this.choirLevel() * (0.85 + 0.25 * drive), when, beatSec * 4);
     }
     if (crescendo && local === 12 * 16) {
       // four bars of rising air and bowed metal into the overture
@@ -957,7 +988,8 @@ export class AudioEngine {
     const fillBar = stage > 0 && bar % 4 === 3 && !overture && !crescendo;
     for (const v of PERC_VOICES) {
       let vel: number;
-      if (overture) vel = v === "low" && sib === 0 && bar >= 2 && bar % 2 === 0 ? 0.75 : v === "jingle" && bar >= 4 && sib === 8 ? 0.35 : 0;
+      // the overture breathes: a footfall every other bar, a lub-dub heartbeat, a zill
+      if (overture) vel = v === "low" && sib === 0 && bar >= 2 && bar % 2 === 0 ? 0.75 : v === "frame" && bar >= 2 && (sib === 12 || (sib === 14 && bar >= 4)) ? (sib === 12 ? 0.62 : 0.45) : v === "jingle" && bar >= 4 && sib === 8 ? 0.35 : 0;
       else if (crescendo && v === "frame") vel = Math.min(1, 0.3 + ((bar - 12) * 16 + sib) / 80) * (stage > 0 || sib % 2 === 0 ? 1 : 0);
       else if (crescendo && v === "low") vel = sib % 4 === 0 ? 0.6 + 0.1 * (bar - 12) : 0;
       else vel = fillBar && sib >= 8 ? song.fills[v][sib] : song.perc[v][stage][sib];
@@ -984,7 +1016,7 @@ export class AudioEngine {
     if (stage > 0 && tm.buzz > 0 && sib % 2 === 0 && this.drone) {
       const p = this.drone.buzz.gain;
       p.setValueAtTime(sib % 4 === 0 ? 1 : 0.7, swung);
-      p.setTargetAtTime(0.18, swung + 0.015, stepDur * 0.7);
+      p.linearRampToValueAtTime(0.18, swung + stepDur * 1.6);
     }
 
     // --- bass
@@ -1019,7 +1051,7 @@ export class AudioEngine {
         }
         this.lead(tm.lead, t, midi, dur, vel, 0);
         if (stage >= 1) this.lead(tm.lead2, t, tm.lead2 === "bell" ? midi : midi - 12, dur, vel * 0.5, -0.3);
-        if (stage === 2 && n.vel >= 0.9) sy.bell(ch.bell, t, midi + 12, vel * 0.32, { partials: 5, decay: 2.2, pan: 0.3 });
+        if (stage === 2 && n.vel >= 0.9 && !this.lite) sy.bell(ch.bell, t, midi + 12, vel * 0.32, { partials: 5, decay: 2.2, pan: 0.3 });
       }
     }
 
@@ -1228,7 +1260,7 @@ export class AudioEngine {
       const now = ctx.currentTime;
       if (document.hidden) {
         // fade out, then sleep the context to save the battery; resync on return
-        this.g.master.gain.setTargetAtTime(0, now, 0.04);
+        this.g.master.to(0, now, 0.15);
         setTimeout(() => {
           if (document.hidden && ctx.state === "running") void ctx.suspend();
         }, 250);

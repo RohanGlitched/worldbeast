@@ -3,7 +3,7 @@ import { hash32 } from "./core/rng.ts";
 import { makeTitan, PHRASE_BEATS, Stage, stageFor, TitanSpec } from "./core/titan.ts";
 import {
   addDamage, breakThreshold, Bucket, checkHit, checkRun, clampPos, DmgBuckets, echoEviction, ESCAPE_MS, hashKey, hpMaxFor,
-  INTERLUDE_MS, LIMITS, loopKey, MAX_HITS_PER_MSG, prepareEcho, RateWindow, REVIVE_R, sanitizeAspect, sanitizeName,
+  INTERLUDE_MS, LIMITS, loopKey, MAX_HITS_PER_MSG, prepareEcho, AspectRate, REVIVE_R, sanitizeAspect, sanitizeName,
   sanitizeSigil, segDist, SPARK_MS, titanSeed, titanT, topHunters, validKey,
 } from "./logic.ts";
 import type { FeedItem, HitWhy, HunterRow, RosterRow, RunMsg, SparkRow, TitanEnd, TitanInfo, ToClient, ToServer } from "./shared/types.ts";
@@ -78,7 +78,7 @@ export default class World extends Actor<ToServer, ToClient> {
   private credits = new Map<string, Credit>();
   private feed: FeedItem[] = [];
   private hunters = new Map<string, Hunter>();
-  private rates = new Map<string, RateWindow>();
+  private rates = new Map<string, AspectRate>();
   private sparks = new Map<string, { x: number; y: number; until: number }>();
   private hunterCache = new Map<string, { id: string; damageTotal: number; runs: number; bestRun: number; titansFelled: number }>();
   private nextNum = 1;
@@ -277,7 +277,8 @@ export default class World extends Actor<ToServer, ToClient> {
     const wasAlive = h.alive;
     h.x = p[0];
     h.y = p[1];
-    h.alive = m.alive !== false;
+    // a sample queued before the down can arrive after it; only a revive or a new run brings you back
+    h.alive = m.alive !== false && !(this.sparks.has(id) && now - h.downAt < 1000);
     h.flags = (Number.isInteger(m.flags) ? m.flags & 0x7f : 0) | (h.alive ? 0 : F_DOWN);
     const qx = Math.round(h.x * Q), qy = Math.round(h.y * Q);
     if (qx !== h.qx || qy !== h.qy || !h.posAt) h.movedAt = now;
@@ -336,7 +337,8 @@ export default class World extends Actor<ToServer, ToClient> {
     }
     const key = h.key!;
     if (this.rates.size > 4000) this.rates.clear();
-    const rate = this.rates.get(key) ?? new RateWindow();
+    let rate = this.rates.get(key);
+    if (!rate || rate.aspect !== h.aspect) rate = new AspectRate(h.aspect);
     this.rates.set(key, rate);
     const stage = this.stage();
     const ctx = { spec: this.spec, stage, nowMs: now, wokeAt: this.titan.wokeAt };

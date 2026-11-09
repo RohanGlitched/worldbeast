@@ -1,7 +1,7 @@
 // Pure rules of the world actor: no runtime imports, so vitest can check them directly.
 import { hash32 } from "./core/rng.ts";
 import { ARENA, coreOpen, LOOP_BEATS, PHRASE_BEATS, Stage, stageFor, TitanSpec } from "./core/titan.ts";
-import { ASPECTS, maxDps } from "./core/hunt.ts";
+import { ASPECTS, maxDps, sustainedBudget, type AspectId } from "./core/hunt.ts";
 import { decodePath, encodePath, PATH_HZ } from "./shared/pathcodec.ts";
 import type { HitRow, HitWhy } from "./shared/types.ts";
 import { Q } from "./shared/types.ts";
@@ -114,6 +114,27 @@ export class RateWindow {
   }
   get used() {
     return this.sum;
+  }
+}
+
+/** Two windows per hunter, sized for the light they carry: a 2 s burst cap and a 12 s sustained cap. */
+export class AspectRate {
+  private burst: RateWindow;
+  private long: RateWindow;
+  constructor(readonly aspect: string) {
+    const a = (aspect in ASPECTS ? aspect : "ember") as AspectId;
+    this.burst = new RateWindow(maxDps(a) * RATE_MUL * (RATE_WINDOW_MS / 1000), RATE_WINDOW_MS);
+    this.long = new RateWindow(sustainedBudget(a, 12) * RATE_MUL, 12_000);
+  }
+  take(nowMs: number, dmg: number): boolean {
+    // check both before committing to either
+    const b = this.burst as unknown as { q: Array<[number, number]>; sum: number; budget: number; windowMs: number };
+    const l = this.long as unknown as { q: Array<[number, number]>; sum: number; budget: number; windowMs: number };
+    for (const w of [b, l]) while (w.q.length && w.q[0][0] <= nowMs - w.windowMs) w.sum -= w.q.shift()![1];
+    if (b.sum + dmg > b.budget || l.sum + dmg > l.budget) return false;
+    this.burst.take(nowMs, dmg);
+    this.long.take(nowMs, dmg);
+    return true;
   }
 }
 

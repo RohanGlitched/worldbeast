@@ -5,6 +5,8 @@ import { ASPECTS } from "@/core/hunt";
 import { Sigil, SIGIL_NAMES } from "./sigils";
 import { loadProfile, saveProfile, cleanName } from "./profile";
 import { createLocalWorld } from "./localWorld";
+import { createLiveWorld } from "./liveWorld";
+import { AudioEngine } from "@/game/audio/AudioEngine";
 import Canticle from "./Canticle";
 import Bookmarks from "./Bookmarks";
 import { shareRun } from "./share";
@@ -52,11 +54,42 @@ export default function Hunt() {
   const [tip, setTip] = useState(null);
   const tipsSeen = useRef(new Set(profile.tips || []));
 
+  const audioRef = useRef(null);
+  const runTimer = useRef(null);
+  const [felled, setFelled] = useState(null);
+  const [revived, setRevived] = useState(null);
+
   useEffect(() => {
     const g = new Game(canvasRef.current);
     gameRef.current = g;
     window.__game = g;
-    const w = createLocalWorld(g);
+    let audio = null;
+    try {
+      audio = new AudioEngine({ lite: (navigator.hardwareConcurrency || 8) <= 4 });
+    } catch {
+      audio = null;
+    }
+    audioRef.current = audio;
+    window.__audio = audio;
+    g.events.onTitan = (spec, field) => audio?.setTitan(spec, field);
+    g.events.onFrame = (t, stage, hp, playing, danger) => audio?.update(t, stage, hp, { playing, nearDanger: danger });
+    g.events.onSfx = (n, x, str) => audio?.sfx(n, x, str);
+    // a dev/test titan can be pinned with ?seed=; otherwise the live Base44 world decides
+    const q = new URLSearchParams(location.search);
+    const w = q.has("seed")
+      ? createLocalWorld(g)
+      : createLiveWorld(g, audio, {
+          onFelled: (end) => {
+            setFelled(end);
+            setTimeout(() => setFelled(null), 9000);
+          },
+          onRevived: (by) => {
+            clearTimeout(runTimer.current);
+            setSummary(null);
+            setRevived(by || "a hunter");
+            setTimeout(() => setRevived(null), 3000);
+          },
+        });
     worldRef.current = w;
     w.onChange = (s) => setWorld({ ...s });
     g.events.onLayout = setLayout;
@@ -64,9 +97,13 @@ export default function Hunt() {
       setHud(h);
       setPhase(h.phase);
     };
-    g.events.onHits = (dmg, core, beat) => w.addHit(core, dmg, beat);
+    g.events.onHits = (dmg, core, beat, surge) => w.addHit(core, dmg, beat, surge);
     g.events.onDown = (s) => {
-      w.sendRun(s);
+      const h = g.hunt;
+      if (!s.felled && h && w.down) w.down(h.x, h.y);
+      // a passing hunter may still rekindle this light: report the run once the spark has gone out
+      clearTimeout(runTimer.current);
+      runTimer.current = setTimeout(() => w.sendRun(s), s.felled ? 0 : 8600);
       setProfile((p) => {
         const freshSeals = judgeSeals(p, s);
         setSummary({ ...s, worldShare: w.shareOf(s.damage), freshSeals });
@@ -86,18 +123,32 @@ export default function Hunt() {
     w.start();
     g.run();
     setLayout(g.layout());
+    // any first gesture wakes the sound
+    const unlock = () => audio?.unlock().catch(() => {});
+    window.addEventListener("pointerdown", unlock, { once: true });
+    window.addEventListener("keydown", unlock, { once: true });
     return () => {
+      clearTimeout(runTimer.current);
       w.stop();
       g.stop();
+      audio?.dispose();
     };
   }, []);
 
   const begin = useCallback(() => {
     const g = gameRef.current;
+    if (g.falling || (world && world.interlude > 0)) return;
+    audioRef.current?.unlock().catch(() => {});
+    // the previous run's report goes now if its spark was still waiting
+    if (runTimer.current) {
+      clearTimeout(runTimer.current);
+      runTimer.current = null;
+    }
+    worldRef.current?.identify?.(profile);
     setSummary(null);
     g.start(profile.aspect);
     canvasRef.current?.focus();
-  }, [profile.aspect]);
+  }, [profile, world]);
 
   // keyboard: Enter starts / restarts
   useEffect(() => {
@@ -139,7 +190,7 @@ export default function Hunt() {
 
   const spec = world?.spec;
   const hpFrac = world ? Math.max(0, world.hp / world.hpMax) : 1;
-  const stage = stageFor(hpFrac);
+  const stage = gameRef.current?.stage ?? stageFor(hpFrac);
   const u = layout ? layout.pxPerUnit : 26;
   const styleU = { "--u": u + "px" };
 
@@ -241,9 +292,9 @@ export default function Hunt() {
         ))}
       </div>
       <div className="aspect-line">{ASPECTS[profile.aspect].line}</div>
-      <button className="join" onClick={begin}>
-        Join the hunt
-        <small>{world?.online > 1 ? `${world.online - 1} others are fighting it now` : "Your echo will fly with the hunters after you"}</small>
+      <button className="join" onClick={begin} disabled={!!world?.interlude}>
+        {world?.interlude ? `The next titan stirs… ${world.interlude}` : "Join the hunt"}
+        <small>{world?.mode === "offline" ? "The world is out of reach: you hunt this titan alone for now" : world?.online > 1 ? `${world.online - 1} others are watching or fighting it now` : "Your echo will fly with the hunters after you"}</small>
       </button>
     </section>
   );
@@ -346,6 +397,7 @@ export default function Hunt() {
           <div className="rubric">
             against {spec?.name}, after {summary.time.toFixed(1)} s
           </div>
+          {!summary.felled && world && !world.local && world.online > 1 && <div className="rubric">Your spark lingers for 8 s: a hunter who flies through it rekindles you.</div>}
           <div className="big">{fmt(summary.damage)}</div>
           <div style={{ fontStyle: "italic", color: "var(--ink-2)" }}>blows struck{summary.worldShare ? ` · ${summary.worldShare} of the world's today` : ""}</div>
           <dl className="facts" style={{ marginTop: "0.7em" }}>
@@ -401,6 +453,35 @@ export default function Hunt() {
 
       {tip && arena && phase === "playing" && (
         <div className="margin-note" style={{ left: arena.x + arena.w * 0.1, width: arena.w * 0.8, top: arena.y + arena.h * 0.36 }} key={tip.id} dangerouslySetInnerHTML={{ __html: tip.html }} />
+      )}
+
+      {felled && arena && (
+        <div className="felled-stamp" style={{ left: arena.x, top: arena.y + arena.h * 0.12, width: arena.w }} role="status">
+          <div className="felled-word">Felled</div>
+          <div className="felled-line">
+            {felled.blow ? (
+              <>
+                The final blow: <Sigil id={felled.blow.sigil} size={u * 0.6} /> <b>{felled.blow.name}</b>
+              </>
+            ) : (
+              "The world brought it down together."
+            )}
+          </div>
+          {felled.top?.length > 0 && (
+            <ol className="felled-top">
+              {felled.top.slice(0, 3).map((t, i) => (
+                <li key={i}>
+                  <Sigil id={t.sigil} size={u * 0.5} /> {t.name} <span>{fmt(t.damage)}</span>
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+      )}
+      {revived && arena && (
+        <div className="margin-note" style={{ left: arena.x + arena.w * 0.1, width: arena.w * 0.8, top: arena.y + arena.h * 0.4 }}>
+          <b>{revived}</b> flew through your spark. You rise again.
+        </div>
       )}
 
       {floats.map((f) => (

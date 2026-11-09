@@ -111,13 +111,16 @@ export class Synth {
   // ---------------------------------------------------------------------------- voice plumbing
 
   /** Can a note in `group` start at `when`? Steals the oldest voice for important notes. */
+  /** polyphony scale (lite mode lowers it) */
+  capScale = 1;
+
   private admit(group: Group, when: number, prio: number): boolean {
     let list = this.groups.get(group);
     if (!list) this.groups.set(group, (list = []));
     let w = 0;
     for (let i = 0; i < list.length; i++) if (list[i].end > when) list[w++] = list[i];
     list.length = w;
-    if (list.length >= CAPS[group]) {
+    if (list.length >= Math.max(2, Math.round(CAPS[group] * this.capScale))) {
       if (prio < 1) {
         this.stats.dropped++;
         return false;
@@ -243,13 +246,16 @@ export class Synth {
     src.start(when);
     this.cur.srcs.push(src);
     const env = this.gain(vel);
-    let end = when + b.duration / rate;
-    if (o.decay !== undefined && o.natural !== undefined && o.decay < o.natural * 0.95) {
-      const tau = 1 / (6.9 / o.decay - 6.9 / o.natural);
+    const natural = o.natural ?? b.duration / rate;
+    let eff = natural;
+    if (o.decay !== undefined && o.decay < natural * 0.95) {
+      const tau = 1 / (6.9 / o.decay - 6.9 / natural);
       env.gain.setValueAtTime(vel, when);
       env.gain.setTargetAtTime(0, when + 0.004, tau);
-      end = Math.min(end, when + o.decay * 1.05);
+      eff = o.decay;
     }
+    // stop at about -48 dB: the rest is inaudible under the cathedral and costs CPU
+    const end = when + Math.min(b.duration / rate, eff * 0.8);
     src.connect(env).connect(this.out(dest, o));
     this.stats.sampled++;
     this.commit(o.group, when, end, env, prio);

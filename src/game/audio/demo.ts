@@ -228,7 +228,7 @@ function drawTimeline(t: number) {
 }
 
 // --- offline rendering, also used by the automated tests
-async function renderExcerpt(seed: number, st: Stage, phrase: number, seconds: number, sfx?: Array<{ at: number; name: string; x?: number; strength?: number }>, diag: { solo?: string[]; dry?: boolean; quiet?: boolean; playing?: boolean; strip?: Array<"drone" | "notes" | "verb"> } = {}) {
+async function renderExcerpt(seed: number, st: Stage, phrase: number, seconds: number, sfx?: Array<{ at: number; name: string; x?: number; strength?: number }>, diag: { solo?: string[]; dry?: boolean; quiet?: boolean; lite?: boolean; playing?: boolean; strip?: Array<"drone" | "notes" | "verb"> } = {}) {
   const s = makeTitan(seed, 1);
   const f = new Field(s);
   return AudioEngine.renderExcerpt(s, f, { t0: phrase * PHRASE_BEATS * s.beat, seconds, stage: st, sfx, ...diag });
@@ -265,7 +265,7 @@ function encodeWav(buf: AudioBuffer): ArrayBuffer {
 }
 
 /** Float32 stereo of a render, base64 encoded (little endian, L then R planes). For tests. */
-async function renderFloat(seed: number, st: Stage, phrase: number, seconds: number, sfx?: Array<{ at: number; name: string; x?: number; strength?: number }>, diag: { solo?: string[]; dry?: boolean; quiet?: boolean; playing?: boolean; strip?: Array<"drone" | "notes" | "verb"> } = {}) {
+async function renderFloat(seed: number, st: Stage, phrase: number, seconds: number, sfx?: Array<{ at: number; name: string; x?: number; strength?: number }>, diag: { solo?: string[]; dry?: boolean; quiet?: boolean; lite?: boolean; playing?: boolean; strip?: Array<"drone" | "notes" | "verb"> } = {}) {
   const buf = await renderExcerpt(seed, st, phrase, seconds, sfx, diag);
   const L = buf.getChannelData(0);
   const R = buf.getChannelData(1);

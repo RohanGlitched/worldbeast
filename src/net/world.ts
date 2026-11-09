@@ -101,6 +101,8 @@ const INTERLUDE_MS = 20_000;
 const SILENT_MS = 8_000;
 const PING_EVERY_MS = 2_000;
 const KEY_STORE = "worldbeast.hunterKey";
+const SLOW_RTT_MS = 160;
+const MAX_PROBES = 2;
 
 export class World {
   mode: WorldMode = "connecting";
@@ -136,6 +138,8 @@ export class World {
   private openedAt = 0;
   private smoothOffset = NaN;
   private pings: Array<{ off: number; rtt: number }> = [];
+  private hadClock = false;
+  private probes = 0;
   private lastPingAt = 0;
   private identity: { key: string; name: string; sigil: number; aspect: string } | null = null;
   private pos: { x: number; y: number; alive: boolean; flags: number; at: number } | null = null;
@@ -213,8 +217,9 @@ export class World {
 
   private housekeep() {
     const now = performance.now();
-    // smooth the clock so titanTime() never jumps on a new ping sample
-    if (Number.isNaN(this.smoothOffset) || Math.abs(this.clockOffset - this.smoothOffset) > 250) this.smoothOffset = this.clockOffset;
+    // while playing, slew the clock so titanTime() never jumps on a new ping sample; otherwise snap
+    const playing = now - (this.pos?.at ?? -1e9) < 2000;
+    if (!playing || Number.isNaN(this.smoothOffset) || Math.abs(this.clockOffset - this.smoothOffset) > 250) this.smoothOffset = this.clockOffset;
     else this.smoothOffset += Math.max(-4, Math.min(4, this.clockOffset - this.smoothOffset));
     if (this.mode === "online" && now - this.lastPingAt > PING_EVERY_MS) this.ping();
     const silentSince = Math.max(this.lastMsgAt, this.openedAt);
@@ -387,7 +392,8 @@ export class World {
     this.backoff = 1000;
     const wasLocal = !!this.local;
     this.local = null;
-    if (!this.pings.length) this.clockOffset = m.n - performance.now(); // refined by pings below
+    if (!this.hadClock) this.clockOffset = m.n - performance.now(); // refined by pings below
+    this.pings = []; // samples belong to one socket's route
     this.you = m.you;
     this.online = m.online;
     this.feed = m.feed.slice();
@@ -407,7 +413,7 @@ export class World {
     }
     this.setMode("online");
     if (this.identity) this.conn?.send({ t: "hello", ...this.identity });
-    for (let i = 0; i < 5; i++) setTimeout(() => this.ping(), i * 150);
+    for (let i = 0; i < 8; i++) setTimeout(() => this.ping(), i * 150);
     this.events.onWelcome?.(this);
     this.events.onHunters?.(this.hunters);
   }
@@ -555,6 +561,8 @@ export class World {
   }
 
   sendDown(x: number, y: number) {
+    // a queued alive=true sample sent after this would read as "back up" and clear the spark
+    if (this.pos) this.pos.alive = false;
     this.send({ t: "down", x, y });
   }
 

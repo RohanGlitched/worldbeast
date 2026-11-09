@@ -72,7 +72,7 @@ async function openClient(browser, label, sigil, session = SESSION) {
         }
         f.x = x;
         f.y = y;
-        if (label) w.sendPos(x, y, f.alive, 0);
+        if (label && f.on) w.sendPos(x, y, f.alive, 0);
       }, 50);
     },
     { appId, session, label, sigil },
@@ -158,6 +158,11 @@ try {
   const online = await Promise.all([A, B].map((c) => waitFor(c, () => window.__w.mode === "online", 15000)));
   check("both clients connect anonymously and get a welcome", online.every(Boolean), online.join(","));
   if (!online.every(Boolean)) throw new Error("not online");
+  const settled = await Promise.all([A, B].map((c) => waitFor(c, () => window.__w.clockSettled, 20000)));
+  const probes = await Promise.all([A, B].map((c) => ev(c, () => window.__w.probes)));
+  console.log(`clock settled ${settled.join(",")}; route probes A ${probes[0]} B ${probes[1]}`);
+  await Promise.all([A, B].map((c) => ev(c, () => (window.__fly.on = true))));
+  await sleep(1500); // let the roster catch up after any re-route
   const titan = await ev(A, () => ({ ...window.__w.titan, name: window.__w.spec.name, hp: window.__w.hp }));
   console.log(`titan #${titan.number} ${titan.name} seed ${titan.seed} hp ${titan.hp}/${titan.hpMax} t=${(await ev(A, () => window.__w.titanTime())).toFixed(1)}s`);
 
@@ -244,11 +249,14 @@ try {
     const time = Math.min(24, now - startT - 0.5);
     const path = [];
     for (let i = 0; i < Math.floor(time * 10); i++) path.push(Math.round((-3 + Math.cos(i / 10) * 1.5) * 20), Math.round((6 + Math.sin(i / 10) * 1.5) * 20));
-    return w.sendRun({ damage: 1e6, time, grazes: 12, bestCombo: 9, surges: 0, aspect: "ember", startT, stage: w.stage, path });
+    const r = await w.sendRun({ damage: 1e6, time, grazes: 12, bestCombo: 9, surges: 0, aspect: "ember", startT, stage: w.stage, path });
+    // the world cuts an echo where the titan changed stage; under 8 s left means no echo
+    const change = w.stageAt.find((t) => t > startT);
+    return r && { ...r, echoExpected: change === undefined || change - startT >= 8 };
   });
   const landedA = await ev(A, () => window.__acks.reduce((s, a) => s + a.ok, 0));
   check("a run claiming 1,000,000 is clamped to what landed", run && run.clamped && run.damage <= landedA + 60, JSON.stringify(run) + ` landed ${landedA}`);
-  check("the run's path is stored as an echo", run && run.echo === true);
+  check("the run's path is stored as an echo (unless a stage change cut it under 8 s)", run && run.echo === run.echoExpected, `echo ${run?.echo}, expected ${run?.echoExpected}`);
   const echoRows = await ev(A, async () => {
     const w = window.__w;
     let rows = [];
@@ -259,6 +267,32 @@ try {
     return rows.map((r) => ({ phrase: r.phrase, loopBeat: r.loopBeat, stage: r.stage, duration: r.duration, len: r.path.length, name: r.name }));
   });
   check("the echo is readable anonymously from the Echo entity", echoRows.length > 0, JSON.stringify(echoRows[0] ?? null));
+
+  // ---- optional: fell the test titan (flooding at the rate cap), then watch the next one wake
+  if (process.argv.includes("--fell")) {
+    for (const c of [A, B])
+      await ev(c, () => {
+        window.__felled = [];
+        window.__wakes = [];
+        window.__w.events.onFelled = (end, next) => window.__felled.push({ end, next, at: window.__w.serverNow() });
+        window.__w.events.onWake = (t) => window.__wakes.push(t.number);
+      });
+    const t0 = Date.now();
+    while (Date.now() - t0 < 300000 && !(await ev(A, () => window.__felled.length))) {
+      await rawHit(A, "flood");
+      await sleep(2050);
+    }
+    const [fa, fb] = [await ev(A, () => window.__felled[0]), await ev(B, () => window.__felled[0])];
+    check("both clients see the titan felled, with A's final blow", fa && fb && fa.end.blow?.name === "netcheck A" && fb.end.number === fa.end.number, fa ? `#${fa.end.number} blow ${fa.end.blow?.name}, top ${JSON.stringify(fa.end.top)}` : "no felled");
+    if (fa) {
+      check("the next titan is announced to stir 20 s later", fa.next.number === fa.end.number + 1 && Math.abs(fa.next.wokeAt - fa.end.endedAt - 20000) < 50, `#${fa.next.number} seed ${fa.next.seed} hpMax ${fa.next.hpMax}`);
+      const asleep = await rawHit(A, "flood");
+      check("hits during the interlude are refused", asleep && asleep.ok === 0 && asleep.why === "asleep", JSON.stringify(asleep));
+      const woke = await waitFor(B, (n) => window.__wakes.includes(n), 30000, fa.next.number);
+      const hps = [await ev(A, () => window.__w.hp), await ev(B, () => window.__w.hp)];
+      check("the next titan wakes for both at full health", woke && hps[0] === fa.next.hpMax && hps[1] === fa.next.hpMax, hps.join("/"));
+    }
+  }
 
   // ---- leave
   await B.ctx.close();

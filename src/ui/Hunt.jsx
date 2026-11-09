@@ -11,6 +11,7 @@ import Canticle from "./Canticle";
 import Bookmarks from "./Bookmarks";
 import { shareRun } from "./share";
 import Cover from "./Cover";
+import { Floats, Labels } from "./Overlays";
 import { Seal, SEALS, judgeSeals } from "./seals";
 
 const ORD = (n) => {
@@ -57,7 +58,8 @@ export default function Hunt() {
   const [phase, setPhase] = useState("lobby");
   const [summary, setSummary] = useState(null);
   const [world, setWorld] = useState(null);
-  const [floats, setFloats] = useState([]);
+  const pushFloat = useRef(() => {});
+  const bindFloats = useCallback((fn) => (pushFloat.current = fn), []);
   const [pickSigil, setPickSigil] = useState(false);
   const [shareMsg, setShareMsg] = useState(null);
   const [closed, setClosed] = useState(() => {
@@ -86,7 +88,6 @@ export default function Hunt() {
   };
   const [felled, setFelled] = useState(null);
   const [revived, setRevived] = useState(null);
-  const [labels, setLabels] = useState([]);
 
   useEffect(() => {
     const g = new Game(canvasRef.current);
@@ -150,31 +151,13 @@ export default function Hunt() {
     };
     g.events.onFloat = (text, x, y, kind) => {
       const p = g.screenOf(x, y);
-      const id = ++floatId.current;
-      setFloats((f) => [...f.slice(-24), { id, text, x: p.x, y: p.y, kind }]);
-      setTimeout(() => setFloats((f) => f.filter((q) => q.id !== id)), 950);
+      pushFloat.current(text, p.x, p.y, kind);
     };
     document.title = "WORLDBEAST · one titan, everyone, right now";
     g.holdReveal = closedRef.current;
     w.start();
     g.run();
     setLayout(g.layout());
-    // names beside other hunters and echoes, so the shared world is visible on the page itself
-    const labelTick = setInterval(() => {
-      const lw = w.world;
-      if (!lw || !g.spec) return setLabels((l) => (l.length ? [] : l));
-      const out = [];
-      for (const h of lw.remoteHunters()) {
-        if (h.flags & 128) continue;
-        const p = g.screenOf(h.x, h.y);
-        out.push({ k: "h" + h.id, x: p.x, y: p.y, text: h.name, sigil: h.sigil, kind: "live" });
-      }
-      for (const e of lw.echoesAt()) {
-        const p = g.screenOf(e.x, e.y);
-        out.push({ k: "e" + e.id, x: p.x, y: p.y, text: "echo · " + e.name, sigil: e.sigil, kind: "echo" });
-      }
-      setLabels(out.slice(0, 24));
-    }, 100);
     const onHide = () => {
       if (document.visibilityState !== "hidden") return;
       const cur = g.currentSummary();
@@ -188,7 +171,6 @@ export default function Hunt() {
     window.addEventListener("keydown", unlock, { once: true });
     return () => {
       document.removeEventListener("visibilitychange", onHide);
-      clearInterval(labelTick);
       clearTimeout(runTimer.current);
       w.stop();
       g.stop();
@@ -583,17 +565,8 @@ export default function Hunt() {
         </div>
       )}
 
-      {!summary && labels.map((l) => (
-        <div key={l.k} className={"hunter-label " + l.kind} style={{ left: l.x, top: l.y }}>
-          <Sigil id={l.sigil} size={u * 0.38} /> {l.text}
-        </div>
-      ))}
-
-      {floats.map((f) => (
-        <div key={f.id} className={"float " + f.kind + "-f"} style={{ left: f.x, top: f.y }}>
-          {f.text}
-        </div>
-      ))}
+      <Labels game={gameRef.current} world={worldRef.current} u={u} hidden={!!summary} />
+      <Floats bind={bindFloats} />
     </div>
   );
 }

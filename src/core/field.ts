@@ -94,7 +94,8 @@ function planVolley(spec: TitanSpec, r: Rng, kind: Kind, beat: number, idx: numb
       const from = DOWN + side * r.range(0.45, 0.8);
       const to = DOWN - side * r.range(0.25, 0.7);
       v.p = { ox: o.x, oy: o.y, a1: from, a2: to, len: ARENA.H * 1.45, width: r.range(0.4, 0.58), dur: r.pick([6, 8, 8]) };
-      v.tele = 2;
+      // Calm and Wrath give a beam a full extra beat of warning (beams made the R3 kill chains)
+      v.tele = hard < 2 ? 3 : 2;
       v.heavy = true;
       break;
     }
@@ -163,6 +164,18 @@ export function planPhrase(spec: TitanSpec, phrase: number, stage: Stage): Phras
       volleys.push(v);
     }
     if (heavyCooldown > 0) heavyCooldown--;
+  }
+  // Hems: short rains down both side rails, so the margins are never a refuge (R3: the edge columns
+  // were half as dangerous as the centre for every titan). Drawn from their own stream, so the rest
+  // of the plan is unchanged.
+  const hr = rngFor("hem", spec.seed, phrase, stage);
+  const hems = overture ? 1 : [2, 2, 3][stage];
+  const used = new Set<number>();
+  for (let k = 0; k < hems; k++) {
+    let bar = hr.int(overture ? 4 : 1, 14);
+    while (used.has(bar)) bar = (bar % 14) + 1;
+    used.add(bar);
+    volleys.push({ id: phrase * 1000 + idx++, kind: "rain", beat: bar * 4 + 2, tele: 2, ink: 1, heavy: false, p: { cols: 2, seed: hr.int(0, 1e6), speed: 5.6 + stage * 0.5, drops: 3 + (stage > 0 ? 1 : 0), every: 0.5, rad: 0.28, hem: 1 } });
   }
   // Ruin: the titan's signature, twice per phrase
   if (stage === 2) {
@@ -269,6 +282,25 @@ export class Field {
       }
     }
   }
+
+  /** Seconds until every beam sweeping at `t` has finished its sweep (0 if none is live). */
+  beamLeft(t: number, stage: Stage): number {
+    const beatLen = this.spec.beat;
+    const beatNow = t / beatLen;
+    const phraseAbs = Math.floor(beatNow / PHRASE_BEATS);
+    let left = 0;
+    for (let back = 1; back >= 0; back--) {
+      const pa = phraseAbs - back;
+      if (pa < 0) continue;
+      const pl = this.plan(((pa % LOOP_PHRASES) + LOOP_PHRASES) % LOOP_PHRASES, stage);
+      for (const v of pl.volleys) {
+        if (v.kind !== "beam") continue;
+        const age = beatNow - (pa * PHRASE_BEATS + v.beat);
+        if (age >= 0 && age < v.p.dur) left = Math.max(left, (v.p.dur - age) * beatLen);
+      }
+    }
+    return left;
+  }
 }
 
 let curKind = 0;
@@ -350,6 +382,34 @@ function pushRing(f: FieldFrame, cx: number, cy: number, R: number, w: number, g
   f.ringCount++;
 }
 
+/**
+ * Ink codes for guides that are never hazards (touch() skips any zone with ink >= COLUMN):
+ * zones: ink + COLUMN = a rain column guide, ink + LANE = a wall's safe lane (cy = top of the lane);
+ * marks: ink + RAIL = a rider on a falling wall (its gap posts and the side rails at its height).
+ */
+export const TREAD = 4; // zones: ink + TREAD = a slam's footfall (a hazard, reported as "slam")
+export const COLUMN = 10;
+export const LANE = 20;
+export const RAIL = 20;
+
+/** Rain columns. One always hugs a side rail (both, for a third of rains), so the margins are never a refuge. */
+export function rainColumns(p: Record<string, number>): number[] {
+  const rail = ARENA.W / 2 - 0.45;
+  if (p.hem) return [-rail, rail]; // a hem: both side rails at once
+  const r = rngFor("rain", p.seed);
+  const cols: number[] = [];
+  for (let c = 0; c < p.cols; c++) cols.push(r.range(-ARENA.W / 2 + 0.6, ARENA.W / 2 - 0.6));
+  const side = p.seed % 2 ? 1 : -1;
+  cols[0] = side * rail;
+  if (p.seed % 3 === 2 && cols.length > 1) cols[1] = -side * rail;
+  return cols;
+}
+
+/** A slam's tread: where the titan's foot comes down at the top of the page (top corners, under its body). */
+export function slamTread(p: Record<string, number>) {
+  return { x: (p.cx >= 0 ? 1 : -1) * (ARENA.W / 2 - 1.5), y: ARENA.H - 0.5, R: 2.4 };
+}
+
 /** id space: (phraseAbs, volley index within loop, bullet index) folded into 32 bits */
 const bid = (pa: number, vid: number, i: number) => (((pa & 0x3ff) << 22) | ((vid % 1000 & 0x3ff) << 12) | (i & 0xfff)) >>> 0;
 
@@ -423,29 +483,41 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
         const gx = p.gapX + (row ? p.shift : 0);
         if (te < 0) {
           if (row === 0 || age >= 0) {
-            // telegraph: gap posts at the top edge
-            pushMark(f, gx - p.gapW / 2, ARENA.TOP - 0.3, Math.max(0, tele), v.ink);
-            pushMark(f, gx + p.gapW / 2, ARENA.TOP - 0.3, Math.max(0, tele), v.ink);
+            // telegraph: gap posts at the top edge, and the safe lane lit down the whole page
+            // (brightening through the last beat before the wall drops)
+            const pr = row === 0 ? Math.max(0, tele) : Math.max(0, 1 + te / (beatLen * 2));
+            pushMark(f, gx - p.gapW / 2, ARENA.TOP - 0.3, pr, v.ink);
+            pushMark(f, gx + p.gapW / 2, ARENA.TOP - 0.3, pr, v.ink);
+            pushZone(f, gx, ARENA.TOP, p.gapW / 2, pr * 0.999, v.ink + LANE);
           }
           continue;
         }
         const y = ARENA.TOP + 0.5 - p.speed * te;
+        if (y < -1) continue;
         let i = 0;
         for (let x = -W / 2; x <= W / 2; x += p.spacing, i++) {
           if (Math.abs(x - gx) < p.gapW / 2) continue;
           pushBullet(f, x, y, p.rad, v.ink, 1, bid(pa, vid, row * 128 + i), 0, -p.speed);
         }
+        // while it falls: the gap's posts ride with the wall, the side rails mark its height,
+        // and the lane below it stays lit so a hunter at the bottom sees where to stand
+        pushMark(f, gx - p.gapW / 2, y, 1, v.ink + RAIL);
+        pushMark(f, gx + p.gapW / 2, y, 1, v.ink + RAIL);
+        pushMark(f, -W / 2 - 0.35, y, 1, v.ink + RAIL);
+        pushMark(f, W / 2 + 0.35, y, 1, v.ink + RAIL);
+        pushZone(f, gx, y, p.gapW / 2, 1 + Math.min(0.999, Math.max(0, (ARENA.TOP - y) / ARENA.TOP)), v.ink + LANE);
       }
       return;
     }
     case "rain": {
-      const r = rngFor("rain", p.seed);
-      const cols: number[] = [];
-      for (let c = 0; c < p.cols; c++) cols.push(r.range(-ARENA.W / 2 + 0.6, ARENA.W / 2 - 0.6));
+      const cols = rainColumns(p);
+      const fallBeats = (p.drops - 1) * p.every + 0.5; // the last drop leaves the top this many beats in
       if (age < 0) {
-        for (const x of cols) pushZone(f, x, ARENA.H * 0.5, 0.35, tele * 0.999, v.ink + 10); // column telegraph (ink+10 = column)
+        for (const x of cols) pushZone(f, x, ARENA.H * 0.5, 0.35, tele * 0.999, v.ink + COLUMN); // column telegraph
         return;
       }
+      // the guide stays (faintly) while its column is still raining
+      if (age < fallBeats) for (const x of cols) pushZone(f, x, ARENA.H * 0.5, 0.35, 1 + (age / fallBeats) * 0.999, v.ink + COLUMN);
       cols.forEach((x, c) => {
         for (let d = 0; d < p.drops; d++) {
           const te = tSec - (d * p.every + (c % 2) * 0.5) * beatLen;
@@ -512,7 +584,9 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
         const a1 = k ? 2 * DOWN - p.a1 : p.a1;
         const a2 = k ? 2 * DOWN - p.a2 : p.a2;
         if (age < 0) {
-          pushBeam(f, p.ox, p.oy, p.ox + Math.cos(a1) * p.len, p.oy + Math.sin(a1) * p.len, p.width, 0, v.ink);
+          // telegraph: live = 0.02..0.98 carries its progress (0 is a hound's aim line), so the
+          // guide can thicken as the strike nears; anything below 1 is never a hazard
+          pushBeam(f, p.ox, p.oy, p.ox + Math.cos(a1) * p.len, p.oy + Math.sin(a1) * p.len, p.width, 0.02 + 0.96 * tele, v.ink);
           continue;
         }
         if (tSec > durSec) continue;
@@ -524,10 +598,14 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
       return;
     }
     case "slam": {
+      const tr = slamTread(p);
       if (age < 0) {
-        pushZone(f, p.cx, p.cy, 1.1, tele * 0.999, v.ink);
+        pushZone(f, p.cx, p.cy, 1.1, tele * 0.999, v.ink + TREAD);
+        pushZone(f, tr.x, tr.y, tr.R, tele * 0.999, v.ink + TREAD);
         return;
       }
+      // the foot itself lands for most of a beat: a splash under the titan in the top corner
+      if (tSec < beatLen * 0.75) pushZone(f, tr.x, tr.y, tr.R, 1 + tSec / (beatLen * 0.75), v.ink + TREAD);
       for (let k = 0; k < p.rings; k++) {
         const te = tSec - k * beatLen * 2;
         if (te < 0) continue;
@@ -535,7 +613,7 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
         if (R > (p.reach ?? ARENA.H * 1.6)) continue; // the shockwave spends itself
         pushRing(f, p.cx, p.cy, R, p.width, p.gapA + k * 1.3, p.gapW, p.gapB + k * 0.7, 1, v.ink);
       }
-      if (tSec < beatLen) pushZone(f, p.cx, p.cy, 1.1, 1 + tSec / beatLen, v.ink);
+      if (tSec < beatLen) pushZone(f, p.cx, p.cy, 1.1, 1 + tSec / beatLen, v.ink + TREAD);
       return;
     }
     case "glyph": {
@@ -641,12 +719,12 @@ export function touch(f: FieldFrame, x: number, y: number, out: Touch): Touch {
   }
   for (let i = 0; i < f.zoneCount; i++) {
     const o = i * ZN;
-    if (f.zones[o + 3] < 1 || f.zones[o + 4] >= 10) continue;
+    if (f.zones[o + 3] < 1 || f.zones[o + 4] >= COLUMN) continue;
     const d = Math.hypot(x - f.zones[o], y - f.zones[o + 1]) - f.zones[o + 2] - PLAYER_R;
     if (d < nearest) nearest = d;
     if (d < 0) {
       out.hit = true;
-      out.hitKind = "zone";
+      out.hitKind = f.zones[o + 4] >= TREAD ? "slam" : "zone";
     }
   }
   out.nearest = nearest;

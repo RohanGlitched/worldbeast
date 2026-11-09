@@ -32,12 +32,12 @@ export interface TitanEnd extends TitanInfo {
   hunterCount: number;
 }
 
-export type FeedKind = "join" | "surge" | "break" | "down" | "revive" | "stage" | "felled" | "escaped" | "wake";
+export type FeedKind = "join" | "surge" | "break" | "down" | "revive" | "stage" | "felled" | "escaped" | "wake" | "run";
 export interface FeedItem {
   k: FeedKind;
   name: string;
   sigil: number;
-  v?: number; // core id (break), stage (stage), damage (felled), titan number (wake)
+  v?: number; // core id (break), stage (stage), damage (felled), titan number (wake), recorded blows (run)
   n: number; // server ms
 }
 

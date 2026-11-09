@@ -44,7 +44,7 @@ describe("world actor (in-process)", () => {
     w = new (World as any)();
     await w.handleStart();
     await settle(w);
-    expect(w.titan).toMatchObject({ number: 1, hp: 40_000, hpMax: 40_000, status: "awake", wokeAt: T0 });
+    expect(w.titan).toMatchObject({ number: 1, hp: 10_000, hpMax: 10_000, status: "awake", wokeAt: T0 });
     spec = makeTitan(w.titan.seed, 1);
     expect(w.mockDb.Titan.rows).toHaveLength(1);
     expect(w.mockDb.Titan.rows[0]).toMatchObject({ number: 1, seed: w.titan.seed, status: "awake" });
@@ -55,7 +55,7 @@ describe("world actor (in-process)", () => {
   it("welcomes, relays hunters and keeps one hp for everyone", async () => {
     A = await connect(w, "a");
     B = await connect(w, "b");
-    expect(A.last("welcome")).toMatchObject({ titan: { number: 1 }, hp: 40_000, stage: 0 });
+    expect(A.last("welcome")).toMatchObject({ titan: { number: 1 }, hp: 10_000, stage: 0 });
     await send(w, A, { t: "hello", key: key("a"), name: "Ana http://spam.com", sigil: 3, aspect: "lance" });
     await send(w, B, { t: "hello", key: key("b"), name: "Bo", sigil: 9, aspect: "ember" });
     expect(B.inbox.find((m) => m.t === "join" && m.r[0] === 1).r.slice(1)).toEqual([expect.not.stringMatching(/spam|http/), 3, "lance"]);
@@ -67,11 +67,11 @@ describe("world actor (in-process)", () => {
     expect(A.last("s").h).toEqual(expect.arrayContaining([[1, 20, 80, 3, 1], [2, -40, 120, 9, 0]]));
 
     await send(w, A, { t: "hit", hits: [[core, 50, beat], [core, 60, beat - 0.2, 1]] });
-    expect(A.last("ack")).toMatchObject({ ok: 110, bad: 0, hp: 39_890 });
+    expect(A.last("ack")).toMatchObject({ ok: 110, bad: 0, hp: 9_890 });
     await send(w, A, { t: "hit", hits: [[core, 50, beat + 5], [core, 9999, beat], [core, 50, beat]] });
     expect(A.last("ack")).toMatchObject({ ok: 50, bad: 2 });
     await w.handleTick();
-    expect(B.last("s").hp).toBe(39_840);
+    expect(B.last("s").hp).toBe(9_840);
     expect(B.last("s").f?.some((f: any) => f.k === "surge")).toBe(true);
   });
 
@@ -112,6 +112,10 @@ describe("world actor (in-process)", () => {
     expect(w.mockDb.Hunter.rows[0]).toMatchObject({ damageTotal: 160, runs: 1, bestRun: 160 });
     expect(w.mockDb.Echo.rows).toHaveLength(1);
     expect(w.mockDb.Echo.rows[0]).toMatchObject({ titanSeed: spec.seed, stage: 0, duration: 10, damage: 160 });
+    // the run gets one chronicle line, with the blows the world recorded (not the 5,000 claimed)
+    await w.handleTick();
+    expect(w.feed.filter((f: any) => f.k === "run")).toEqual([expect.objectContaining({ k: "run", v: 160, sigil: 3 })]);
+    expect(B.inbox.some((m) => m.t === "s" && m.f?.some((f: any) => f.k === "run" && f.v === 160))).toBe(true);
     // the same run again changes nothing; a "fresh" run with no new accepted blows adds a run but no damage (no replays)
     await send(w, A, { t: "run", titan: 1, damage: 10, time: 10, grazes: 0, bestCombo: 0, surges: 0, aspect: "lance", startT, stage: 0, path });
     vi.setSystemTime(Date.now() + 6000);
@@ -125,7 +129,7 @@ describe("world actor (in-process)", () => {
   it("persists hp (throttled) and restores everything after the session idles", async () => {
     vi.setSystemTime(Date.now() + 3000);
     await w.handleTick();
-    expect(w.storage.map.get("hp")).toBe(39_840);
+    expect(w.storage.map.get("hp")).toBe(9_840);
     w.conns.splice(w.conns.indexOf(B), 1);
     await w.handleClose(B);
     w.conns.length = 0;
@@ -135,7 +139,7 @@ describe("world actor (in-process)", () => {
     w2.mockDb = w.mockDb;
     w2.client = w.client;
     await w2.handleStart();
-    expect(w2.titan).toMatchObject({ number: 1, hp: 39_840, seed: w.titan.seed, recordId: w.titan.recordId });
+    expect(w2.titan).toMatchObject({ number: 1, hp: 9_840, seed: w.titan.seed, recordId: w.titan.recordId });
     expect([...w2.credits.values()][0]).toMatchObject({ dmg: 160 });
     w = w2;
     A = await connect(w, "a");
@@ -152,7 +156,7 @@ describe("world actor (in-process)", () => {
     await send(w, B, { t: "hit", hits: [[core, 50, beat]] });
     await settle(w);
     const felled = A.last("felled");
-    expect(felled.end).toMatchObject({ number: 1, status: "felled", blow: { name: "Bo", sigil: 9 }, damageTotal: 40_000 });
+    expect(felled.end).toMatchObject({ number: 1, status: "felled", blow: { name: "Bo", sigil: 9 }, damageTotal: 10_000 });
     expect(felled.next).toMatchObject({ number: 2, wokeAt: felled.n + 20_000, status: "awake" });
     expect(B.last("ack")).toMatchObject({ ok: 30, hp: 0 });
     const t1 = w.mockDb.Titan.rows.find((r: any) => r.number === 1);
@@ -180,6 +184,38 @@ describe("world actor (in-process)", () => {
     expect(A.last("felled").end).toMatchObject({ number: 2, status: "escaped", blow: null });
     expect(w.mockDb.Titan.rows.find((r: any) => r.number === 2)).toMatchObject({ status: "escaped" });
     expect(w.titan.number).toBe(3);
+  });
+
+  it("re-sizes a titan woken under the old rule once, keeping every blow, and tells everyone", async () => {
+    // a saved world from before the rule: titan #1 at the old 40,000 floor with 2,000 blows struck
+    const old: W = new (World as any)();
+    await old.handleStart();
+    await settle(old);
+    old.storage.map.delete("hpRule");
+    old.storage.map.set("titan", { ...old.storage.map.get("titan"), hpMax: 40_000, hp: 38_000 });
+    old.storage.map.set("hp", 38_000);
+    old.mockDb.Titan.rows[0].hpMax = 40_000;
+    const w2: W = new (World as any)();
+    w2.storage = old.storage;
+    w2.mockDb = old.mockDb;
+    w2.client = old.client;
+    const C = new MockConn("c");
+    w2.conns.push(C);
+    await w2.handleStart();
+    await settle(w2);
+    expect(w2.titan).toMatchObject({ number: 1, hpMax: 10_000, hp: 8_000 });
+    expect(w2.storage.map.get("hp")).toBe(8_000);
+    expect(w2.mockDb.Titan.rows[0]).toMatchObject({ hpMax: 10_000, hp: 8_000, damageTotal: 2_000 });
+    expect(C.last("wake")).toMatchObject({ titan: { number: 1, hpMax: 10_000 }, hp: 8_000 });
+    // only once: a later restore leaves the titan's size alone even when the rule would now give a smaller one
+    const w3: W = new (World as any)();
+    w3.storage = w2.storage;
+    w3.mockDb = w2.mockDb;
+    w3.client = w2.client;
+    w3.storage.map.set("titan", { ...w3.storage.map.get("titan"), hpMax: 30_000 });
+    w3.storage.map.set("hp", 30_000);
+    await w3.handleStart();
+    expect(w3.titan).toMatchObject({ hpMax: 30_000, hp: 30_000 });
   });
 
   it("writes only echoes from test sessions", async () => {

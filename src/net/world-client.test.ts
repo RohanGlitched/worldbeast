@@ -46,7 +46,7 @@ describe("World client", () => {
     expect(w.titanSeed).toBe(hash32("local", Math.floor(Date.now() / (3 * 3600_000))));
     expect(w.titanTime()).toBeGreaterThanOrEqual(0);
     w.addHit(0, 500, 1);
-    expect(w.hp).toBe(40_000 - 500);
+    expect(w.hp).toBe(10_000 - 500);
 
     f.push(welcome(performance.now() + 5000));
     expect(w.mode).toBe("online");

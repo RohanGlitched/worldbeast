@@ -9,10 +9,21 @@ import { Q } from "./shared/types.ts";
 export const HOUR_MS = 3_600_000;
 export const ESCAPE_MS = 8 * HOUR_MS;
 export const INTERLUDE_MS = 20_000;
-export const LIFETIME_H = 2.5;
-/** ~12-20 min for one hunter alone (humans deal ~30-60 dps): a lone visitor can see a titan fall */
-export const HP_FLOOR = 40_000;
-export const HP_CAP = 60_000_000;
+/** at the recent rate of world damage, a titan should live about this long */
+export const LIFETIME_H = 2;
+/** "recent": the window the next titan's size is measured over */
+export const ACTIVITY_H = 3;
+/**
+ * A titan sized for contest-scale traffic: one hunter alone strikes ~1.5-5k blows a run, so a quiet world's
+ * titan falls to a handful of runs (minutes for one determined hunter, within a day for a few visitors).
+ */
+export const HP_FLOOR = 10_000;
+/** blows per hunter seen in the busiest recent hour: a crowd that arrives together gets a titan worth sharing */
+export const HP_PER_HUNTER = 5_000;
+/** never so large that the world at its busiest cannot fell it before it escapes */
+export const HP_CAP = 2_000_000;
+/** bump to re-size the awake titan once under a new rule (entry.ts migrateHpRule) */
+export const HP_RULE = 2;
 export const BEAT_TOL = 2;
 export const RATE_WINDOW_MS = 2_000;
 export const RATE_MUL = 1.15;
@@ -29,28 +40,57 @@ export function titanSeed(number: number, salt: string): number {
   return hash32("titan", number, salt);
 }
 
-/** [hourIndex, damage] buckets for the last 24 h */
-export type DmgBuckets = Array<[number, number]>;
+/** [hourIndex, damage, distinct hunters who struck that hour] buckets for the last 24 h (older saves lack the third) */
+export type DmgBuckets = Array<[number, number, number?]>;
 
-export function addDamage(b: DmgBuckets, nowMs: number, dmg: number): void {
+/** `hunters`: how many distinct hunters have struck in this hour so far (the caller keeps the set) */
+export function addDamage(b: DmgBuckets, nowMs: number, dmg: number, hunters = 0): void {
   const h = Math.floor(nowMs / HOUR_MS);
   const last = b[b.length - 1];
-  if (last && last[0] === h) last[1] += dmg;
-  else b.push([h, dmg]);
+  if (last && last[0] === h) {
+    last[1] += dmg;
+    last[2] = Math.max(last[2] ?? 0, hunters);
+  } else b.push([h, dmg, hunters]);
   while (b.length && b[0][0] <= h - 24) b.shift();
 }
 
-export function damagePerHour(b: DmgBuckets, nowMs: number): number {
+/** blows the world landed in the last `hours` hours, and the most hunters seen striking in any one of them */
+export function recentActivity(b: DmgBuckets, nowMs: number, hours = ACTIVITY_H): { damage: number; hunters: number } {
   const h = Math.floor(nowMs / HOUR_MS);
-  let sum = 0;
-  for (const [hi, d] of b) if (hi > h - 24) sum += d;
-  return sum / 24;
+  let damage = 0, hunters = 0;
+  for (const [hi, d, k] of b)
+    if (hi > h - hours && hi <= h) {
+      damage += d;
+      hunters = Math.max(hunters, k ?? 0);
+    }
+  return { damage, hunters };
 }
 
-/** Sized so that, at the last day's average world damage rate, the titan lives ~2.5 h. */
+export function damagePerHour(b: DmgBuckets, nowMs: number, hours = ACTIVITY_H): number {
+  return recentActivity(b, nowMs, hours).damage / hours;
+}
+
+/**
+ * The next titan's life, from the actor's own record of recent hunting: enough to last ~LIFETIME_H at the
+ * last few hours' damage rate, and HP_PER_HUNTER for every hunter in the busiest recent hour; never below
+ * HP_FLOOR (a quiet world still sees falls) or above HP_CAP. Rounded to 1,000.
+ */
 export function hpMaxFor(b: DmgBuckets, nowMs: number): number {
-  const raw = damagePerHour(b, nowMs) * LIFETIME_H;
+  const { damage, hunters } = recentActivity(b, nowMs);
+  const raw = Math.max((damage / ACTIVITY_H) * LIFETIME_H, hunters * HP_PER_HUNTER);
   return Math.round(Math.max(HP_FLOOR, Math.min(HP_CAP, raw)) / 1000) * 1000;
+}
+
+/**
+ * Re-size an awake titan to a new rule without inventing or erasing a single blow: every blow already struck
+ * still counts (hp = hpMax - dealt), and a re-size never leaves it more than 3/4 struck or makes it larger.
+ * Returns null when nothing should change.
+ */
+export function resizeTitan(t: { hpMax: number; hp: number }, target: number): { hpMax: number; hp: number } | null {
+  const dealt = Math.max(0, Math.round(t.hpMax - t.hp));
+  const hpMax = Math.max(target, Math.ceil(dealt / 0.75 / 1000) * 1000, HP_FLOOR);
+  if (hpMax >= t.hpMax) return null;
+  return { hpMax, hp: hpMax - dealt };
 }
 
 export function titanT(nowMs: number, wokeAt: number): number {

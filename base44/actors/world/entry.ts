@@ -3,8 +3,8 @@ import { hash32 } from "./core/rng.ts";
 import { makeTitan, PHRASE_BEATS, Stage, stageFor, TitanSpec } from "./core/titan.ts";
 import {
   addDamage, breakThreshold, Bucket, checkHit, checkRun, clampPos, DmgBuckets, echoEviction, ESCAPE_MS, hashKey, hpMaxFor,
-  INTERLUDE_MS, HP_FLOOR, LIMITS, loopKey, MAX_HITS_PER_MSG, prepareEcho, AspectRate, REVIVE_R, sanitizeAspect, sanitizeName,
-  sanitizeSigil, segDist, SPARK_MS, titanSeed, titanT, topHunters, validKey,
+  INTERLUDE_MS, HP_RULE, LIMITS, loopKey, MAX_HITS_PER_MSG, prepareEcho, AspectRate, REVIVE_R, sanitizeAspect, sanitizeName,
+  resizeTitan, sanitizeSigil, segDist, SPARK_MS, titanSeed, titanT, topHunters, validKey,
 } from "./logic.ts";
 import type { FeedItem, HitWhy, HunterRow, RosterRow, RunMsg, SparkRow, TitanEnd, TitanInfo, ToClient, ToServer } from "./shared/types.ts";
 import { F_DOWN, HIT_SURGE, Q, WORLD_SESSION } from "./shared/types.ts";
@@ -78,6 +78,9 @@ export default class World extends Actor<ToServer, ToClient> {
   private lastSpec: TitanSpec | null = null;
   private lastStageAt: number[] = [];
   private dmg24: DmgBuckets = [];
+  /** distinct hunters who struck in the current hour (sizes the next titan; lost on idle, which only undercounts) */
+  private hourKeys = new Set<string>();
+  private hourKeysAt = -1;
   private credits = new Map<string, Credit>();
   private feed: FeedItem[] = [];
   private hunters = new Map<string, Hunter>();
@@ -120,17 +123,31 @@ export default class World extends Actor<ToServer, ToClient> {
     }
   }
 
-  /** one-time: a titan woken under the old 150k floor takes the new size, keeping every wound already dealt */
-  private async resizeOldTitan() {
+  /**
+   * One time per HP_RULE: the titan already awake takes the size the current rule gives it (from the actor's
+   * own record of recent hunting). Every blow already struck still counts; nothing is invented or erased.
+   */
+  private async migrateHpRule(now: number) {
+    const st = this.storage;
+    if ((await st.get<number>("hpRule")) === HP_RULE) return;
+    await st.put("hpRule", HP_RULE);
     const t = this.titan;
-    if (!t || t.status !== "awake" || t.hpMax !== 150_000 || HP_FLOOR >= 150_000) return;
-    const dealt = t.hpMax - t.hp;
-    const hpMax = Math.max(HP_FLOOR, Math.round((dealt + 12_000) / 1000) * 1000);
-    t.hpMax = hpMax;
-    t.hp = Math.max(1, hpMax - dealt);
-    await this.storage.put("titan", t);
-    await this.storage.put("hp", t.hp);
-    this.broadcast({ t: "wake", n: Date.now(), titan: this.info(), hp: Math.round(t.hp) } as never);
+    if (!t || t.status !== "awake") return;
+    const r = resizeTitan(t, hpMaxFor(this.dmg24, now));
+    if (!r) return;
+    this.log("hp rule", new Error(`titan ${t.number}: ${t.hpMax} -> ${r.hpMax} (${t.hpMax - t.hp} blows kept)`));
+    t.hpMax = r.hpMax;
+    t.hp = r.hp;
+    await st.put("titan", t);
+    await st.put("hp", t.hp);
+    const stg = stageFor(t.hp / t.hpMax);
+    if (stg > t.stageAt.length && now >= t.wokeAt) this.enterStage(stg, now);
+    if (t.recordId) {
+      const id = t.recordId;
+      const rec = { hpMax: t.hpMax, hp: Math.round(t.hp), damageTotal: Math.round(t.hpMax - t.hp) };
+      this.write("titan", () => this.db.Titan.update(id, rec));
+    }
+    this.broadcast({ t: "wake", n: now, titan: this.info(), hp: Math.round(t.hp) });
   }
 
   private async restore() {
@@ -161,8 +178,8 @@ export default class World extends Actor<ToServer, ToClient> {
       this.titan = titan;
       const hp = await st.get<number>("hp");
       if (typeof hp === "number") this.titan.hp = hp;
-      await this.resizeOldTitan();
       this.spec = makeTitan(titan.seed, titan.number);
+      await this.migrateHpRule(now);
       if (this.last) this.lastSpec = makeTitan(this.last.seed, this.last.number);
       this.announcedWake = now >= titan.wokeAt ? titan.number : 0;
     }
@@ -183,7 +200,6 @@ export default class World extends Actor<ToServer, ToClient> {
   async handleConnect(conn: Conn) {
     try {
       await this.ensureReady();
-      await this.resizeOldTitan();
       this.welcome(conn, Date.now());
     } catch (e) {
       this.log("connect", e);
@@ -420,7 +436,13 @@ export default class World extends Actor<ToServer, ToClient> {
       cr.sigil = h.sigil;
       cr.dmg += ok;
       this.credits.set(key, cr);
-      addDamage(this.dmg24, now, ok);
+      const hour = Math.floor(now / 3_600_000);
+      if (hour !== this.hourKeysAt) {
+        this.hourKeysAt = hour;
+        this.hourKeys.clear();
+      }
+      if (this.hourKeys.size < 10_000) this.hourKeys.add(key);
+      addDamage(this.dmg24, now, ok, this.hourKeys.size);
       if (surge && now - h.lastSurgeAt > 4000) this.pushFeed({ k: "surge", name: h.name, sigil: h.sigil, n: now }, false);
       if (surge) h.lastSurgeAt = now;
       this.hpDirtyAt ||= now;
@@ -478,6 +500,7 @@ export default class World extends Actor<ToServer, ToClient> {
     await this.saveTitan();
     await this.storage.put("hp", hpMax);
     await this.storage.put("credits", []);
+    await this.storage.put("hpRule", HP_RULE); // sized under the current rule: no migration needed later
     await this.schedule("wake", wokeAt).catch((e) => this.log("schedule wake", e));
     await this.schedule("escape", wokeAt + ESCAPE_MS).catch((e) => this.log("schedule escape", e));
     const rec = { number, seed, wokeAt, hpMax, hp: hpMax, status: "awake", hunterCount: 0, damageTotal: 0, topHunters: [] };
@@ -654,6 +677,8 @@ export default class World extends Actor<ToServer, ToClient> {
         await this.db.Echo.create(rec);
       }, true);
     }
+    // every finished run that struck the titan gets a line in the chronicle (the damage the world recorded)
+    if (!sameRun && r.damage > 0) this.pushFeed({ k: "run", name, sigil, v: r.damage, n: now }, false);
     conn.send({ t: "runAck", n: now, damage: r.damage, echo: !!echo, clamped: r.clamped });
   }
 

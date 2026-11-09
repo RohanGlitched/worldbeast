@@ -96,7 +96,7 @@ interface ActorConn {
 }
 
 const LOCAL_BLOCK_MS = 3 * 3_600_000;
-const LOCAL_HP = 40_000;
+const LOCAL_HP = 10_000; // the live world's floor (base44/actors/world/logic.ts HP_FLOOR)
 const INTERLUDE_MS = 20_000;
 const SILENT_MS = 4_500;
 const PING_EVERY_MS = 2_000;
@@ -315,8 +315,19 @@ export class World {
   get onlineCount() {
     return this.online;
   }
+  /** hunters who joined the hunt (said hello) on a connection that is still open; you too, once you join */
   get hunters(): RosterEntry[] {
     return [...this.roster.values()];
+  }
+  /** connected browsers that have not joined the hunt: people reading the codex or watching the fight */
+  get watchingCount() {
+    return Math.max(0, this.online - this.roster.size);
+  }
+  /** ids of other hunters whose light is in flight right now (their positions are arriving) */
+  inFlight(): Set<number> {
+    const s = new Set<number>();
+    for (const [id, r] of this.remote) if (!(r.s[r.s.length - 1]?.[3] & F_DOWN)) s.add(id);
+    return s;
   }
   get isLocal() {
     return !!this.local;
@@ -359,7 +370,8 @@ export class World {
           return;
         case "wake":
           this.hp = m.hp;
-          if (!this.titan || this.titan.number !== m.titan.number) this.setTitan(m.titan, m.hp, []);
+          if (!this.titan || this.titan.number !== m.titan.number || this.titan.seed !== m.titan.seed) this.setTitan(m.titan, m.hp, []);
+          else this.titan = m.titan; // the same titan re-sized (a new hp rule): take its new hpMax
           if (this.wokeFired !== m.titan.number) {
             this.wokeFired = m.titan.number;
             this.events.onWake?.(m.titan);

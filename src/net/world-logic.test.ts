@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { coreOpen, LOOP_BEATS, makeTitan, PHRASE_BEATS } from "@/core/titan";
 import { maxDps } from "@/core/hunt";
 import {
-  addDamage, checkHit, checkRun, DmgBuckets, echoEviction, hashKey, HOUR_MS, HP_CAP, HP_FLOOR, hpMaxFor, loopKey, maxHitDmg,
-  prepareEcho, RATE_BUDGET, RateWindow, Bucket, sanitizeName, segDist, stageAtT,
+  ACTIVITY_H, addDamage, checkHit, checkRun, DmgBuckets, echoEviction, hashKey, HOUR_MS, HP_CAP, HP_FLOOR, HP_PER_HUNTER, hpMaxFor,
+  LIFETIME_H, loopKey, maxHitDmg, prepareEcho, RATE_BUDGET, RateWindow, recentActivity, resizeTitan, Bucket, sanitizeName, segDist, stageAtT,
 } from "../../base44/actors/world/logic";
 import { decodePath, encodePath } from "./pathcodec";
 import { decodeEcho, echoesAt } from "./echoes";
@@ -76,22 +76,63 @@ describe("damage rate", () => {
 });
 
 describe("adaptive hp", () => {
-  it("floors at a lone hunter's ~45 min and caps", () => {
-    const now = 100 * HOUR_MS;
+  const now = 100 * HOUR_MS + 1234;
+  it("a quiet world gets a titan a few runs can fell (the floor), never more than the cap", () => {
+    expect(HP_FLOOR).toBeGreaterThanOrEqual(8_000);
+    expect(HP_FLOOR).toBeLessThanOrEqual(12_000);
     expect(hpMaxFor([], now)).toBe(HP_FLOOR);
     const b: DmgBuckets = [];
-    for (let h = 0; h < 24; h++) addDamage(b, now - h * HOUR_MS, 1_000_000);
-    expect(b.length).toBeLessThanOrEqual(24);
-    expect(hpMaxFor(b, now)).toBe(Math.round((24 * 1_000_000 * 2.5) / 24 / 1000) * 1000);
-    addDamage(b, now, 1e12);
+    addDamage(b, now, 1e12, 1);
     expect(hpMaxFor(b, now)).toBe(HP_CAP);
   });
-  it("forgets damage older than a day", () => {
+  it("a handful of visitors a day: every titan is floor-sized, so one falls to a few runs and several fall a day", () => {
+    // five hunters a day, one session each of ~10k blows, spread through the day
     const b: DmgBuckets = [];
-    addDamage(b, 0, 9e9);
+    for (const h of [1, 6, 11, 16, 21]) addDamage(b, 100 * HOUR_MS - (24 - h) * HOUR_MS, 10_000, 1);
+    for (let h = 0; h < 24; h++) expect(hpMaxFor(b, 100 * HOUR_MS - h * HOUR_MS)).toBeLessThanOrEqual(HP_FLOOR + 3_000);
+    // a 3-minute judge alone (3-5 runs of 1.5-5k blows) can bring a fresh floor titan down
+    expect(3 * 3_500).toBeGreaterThanOrEqual(HP_FLOOR);
+  });
+  it("grows with recent damage (lives ~LIFETIME_H at the last ACTIVITY_H hours' rate) and with the crowd", () => {
+    const b: DmgBuckets = [];
+    for (let h = 0; h < ACTIVITY_H; h++) addDamage(b, now - h * HOUR_MS, 60_000, 3);
+    expect(recentActivity(b, now)).toEqual({ damage: 60_000 * ACTIVITY_H, hunters: 3 });
+    expect(hpMaxFor(b, now)).toBe(60_000 * LIFETIME_H);
+    // twenty hunters arriving together in one hour
+    const c: DmgBuckets = [];
+    addDamage(c, now, 30_000, 20);
+    expect(hpMaxFor(c, now)).toBe(20 * HP_PER_HUNTER);
+  });
+  it("counts the busiest hour's hunters, keeps the larger count within an hour", () => {
+    const b: DmgBuckets = [];
+    addDamage(b, now, 10, 4);
+    addDamage(b, now + 1000, 10, 2);
+    expect(b).toEqual([[100, 20, 4]]);
+  });
+  it("forgets damage older than its window, and buckets older than a day", () => {
+    const b: DmgBuckets = [];
+    addDamage(b, 0, 9e9, 50);
     addDamage(b, 30 * HOUR_MS, 10);
     expect(b.length).toBe(1);
     expect(hpMaxFor(b, 30 * HOUR_MS)).toBe(HP_FLOOR);
+    const c: DmgBuckets = [];
+    addDamage(c, now - ACTIVITY_H * HOUR_MS, 9e9, 50);
+    expect(hpMaxFor(c, now)).toBe(HP_FLOOR);
+    // old two-field buckets (saved before hunters were counted) still read
+    expect(hpMaxFor([[100, 3_000_000]] as DmgBuckets, now)).toBe(HP_CAP);
+  });
+  it("re-sizes an awake titan without inventing or erasing a blow", () => {
+    // live titan #1 under the old rule: 40,000 and untouched
+    expect(resizeTitan({ hpMax: 40_000, hp: 40_000 }, HP_FLOOR)).toEqual({ hpMax: HP_FLOOR, hp: HP_FLOOR });
+    // 2,000 blows struck: they all still count
+    expect(resizeTitan({ hpMax: 40_000, hp: 38_000 }, HP_FLOOR)).toEqual({ hpMax: 10_000, hp: 8_000 });
+    // 30,000 struck: never left more than 3/4 struck, never felled by a re-size
+    const r = resizeTitan({ hpMax: 60_000, hp: 30_000 }, HP_FLOOR)!;
+    expect(r).toEqual({ hpMax: 40_000, hp: 10_000 });
+    expect((r.hpMax - r.hp) / r.hpMax).toBeLessThanOrEqual(0.75);
+    expect(resizeTitan({ hpMax: 40_000, hp: 10_000 }, HP_FLOOR)).toBeNull(); // already 3/4 struck: left as it is
+    // never grows a titan
+    expect(resizeTitan({ hpMax: 10_000, hp: 9_000 }, 50_000)).toBeNull();
   });
 });
 

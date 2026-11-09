@@ -7,6 +7,7 @@ import { loadProfile, saveProfile, cleanName } from "./profile";
 import { createLocalWorld } from "./localWorld";
 import Canticle from "./Canticle";
 import Bookmarks from "./Bookmarks";
+import { shareRun } from "./share";
 
 const ORD = (n) => {
   const s = ["th", "st", "nd", "rd"],
@@ -35,6 +36,7 @@ export default function Hunt() {
   const [world, setWorld] = useState(null);
   const [floats, setFloats] = useState([]);
   const [pickSigil, setPickSigil] = useState(false);
+  const [shareMsg, setShareMsg] = useState(null);
   const floatId = useRef(0);
   const [tip, setTip] = useState(null);
   const tipsSeen = useRef(new Set(profile.tips || []));
@@ -131,8 +133,8 @@ export default function Hunt() {
   const leafBody = spec && (
     <>
       <div className="folio">
+        <span>WORLDBEAST · a living bestiary</span>
         <span>The {ORD(spec.number)} Titan</span>
-        <span>Plate: {spec.plate.name}</span>
       </div>
       <div>
         <h1>{spec.name}</h1>
@@ -307,7 +309,7 @@ export default function Hunt() {
       {/* run summary */}
       {summary && arena && (
         <div className="summary" style={{ left: arena.x + arena.w * 0.08, width: arena.w * 0.84, top: arena.y + arena.h * 0.2 }} role="dialog" aria-label="Your run">
-          <h2>Your light went out</h2>
+          <h2>{summary.felled ? "The titan is felled!" : "Your light went out"}</h2>
           <div className="rubric">
             against {spec?.name}, after {summary.time.toFixed(1)} s
           </div>
@@ -323,9 +325,22 @@ export default function Hunt() {
             <dt>Your best</dt>
             <dd>{fmt(Math.max(profile.best, summary.damage))}</dd>
           </dl>
+          {shareMsg && <div className="rubric" style={{ marginTop: "0.5em" }}>{shareMsg}</div>}
           <div className="row">
             <button className="join" style={{ flex: 2, fontSize: "1.3em" }} onClick={begin} autoFocus>
               Hunt again
+            </button>
+            <button
+              className="ghost"
+              style={{ flex: 1 }}
+              onClick={async () => {
+                setShareMsg("Engraving your card…");
+                const r = await shareRun({ spec, summary, profile, share: summary.worldShare });
+                setShareMsg(r === "shared" ? "Shared." : r === "saved+copied" ? "Card saved; link copied." : "Card saved.");
+                setTimeout(() => setShareMsg(null), 3000);
+              }}
+            >
+              Share
             </button>
             <button className="ghost" style={{ flex: 1 }} onClick={() => setSummary(null)}>
               Rest

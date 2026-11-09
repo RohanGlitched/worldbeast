@@ -1,12 +1,35 @@
 // Instruments of the living bestiary, synthesised from oscillators, noise and filters.
-// Every note is a short-lived voice: it is admitted by its group's polyphony cap, built from
-// native nodes, and disconnected when its sources end. No per-sample JS runs on the audio thread.
+//
+// Two ways to sound a note:
+// - live: a short-lived graph of native nodes (sustained and swept voices: reed, organ, glass, bass,
+//   bowed metal, air, gong);
+// - from the bank: the struck instruments (bells, psaltery, drums, clacks, jingles, ticks, booms) are
+//   rendered once by these same live voices on an OfflineAudioContext (bank.ts) and replayed as
+//   buffer + gain. Same sound, a fraction of the CPU, which matters on phones.
+// Every note is admitted by its group's polyphony cap and disconnected when its sources end.
+// No per-sample JS runs on the audio thread.
 
 export const mtof = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
 const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
 
 export type Group = "perc" | "bass" | "mel" | "bell" | "cue" | "impact" | "sfx" | "fx";
 const CAPS: Record<Group, number> = { perc: 14, bass: 4, mel: 10, bell: 8, cue: 8, impact: 12, sfx: 14, fx: 6 };
+
+/** Reference pitches rendered into the bank; playback shifts at most half an octave. */
+export const BELL_REFS = [48, 60, 72, 84, 96];
+export const PLUCK_REFS = [48, 60, 72, 84];
+export const TICK_REFS = [72, 84, 96];
+export const BANK_BELL_DECAY = 3.6;
+export const BANK_PLUCK_DECAY = 2.6;
+export const BOOM_F = 58;
+export const BOOM_DECAY = 1.1;
+
+const nearest = (refs: number[], m: number) => {
+  let best = refs[0];
+  for (const r of refs) if (Math.abs(r - m) < Math.abs(best - m)) best = r;
+  return best;
+};
+const pluckScale = (midi: number) => clamp(1.6 - (midi - 60) / 40, 0.5, 1.6);
 
 interface Voice {
   start: number;
@@ -25,19 +48,30 @@ export interface SynthStats {
   dropped: number; // notes refused by a polyphony cap
   stolen: number; // voices faded early to make room
   notes: number; // notes admitted
+  sampled: number; // notes played from the bank
+  panBuses: number; // persistent pan positions
 }
 
-/** Small helper that keeps sounds tidy: build nodes, then commit them as one voice. */
+export interface BankLink {
+  buffers: Map<string, AudioBuffer>;
+  low: unknown; // the drum params the titan bank was rendered with (identity match)
+  frame: unknown;
+}
+
+type Pan = { pan?: number };
+
 export class Synth {
   readonly ctx: BaseAudioContext;
   readonly noise: AudioBuffer;
-  readonly waves: { pluck: PeriodicWave; organ: PeriodicWave; reed: PeriodicWave; hollow: PeriodicWave };
-  stats: SynthStats = { created: 0, live: 0, voices: 0, peakVoices: 0, dropped: 0, stolen: 0, notes: 0 };
-  /** global quietness 0..1 (quiet mode lowers transients and sub) */
+  readonly waves: { pluck: PeriodicWave; organ: PeriodicWave; reed: PeriodicWave; hollow: PeriodicWave; bassDark: PeriodicWave; bassBright: PeriodicWave };
+  stats: SynthStats = { created: 0, live: 0, voices: 0, peakVoices: 0, dropped: 0, stolen: 0, notes: 0, sampled: 0, panBuses: 0 };
+  /** quiet mode lowers transients and drops the sub */
   quiet = false;
+  bank: BankLink | null = null;
   private groups = new Map<Group, Voice[]>();
   private cur: { nodes: AudioNode[]; srcs: AudioScheduledSourceNode[] } = { nodes: [], srcs: [] };
   private nrand = 1;
+  private buses = new Map<AudioNode, Map<number, StereoPannerNode>>();
 
   constructor(ctx: BaseAudioContext) {
     this.ctx = ctx;
@@ -58,17 +92,20 @@ export class Synth {
       amps.forEach((a, i) => (im[i + 1] = a));
       return ctx.createPeriodicWave(re, im);
     };
-    // plucked string at 1/7 of its length: a_n = sin(n pi p) / n^1.4
-    const pluck: number[] = [];
-    for (let n = 1; n <= 28; n++) pluck.push(Math.sin(n * Math.PI * 0.14) / Math.pow(n, 1.4));
-    // organ: principal 8', octave 4', twelfth, fifteenth, a touch of mixture
-    const organ = [1, 0.55, 0.32, 0.26, 0, 0.12, 0, 0.08];
-    // reed (shawm): odd-heavy, nasal, bright
-    const reed: number[] = [];
-    for (let n = 1; n <= 24; n++) reed.push((n % 2 ? 1 : 0.55) / Math.pow(n, 0.85) * (n === 3 || n === 4 ? 1.4 : 1));
-    // hollow: a soft flute/glass tone
-    const hollow = [1, 0.08, 0.22, 0.03, 0.06];
-    this.waves = { pluck: pw(pluck), organ: pw(organ), reed: pw(reed), hollow: pw(hollow) };
+    const series = (n: number, f: (k: number) => number) => Array.from({ length: n }, (_, i) => f(i + 1));
+    this.waves = {
+      // plucked string at 1/7 of its length: a_n = sin(n pi p) / n^1.4
+      pluck: pw(series(28, (n) => Math.sin(n * Math.PI * 0.14) / Math.pow(n, 1.4))),
+      // organ: principal 8', octave 4', twelfth, fifteenth, a touch of mixture
+      organ: pw([1, 0.55, 0.32, 0.26, 0, 0.12, 0, 0.08]),
+      // shawm: nasal, odd-leaning, a formant bump around the 3rd-5th harmonics, gentle roll-off
+      reed: pw(series(20, (n) => ((n % 2 ? 1 : 0.6) * (n >= 3 && n <= 5 ? 1.5 : 1)) / Math.pow(n, 1.05))),
+      // hollow: a soft flute / glass tone
+      hollow: pw([1, 0.08, 0.22, 0.03, 0.06]),
+      // bowed pedal bass: a dark and a brighter cut of the same string
+      bassDark: pw(series(10, (n) => 1 / Math.pow(n, 1.9))),
+      bassBright: pw(series(16, (n) => 1 / Math.pow(n, 1.25))),
+    };
   }
 
   // ---------------------------------------------------------------------------- voice plumbing
@@ -80,14 +117,12 @@ export class Synth {
     let w = 0;
     for (let i = 0; i < list.length; i++) if (list[i].end > when) list[w++] = list[i];
     list.length = w;
-    const cap = CAPS[group];
-    if (list.length >= cap) {
+    if (list.length >= CAPS[group]) {
       if (prio < 1) {
         this.stats.dropped++;
         return false;
       }
-      const old = list.shift()!;
-      this.steal(old, when);
+      this.steal(list.shift()!, when);
     }
     this.cur.nodes = [];
     this.cur.srcs = [];
@@ -111,15 +146,15 @@ export class Synth {
     v.end = t + 0.08;
   }
 
-  private commit(group: Group, when: number, end: number, env: GainNode, prio: number) {
+  private commit(group: Group, when: number, end: number, env: GainNode, prio: number, after?: () => void) {
     const nodes = this.cur.nodes;
     const srcs = this.cur.srcs;
-    const v: Voice = { start: when, end, env, srcs, nodes, prio };
-    this.groups.get(group)!.push(v);
+    this.groups.get(group)!.push({ start: when, end, env, srcs, nodes, prio });
     this.stats.notes++;
     let pending = srcs.length;
     const done = () => {
       if (--pending > 0) return;
+      after?.();
       for (const n of nodes) n.disconnect();
       this.stats.live -= nodes.length;
     };
@@ -135,24 +170,19 @@ export class Synth {
     this.stats.live++;
     return n;
   }
-  gain(v = 0): GainNode {
+  private gain(v = 0): GainNode {
     const g = this.track(this.ctx.createGain());
     g.gain.value = v;
     return g;
   }
-  filter(type: BiquadFilterType, f: number, q = 0.7): BiquadFilterNode {
+  private filter(type: BiquadFilterType, f: number, q = 0.7): BiquadFilterNode {
     const b = this.track(this.ctx.createBiquadFilter());
     b.type = type;
     b.frequency.value = f;
     b.Q.value = q;
     return b;
   }
-  pan(x: number): StereoPannerNode {
-    const p = this.track(this.ctx.createStereoPanner());
-    p.pan.value = clamp(x, -1, 1);
-    return p;
-  }
-  osc(type: OscillatorType | PeriodicWave, f: number, when: number, detune = 0): OscillatorNode {
+  private osc(type: OscillatorType | PeriodicWave, f: number, when: number, detune = 0): OscillatorNode {
     const o = this.track(this.ctx.createOscillator());
     if (typeof type === "string") o.type = type as OscillatorType;
     else o.setPeriodicWave(type);
@@ -162,15 +192,32 @@ export class Synth {
     this.cur.srcs.push(o);
     return o;
   }
-  noiseSrc(when: number, rate = 1): AudioBufferSourceNode {
+  private noiseSrc(when: number): AudioBufferSourceNode {
     const s = this.track(this.ctx.createBufferSource());
     s.buffer = this.noise;
     s.loop = true;
-    s.playbackRate.value = rate;
     this.nrand = (this.nrand * 16807) % 2147483647;
     s.start(when, (this.nrand / 2147483647) * 1.9);
     this.cur.srcs.push(s);
     return s;
+  }
+
+  /** A persistent stereo position on `dest`, shared by every note panned there (11 positions). */
+  private out(dest: AudioNode, o: Pan): AudioNode {
+    if (o.pan === undefined) return dest;
+    const q = Math.round(clamp(o.pan, -1, 1) * 5);
+    if (q === 0) return dest;
+    let m = this.buses.get(dest);
+    if (!m) this.buses.set(dest, (m = new Map()));
+    let p = m.get(q);
+    if (!p) {
+      p = this.ctx.createStereoPanner();
+      p.pan.value = q / 5;
+      p.connect(dest);
+      m.set(q, p);
+      this.stats.panBuses++;
+    }
+    return p;
   }
 
   /** Voices still sounding now, for stats. */
@@ -180,6 +227,34 @@ export class Synth {
     this.stats.voices = n;
     if (n > this.stats.peakVoices) this.stats.peakVoices = n;
     return n;
+  }
+
+  /**
+   * Replay a bank buffer. `natural` is the buffer's own decay at this rate; a shorter `decay`
+   * adds an extra exponential so the two together fall by 60 dB in `decay` seconds.
+   */
+  private sample(name: string, dest: AudioNode, when: number, vel: number, rate: number, o: Pan & { group: Group; prio?: number; decay?: number; natural?: number }): boolean {
+    const b = this.bank?.buffers.get(name);
+    if (!b) return false;
+    const prio = o.prio ?? 0;
+    if (!this.admit(o.group, when, prio)) return true;
+    const src = this.track(this.ctx.createBufferSource());
+    src.buffer = b;
+    src.playbackRate.value = rate;
+    src.start(when);
+    this.cur.srcs.push(src);
+    const env = this.gain(vel);
+    let end = when + b.duration / rate;
+    if (o.decay !== undefined && o.natural !== undefined && o.decay < o.natural * 0.95) {
+      const tau = 1 / (6.9 / o.decay - 6.9 / o.natural);
+      env.gain.setValueAtTime(vel, when);
+      env.gain.setTargetAtTime(0, when + 0.004, tau);
+      end = Math.min(end, when + o.decay * 1.05);
+    }
+    src.connect(env).connect(this.out(dest, o));
+    this.stats.sampled++;
+    this.commit(o.group, when, end, env, prio);
+    return true;
   }
 
   // ---------------------------------------------------------------------------- envelopes
@@ -198,126 +273,46 @@ export class Synth {
     g.setTargetAtTime(0, when + attack + hold, release / 4);
   }
 
-  // ---------------------------------------------------------------------------- instruments
+  // ---------------------------------------------------------------------------- struck instruments (bankable)
 
   /** Psaltery: a double course of plucked strings, bright then darkening. */
-  pluck(dest: AudioNode, when: number, midi: number, vel: number, o: { decay?: number; bright?: number; pan?: number; group?: Group; prio?: number } = {}) {
+  pluck(dest: AudioNode, when: number, midi: number, vel: number, o: Pan & { decay?: number; bright?: number; group?: Group; prio?: number } = {}) {
     const group = o.group ?? "mel";
+    const decay = (o.decay ?? 2.2) * pluckScale(midi);
+    if (this.bank) {
+      const ref = nearest(PLUCK_REFS, midi);
+      const rate = Math.pow(2, (midi - ref) / 12);
+      if (this.sample("pluck" + ref, dest, when, vel, rate, { ...o, group, decay, natural: (BANK_PLUCK_DECAY * pluckScale(ref)) / rate })) return;
+    }
     if (!this.admit(group, when, o.prio ?? 0)) return;
     const f = mtof(midi);
-    const decay = (o.decay ?? 2.2) * clamp(1.6 - (midi - 60) / 40, 0.5, 1.6);
     const env = this.gain();
     const lp = this.filter("lowpass", 1000, 0.9);
     const bright = o.bright ?? 0.6;
     lp.frequency.setValueAtTime(Math.min(16000, f * (5 + 10 * bright)), when);
     lp.frequency.setTargetAtTime(f * 1.8, when + 0.01, decay * 0.18);
-    const a = this.osc(this.waves.pluck, f, when, 3);
-    const b = this.osc(this.waves.pluck, f, when, -4);
-    a.connect(lp);
-    b.connect(lp);
+    this.osc(this.waves.pluck, f, when, 3).connect(lp);
+    this.osc(this.waves.pluck, f, when, -4).connect(lp);
     lp.connect(env);
     this.perc(env.gain, when, vel * 0.32, decay, 0.003);
-    let out: AudioNode = env;
-    if (o.pan !== undefined) out = env.connect(this.pan(o.pan));
-    out.connect(dest);
+    env.connect(this.out(dest, o));
     this.commit(group, when, when + decay, env, o.prio ?? 0);
-  }
-
-  /** Shawm / hurdy-gurdy chanter: nasal reed with a breathy onset; vibrato from a shared LFO. */
-  reed(dest: AudioNode, when: number, midi: number, dur: number, vel: number, vib?: AudioNode, o: { pan?: number; group?: Group } = {}) {
-    const group = o.group ?? "mel";
-    if (!this.admit(group, when, 0)) return;
-    const f = mtof(midi);
-    const env = this.gain();
-    const lp = this.filter("lowpass", Math.min(7000, f * 7), 0.6);
-    const a = this.osc(this.waves.reed, f, when, 2);
-    const b = this.osc("sawtooth", f * 2, when, -5);
-    const bg = this.gain(0.12);
-    if (vib) {
-      vib.connect(a.detune);
-      vib.connect(b.detune);
-    }
-    a.connect(lp);
-    b.connect(bg).connect(lp);
-    lp.connect(env);
-    const rel = 0.14;
-    this.ahr(env.gain, when, vel * 0.17, 0.04, Math.max(0.02, dur - 0.04), rel);
-    let out: AudioNode = env;
-    if (o.pan !== undefined) out = env.connect(this.pan(o.pan));
-    out.connect(dest);
-    const end = when + dur + rel;
-    this.commit(group, when, end, env, 0);
-    if (vib) {
-      // drop the LFO's links when the note ends
-      const disc = () => {
-        try {
-          vib.disconnect(a.detune);
-          vib.disconnect(b.detune);
-        } catch {
-          /* gone */
-        }
-      };
-      const prev = a.onended as (() => void) | null;
-      a.onended = () => {
-        disc();
-        prev?.call(a);
-      };
-    }
-  }
-
-  /** Positive organ: steady flue pipes with a chiff. */
-  organ(dest: AudioNode, when: number, midi: number, dur: number, vel: number, o: { group?: Group } = {}) {
-    const group = o.group ?? "mel";
-    if (!this.admit(group, when, 0)) return;
-    const f = mtof(midi);
-    const env = this.gain();
-    const a = this.osc(this.waves.organ, f, when, 0);
-    const b = this.osc(this.waves.organ, f * 1.002, when, 0);
-    const chiff = this.noiseSrc(when);
-    const cf = this.filter("bandpass", f * 4, 3);
-    const cg = this.gain();
-    cg.gain.setValueAtTime(vel * 0.06, when);
-    cg.gain.setTargetAtTime(0, when + 0.01, 0.02);
-    chiff.connect(cf).connect(cg).connect(env);
-    a.connect(env);
-    b.connect(env);
-    this.ahr(env.gain, when, vel * 0.11, 0.03, Math.max(0.02, dur - 0.03), 0.18);
-    env.connect(dest);
-    this.commit(group, when, when + dur + 0.2, env, 0);
-  }
-
-  /** Bowed glass: a slow-speaking pure tone with a faint metallic halo. */
-  glass(dest: AudioNode, when: number, midi: number, dur: number, vel: number, o: { pan?: number; group?: Group } = {}) {
-    const group = o.group ?? "mel";
-    if (!this.admit(group, when, 0)) return;
-    const f = mtof(midi);
-    const env = this.gain();
-    const a = this.osc(this.waves.hollow, f, when, 0);
-    const b = this.osc("sine", f * 2.756, when, 0);
-    const bg = this.gain(0.1);
-    a.connect(env);
-    b.connect(bg).connect(env);
-    // a struck onset so the line still reads rhythmically
-    const t = this.osc("triangle", f * 2, when, 0);
-    const tg = this.gain();
-    this.perc(tg.gain, when, vel * 0.07, 0.35);
-    t.connect(tg).connect(env);
-    this.ahr(env.gain, when, vel * 0.2, 0.05, Math.max(0.03, dur - 0.05), 0.35);
-    let out: AudioNode = env;
-    if (o.pan !== undefined) out = env.connect(this.pan(o.pan));
-    out.connect(dest);
-    this.commit(group, when, when + dur + 0.4, env, 0);
   }
 
   /**
    * Church bell: inharmonic partials (hum, prime, minor-third tierce, quint, nominal...).
-   * `midi` is the strike note (the nominal). `partials` trades richness for nodes.
+   * `midi` is the strike note (the nominal).
    */
-  bell(dest: AudioNode, when: number, midi: number, vel: number, o: { decay?: number; partials?: number; pan?: number; group?: Group; prio?: number; bright?: number } = {}) {
+  bell(dest: AudioNode, when: number, midi: number, vel: number, o: Pan & { decay?: number; partials?: number; group?: Group; prio?: number; bright?: number } = {}) {
     const group = o.group ?? "bell";
+    const decay = o.decay ?? 3;
+    if (this.bank) {
+      const ref = nearest(BELL_REFS, midi);
+      const rate = Math.pow(2, (midi - ref) / 12);
+      if (this.sample("bell" + ref, dest, when, vel, rate, { ...o, group, decay, natural: BANK_BELL_DECAY / rate })) return;
+    }
     if (!this.admit(group, when, o.prio ?? 0)) return;
     const base = mtof(midi) / 2;
-    const decay = o.decay ?? 3;
     const P: Array<[number, number, number]> = [
       [2.0, 1, 0.7], // nominal
       [1.0, 0.55, 1], // prime
@@ -335,203 +330,270 @@ export class Synth {
       const [ratio, amp, dk] = P[i];
       const fr = base * ratio;
       if (fr > 16000) continue;
-      const osc = this.osc("sine", fr, when, (i * 7) % 5 - 2);
       const g = this.gain();
       this.perc(g.gain, when, amp * (ratio > 2.2 ? bright : 1), decay * dk, 0.0015);
-      osc.connect(g).connect(env);
+      this.osc("sine", fr, when, ((i * 7) % 5) - 2).connect(g).connect(env);
     }
-    let out: AudioNode = env;
-    if (o.pan !== undefined) out = env.connect(this.pan(o.pan));
-    out.connect(dest);
+    env.connect(this.out(dest, o));
     this.commit(group, when, when + decay * 1.4, env, o.prio ?? 0);
   }
 
   /** Big drum (taiko / tapan): a pitch-falling membrane with a skin slap; `flam` adds a second player. */
-  low(dest: AudioNode, when: number, vel: number, p: { f0: number; f1: number; decay: number }, o: { flam?: boolean; group?: Group; prio?: number; pan?: number; size?: number } = {}) {
+  low(dest: AudioNode, when: number, vel: number, p: { f0: number; f1: number; decay: number }, o: Pan & { flam?: boolean; group?: Group; prio?: number; size?: number } = {}) {
     const group = o.group ?? "perc";
-    if (!this.admit(group, when, o.prio ?? 0)) return;
     const size = o.size ?? 1;
+    if (this.bank && p === this.bank.low && this.sample(o.flam ? "lowFlam" : "low", dest, when, vel, 1 / size, { ...o, group })) return;
+    if (!this.admit(group, when, o.prio ?? 0)) return;
     const decay = p.decay * size;
     const env = this.gain(1);
-    const body = this.osc("sine", p.f0 * 2.4, when, 0);
-    body.frequency.setValueAtTime(p.f0 * 2.4 / size, when);
+    const body = this.osc("sine", (p.f0 * 2.4) / size, when, 0);
+    body.frequency.setValueAtTime((p.f0 * 2.4) / size, when);
     body.frequency.exponentialRampToValueAtTime(p.f0 / size, when + 0.035);
     body.frequency.exponentialRampToValueAtTime(p.f1 / size, when + decay);
     const bg = this.gain();
     this.perc(bg.gain, when, vel * 0.85, decay, 0.0015);
     body.connect(bg).connect(env);
     // second mode of the membrane
-    const m2 = this.osc("triangle", p.f0 * 1.58 / size, when, 0);
+    const m2 = this.osc("triangle", (p.f0 * 1.58) / size, when, 0);
     m2.frequency.exponentialRampToValueAtTime((p.f1 * 1.5) / size, when + decay * 0.6);
     const m2g = this.gain();
     this.perc(m2g.gain, when, vel * 0.22, decay * 0.45, 0.0015);
     m2.connect(m2g).connect(env);
     // skin
-    const n = this.noiseSrc(when);
     const nf = this.filter("lowpass", 1400, 0.8);
     const ng = this.gain();
     this.perc(ng.gain, when, vel * (this.quiet ? 0.18 : 0.38), 0.07, 0.001);
-    n.connect(nf).connect(ng).connect(env);
+    this.noiseSrc(when).connect(nf).connect(ng).connect(env);
     if (o.flam) {
       const fl = this.osc("sine", p.f0 * 1.04, when + 0.018, 0);
+      fl.frequency.setValueAtTime(p.f0 * 1.04, when + 0.018);
       fl.frequency.exponentialRampToValueAtTime(p.f1 * 1.03, when + 0.018 + decay * 0.8);
       const flg = this.gain();
       this.perc(flg.gain, when + 0.018, vel * 0.45, decay * 0.8, 0.002);
       fl.connect(flg).connect(env);
     }
-    let out: AudioNode = env;
-    if (o.pan !== undefined) out = env.connect(this.pan(o.pan));
-    out.connect(dest);
+    env.connect(this.out(dest, o));
     this.commit(group, when, when + decay + 0.05, env, o.prio ?? 0);
   }
 
   /** Frame drum (bendir / daf): a mid thump with a buzzing rim. Ghosts are rim only. */
-  frame(dest: AudioNode, when: number, vel: number, p: { f: number; decay: number }, o: { pan?: number; group?: Group; prio?: number } = {}) {
+  frame(dest: AudioNode, when: number, vel: number, p: { f: number; decay: number }, o: Pan & { group?: Group; prio?: number } = {}) {
     const group = o.group ?? "perc";
+    const ghost = vel < 0.5;
+    if (this.bank && p === this.bank.frame && this.sample(ghost ? "frameGhost" : "frame", dest, when, ghost ? vel / 0.4 : vel, 1, { ...o, group })) return;
     if (!this.admit(group, when, o.prio ?? 0)) return;
     const env = this.gain(1);
-    const ghost = vel < 0.5;
     if (!ghost) {
       const b = this.osc("sine", p.f * 1.5, when, 0);
+      b.frequency.setValueAtTime(p.f * 1.5, when);
       b.frequency.exponentialRampToValueAtTime(p.f, when + 0.03);
       const bg = this.gain();
       this.perc(bg.gain, when, vel * 0.5, p.decay, 0.0015);
       b.connect(bg).connect(env);
     }
-    const n = this.noiseSrc(when);
     const nf = this.filter("bandpass", ghost ? 2600 : 1700, 1.1);
     const ng = this.gain();
     this.perc(ng.gain, when, vel * (ghost ? 0.3 : 0.32), ghost ? 0.06 : 0.12, 0.001);
-    n.connect(nf).connect(ng).connect(env);
-    let out: AudioNode = env;
-    if (o.pan !== undefined) out = env.connect(this.pan(o.pan));
-    out.connect(dest);
+    this.noiseSrc(when).connect(nf).connect(ng).connect(env);
+    env.connect(this.out(dest, o));
     this.commit(group, when, when + Math.max(p.decay, 0.14) + 0.03, env, o.prio ?? 0);
   }
 
-  /** Clack: bones / wood block / rim, short and dry. `pitch` 0..1 shifts it. */
-  clack(dest: AudioNode, when: number, vel: number, o: { pan?: number; pitch?: number; group?: Group; prio?: number } = {}) {
+  /** Clack: bones / wood block / rim, short and dry. `pitch` 0..1.6 shifts it. */
+  clack(dest: AudioNode, when: number, vel: number, o: Pan & { pitch?: number; group?: Group; prio?: number } = {}) {
     const group = o.group ?? "perc";
-    if (!this.admit(group, when, o.prio ?? 0)) return;
     const pf = 1 + (o.pitch ?? 0.4);
+    if (this.bank && this.sample("clack", dest, when, vel, pf / 1.4, { ...o, group })) return;
+    if (!this.admit(group, when, o.prio ?? 0)) return;
     const env = this.gain(1);
-    const n = this.noiseSrc(when);
     const nf = this.filter("bandpass", 1700 * pf, 7);
     const ng = this.gain();
     this.perc(ng.gain, when, vel * 1.1, 0.045, 0.0008);
-    n.connect(nf).connect(ng).connect(env);
-    const t = this.osc("sine", 620 * pf, when, 0);
+    this.noiseSrc(when).connect(nf).connect(ng).connect(env);
     const tg = this.gain();
     this.perc(tg.gain, when, vel * 0.22, 0.05, 0.0008);
-    t.connect(tg).connect(env);
-    let out: AudioNode = env;
-    if (o.pan !== undefined) out = env.connect(this.pan(o.pan));
-    out.connect(dest);
+    this.osc("sine", 620 * pf, when, 0).connect(tg).connect(env);
+    env.connect(this.out(dest, o));
     this.commit(group, when, when + 0.08, env, o.prio ?? 0);
   }
 
   /** Jingles / zills: bright metal shimmer. */
-  jingle(dest: AudioNode, when: number, vel: number, o: { pan?: number; long?: boolean; group?: Group } = {}) {
+  jingle(dest: AudioNode, when: number, vel: number, o: Pan & { long?: boolean; group?: Group } = {}) {
     const group = o.group ?? "perc";
+    if (this.bank) {
+      const name = o.long ? "jingleLong" : vel > 0.6 ? "jingleHi" : "jingleLo";
+      if (this.sample(name, dest, when, name === "jingleLo" ? vel / 0.5 : vel, 1, { ...o, group })) return;
+    }
     if (!this.admit(group, when, 0)) return;
     const env = this.gain(1);
     const dk = o.long ? 0.5 : vel > 0.6 ? 0.12 : 0.06;
-    const n = this.noiseSrc(when);
     const nf = this.filter("highpass", 6500, 0.7);
     const ng = this.gain();
     this.perc(ng.gain, when, vel * 0.16, dk, vel > 0.6 ? 0.001 : 0.008);
-    n.connect(nf).connect(ng).connect(env);
+    this.noiseSrc(when).connect(nf).connect(ng).connect(env);
     if (vel > 0.6 || o.long) {
-      const z = this.osc("sine", 5230, when, 0);
-      const z2 = this.osc("sine", 7349, when, 0);
       const zg = this.gain();
       this.perc(zg.gain, when, vel * 0.03, dk * 2.4, 0.001);
-      z.connect(zg);
-      z2.connect(zg);
+      this.osc("sine", 5230, when, 0).connect(zg);
+      this.osc("sine", 7349, when, 0).connect(zg);
       zg.connect(env);
     }
-    let out: AudioNode = env;
-    if (o.pan !== undefined) out = env.connect(this.pan(o.pan));
-    out.connect(dest);
+    env.connect(this.out(dest, o));
     this.commit(group, when, when + dk * 2.6 + 0.02, env, 0);
   }
 
+  /** Sub boom: the floor of the cathedral moves (skipped in quiet mode). */
+  boom(dest: AudioNode, when: number, vel: number, o: { f?: number; decay?: number; group?: Group } = {}) {
+    if (this.quiet) return;
+    const group = o.group ?? "impact";
+    const f = o.f ?? BOOM_F;
+    const decay = o.decay ?? BOOM_DECAY;
+    const rate = f / BOOM_F;
+    if (this.bank && this.sample("boom", dest, when, vel, rate, { group, prio: 1, decay, natural: BOOM_DECAY / rate })) return;
+    if (!this.admit(group, when, 1)) return;
+    const env = this.gain();
+    const s = this.osc("sine", f * 1.6, when, 0);
+    s.frequency.setValueAtTime(f * 1.6, when);
+    s.frequency.exponentialRampToValueAtTime(f, when + 0.06);
+    s.frequency.exponentialRampToValueAtTime(f * 0.55, when + decay);
+    this.perc(env.gain, when, vel * 0.7, decay, 0.004);
+    s.connect(env).connect(dest);
+    this.commit(group, when, when + decay + 0.05, env, 1);
+  }
+
+  /** Glass tick: the graze. A tiny bright strike tuned to the song. */
+  tick(dest: AudioNode, when: number, midi: number, vel: number, o: Pan = {}) {
+    if (this.bank) {
+      const ref = nearest(TICK_REFS, midi);
+      if (this.sample("tick" + ref, dest, when, vel, Math.pow(2, (midi - ref) / 12), { ...o, group: "sfx", prio: 1 })) return;
+    }
+    if (!this.admit("sfx", when, 1)) return;
+    const f = mtof(midi);
+    const env = this.gain(1);
+    const ag = this.gain();
+    const bg = this.gain();
+    this.perc(ag.gain, when, vel * 0.22, 0.32, 0.001);
+    this.perc(bg.gain, when, vel * 0.07, 0.09, 0.001);
+    this.osc("sine", f, when, 0).connect(ag).connect(env);
+    this.osc("sine", f * 2.756, when, 0).connect(bg).connect(env);
+    const nf = this.filter("highpass", 5000, 0.7);
+    const ng = this.gain();
+    this.perc(ng.gain, when, vel * 0.08, 0.012, 0.0005);
+    this.noiseSrc(when).connect(nf).connect(ng).connect(env);
+    env.connect(this.out(dest, o));
+    this.commit("sfx", when, when + 0.36, env, 1);
+  }
+
+  // ---------------------------------------------------------------------------- sustained / swept voices (live)
+
+  /** Shawm / hurdy-gurdy chanter: a nasal reed; vibrato from a shared LFO. */
+  reed(dest: AudioNode, when: number, midi: number, dur: number, vel: number, vib?: AudioNode, o: Pan & { group?: Group } = {}) {
+    const group = o.group ?? "mel";
+    if (!this.admit(group, when, 0)) return;
+    const env = this.gain();
+    const a = this.osc(this.waves.reed, mtof(midi), when, 2);
+    if (vib) vib.connect(a.detune);
+    a.connect(env);
+    const rel = 0.14;
+    this.ahr(env.gain, when, vel * 0.13, 0.035, Math.max(0.02, dur - 0.035), rel);
+    env.connect(this.out(dest, o));
+    this.commit(group, when, when + dur + rel, env, 0, () => {
+      if (vib)
+        try {
+          vib.disconnect(a.detune);
+        } catch {
+          /* gone */
+        }
+    });
+  }
+
+  /** Positive organ: steady flue pipes. */
+  organ(dest: AudioNode, when: number, midi: number, dur: number, vel: number, o: Pan & { group?: Group } = {}) {
+    const group = o.group ?? "mel";
+    if (!this.admit(group, when, 0)) return;
+    const f = mtof(midi);
+    const env = this.gain();
+    this.osc(this.waves.organ, f, when, 0).connect(env);
+    this.osc(this.waves.organ, f * 1.002, when, 0).connect(env);
+    this.ahr(env.gain, when, vel * 0.1, 0.03, Math.max(0.02, dur - 0.03), 0.18);
+    env.connect(this.out(dest, o));
+    this.commit(group, when, when + dur + 0.2, env, 0);
+  }
+
+  /** Bowed glass: a slow-speaking pure tone with a faint metallic halo. */
+  glass(dest: AudioNode, when: number, midi: number, dur: number, vel: number, o: Pan & { group?: Group } = {}) {
+    const group = o.group ?? "mel";
+    if (!this.admit(group, when, 0)) return;
+    const f = mtof(midi);
+    const env = this.gain();
+    const bg = this.gain(0.12);
+    this.osc(this.waves.hollow, f, when, 0).connect(env);
+    this.osc("sine", f * 2.756, when, 0).connect(bg).connect(env);
+    this.ahr(env.gain, when, vel * 0.2, 0.04, Math.max(0.03, dur - 0.04), 0.35);
+    env.connect(this.out(dest, o));
+    this.commit(group, when, when + dur + 0.4, env, 0);
+  }
+
   /** Bass: a bowed organ pedal; `sub` adds weight an octave down (off in quiet mode). */
-  bass(dest: AudioNode, when: number, midi: number, dur: number, vel: number, o: { sub?: boolean; bright?: number } = {}) {
+  bass(dest: AudioNode, when: number, midi: number, dur: number, vel: number, o: { sub?: boolean; bright?: boolean } = {}) {
     if (!this.admit("bass", when, 0)) return;
     const f = mtof(midi);
     const env = this.gain();
-    const lp = this.filter("lowpass", f * (2.5 + 4 * (o.bright ?? 0.3)), 1.2);
-    lp.frequency.setValueAtTime(f * (4 + 6 * (o.bright ?? 0.3)), when);
-    lp.frequency.setTargetAtTime(f * 2.2, when + 0.02, 0.18);
-    const a = this.osc("sawtooth", f, when, -3);
-    const b = this.osc("triangle", f, when, 4);
-    a.connect(lp);
-    b.connect(lp);
-    lp.connect(env);
+    this.osc(o.bright ? this.waves.bassBright : this.waves.bassDark, f, when, -3).connect(env);
     if (o.sub && !this.quiet) {
-      const s = this.osc("sine", f / 2, when, 0);
-      const sg = this.gain(0.7);
-      s.connect(sg).connect(env);
+      const sg = this.gain(0.6);
+      this.osc("sine", f / 2, when, 0).connect(sg).connect(env);
     }
     const rel = 0.12;
-    this.ahr(env.gain, when, vel * 0.3, 0.012, Math.max(0.03, dur - 0.02), rel);
+    this.ahr(env.gain, when, vel * 0.1, 0.012, Math.max(0.03, dur - 0.02), rel);
     env.connect(dest);
     this.commit("bass", when, when + dur + rel, env, 0);
   }
 
   /** Bowed metal: a crescendo on inharmonic partials that cuts off at `end` (or rings past it). */
-  bowed(dest: AudioNode, when: number, end: number, midi: number, vel: number, o: { pan?: number; ring?: number; group?: Group; prio?: number } = {}) {
+  bowed(dest: AudioNode, when: number, end: number, midi: number, vel: number, o: Pan & { ring?: number; group?: Group; prio?: number } = {}) {
     const group = o.group ?? "fx";
     if (!this.admit(group, when, o.prio ?? 0)) return;
     const f = mtof(midi);
     const env = this.gain();
-    const R: Array<[number, number]> = [[1, 1], [2.32, 0.5], [4.25, 0.3], [6.63, 0.16]];
-    for (const [r, a] of R) {
-      const osc = this.osc("sine", f * r, when, 0);
+    for (const [r, a] of [[1, 1], [2.32, 0.5], [4.25, 0.3], [6.63, 0.16]]) {
       const g = this.gain(a);
-      osc.connect(g).connect(env);
+      this.osc("sine", f * r, when, 0).connect(g).connect(env);
     }
-    const n = this.noiseSrc(when);
     const nf = this.filter("bandpass", f * 4.25, 14);
     const ng = this.gain(0.9);
-    n.connect(nf).connect(ng).connect(env);
+    this.noiseSrc(when).connect(nf).connect(ng).connect(env);
     const ring = o.ring ?? 0.5;
     const len = Math.max(0.05, end - when);
+    const v = Math.max(0.01, vel);
     env.gain.setValueAtTime(0, when);
-    env.gain.linearRampToValueAtTime(vel * 0.03, when + len * 0.5);
-    env.gain.exponentialRampToValueAtTime(vel * 0.14, end);
+    env.gain.linearRampToValueAtTime(v * 0.03, when + len * 0.5);
+    env.gain.exponentialRampToValueAtTime(v * 0.14, end);
     env.gain.setTargetAtTime(0, end, ring / 5);
-    let out: AudioNode = env;
-    if (o.pan !== undefined) out = env.connect(this.pan(o.pan));
-    out.connect(dest);
+    env.connect(this.out(dest, o));
     this.commit(group, when, end + ring, env, o.prio ?? 0);
   }
 
   /** Air: band-passed noise sweeping between two frequencies (dash, launches, risers, beams). */
-  air(dest: AudioNode, when: number, dur: number, f0: number, f1: number, vel: number, o: { pan?: number; pan2?: number; q?: number; attack?: number; group?: Group; prio?: number } = {}) {
+  air(dest: AudioNode, when: number, dur: number, f0: number, f1: number, vel: number, o: Pan & { pan2?: number; q?: number; attack?: number; group?: Group; prio?: number } = {}) {
     const group = o.group ?? "sfx";
     if (!this.admit(group, when, o.prio ?? 0)) return;
     const env = this.gain();
-    const n = this.noiseSrc(when);
     const bp = this.filter("bandpass", f0, o.q ?? 1.4);
     bp.frequency.setValueAtTime(f0, when);
     bp.frequency.exponentialRampToValueAtTime(f1, when + dur);
-    n.connect(bp).connect(env);
+    this.noiseSrc(when).connect(bp).connect(env);
     const at = o.attack ?? dur * 0.3;
     env.gain.setValueAtTime(0, when);
     env.gain.linearRampToValueAtTime(vel * 0.5, when + at);
     env.gain.setTargetAtTime(0, when + at, Math.max(0.01, (dur - at) / 3));
-    let out: AudioNode = env;
-    if (o.pan !== undefined) {
-      const p = this.pan(o.pan);
-      if (o.pan2 !== undefined) {
-        p.pan.setValueAtTime(clamp(o.pan, -1, 1), when);
-        p.pan.linearRampToValueAtTime(clamp(o.pan2, -1, 1), when + dur);
-      }
-      out = env.connect(p);
-    }
-    out.connect(dest);
+    if (o.pan2 !== undefined && o.pan !== undefined) {
+      // a moving source needs its own panner
+      const p = this.track(this.ctx.createStereoPanner());
+      p.pan.setValueAtTime(clamp(o.pan, -1, 1), when);
+      p.pan.linearRampToValueAtTime(clamp(o.pan2, -1, 1), when + dur);
+      env.connect(p).connect(dest);
+    } else env.connect(this.out(dest, o));
     this.commit(group, when, when + dur * 1.3 + 0.05, env, o.prio ?? 0);
   }
 
@@ -541,68 +603,27 @@ export class Synth {
     if (!this.admit(group, when, 1)) return;
     const decay = o.decay ?? 5;
     const env = this.gain(vel * 0.16);
-    const R: Array<[number, number, number]> = [[1, 1, 1], [1.48, 0.7, 0.8], [2.19, 0.55, 0.6], [2.74, 0.4, 0.5], [3.66, 0.3, 0.35], [5.1, 0.18, 0.25]];
-    for (const [r, a, d] of R) {
-      const osc = this.osc("sine", f * r, when, (r * 13) % 7 - 3);
+    for (const [r, a, d] of [[1, 1, 1], [1.48, 0.7, 0.8], [2.19, 0.55, 0.6], [2.74, 0.4, 0.5], [3.66, 0.3, 0.35], [5.1, 0.18, 0.25]]) {
       const g = this.gain();
       g.gain.setValueAtTime(0, when);
       g.gain.linearRampToValueAtTime(a * 0.5, when + 0.004);
       g.gain.linearRampToValueAtTime(a, when + 0.25 * d);
       g.gain.setTargetAtTime(0, when + 0.25 * d, (decay * d) / 6);
-      osc.connect(g).connect(env);
+      this.osc("sine", f * r, when, ((r * 13) % 7) - 3).connect(g).connect(env);
     }
-    const n = this.noiseSrc(when);
     const nf = this.filter("bandpass", f * 9, 2);
     const ng = this.gain();
     ng.gain.setValueAtTime(0, when);
     ng.gain.linearRampToValueAtTime(0.5, when + 0.15);
     ng.gain.setTargetAtTime(0, when + 0.15, decay / 8);
-    n.connect(nf).connect(ng).connect(env);
+    this.noiseSrc(when).connect(nf).connect(ng).connect(env);
     env.connect(dest);
     this.commit(group, when, when + decay * 1.1, env, 1);
-  }
-
-  /** Sub boom: the floor of the cathedral moves (skipped in quiet mode). */
-  boom(dest: AudioNode, when: number, vel: number, o: { f?: number; decay?: number; group?: Group } = {}) {
-    if (this.quiet) return;
-    const group = o.group ?? "impact";
-    if (!this.admit(group, when, 1)) return;
-    const f = o.f ?? 58;
-    const decay = o.decay ?? 1.1;
-    const env = this.gain();
-    const s = this.osc("sine", f * 1.6, when, 0);
-    s.frequency.exponentialRampToValueAtTime(f, when + 0.06);
-    s.frequency.exponentialRampToValueAtTime(f * 0.55, when + decay);
-    this.perc(env.gain, when, vel * 0.7, decay, 0.004);
-    s.connect(env).connect(dest);
-    this.commit(group, when, when + decay + 0.05, env, 1);
-  }
-
-  /** Glass tick: the graze. A tiny bright strike tuned to the song. */
-  tick(dest: AudioNode, when: number, midi: number, vel: number, pan: number) {
-    if (!this.admit("sfx", when, 1)) return;
-    const f = mtof(midi);
-    const env = this.gain(1);
-    const a = this.osc("sine", f, when, 0);
-    const b = this.osc("sine", f * 2.756, when, 0);
-    const ag = this.gain();
-    const bg = this.gain();
-    this.perc(ag.gain, when, vel * 0.22, 0.32, 0.001);
-    this.perc(bg.gain, when, vel * 0.07, 0.09, 0.001);
-    a.connect(ag).connect(env);
-    b.connect(bg).connect(env);
-    const n = this.noiseSrc(when);
-    const nf = this.filter("highpass", 5000, 0.7);
-    const ng = this.gain();
-    this.perc(ng.gain, when, vel * 0.08, 0.012, 0.0005);
-    n.connect(nf).connect(ng).connect(env);
-    env.connect(this.pan(pan)).connect(dest);
-    this.commit("sfx", when, when + 0.36, env, 1);
   }
 }
 
 /** A cathedral impulse response: pre-delay, sparse early reflections, a darkening stereo tail. */
-export function cathedralIR(ctx: BaseAudioContext, seconds = 3.4, preDelay = 0.028): AudioBuffer {
+export function cathedralIR(ctx: BaseAudioContext, seconds = 3.2, preDelay = 0.028): AudioBuffer {
   const sr = ctx.sampleRate;
   const len = Math.floor(sr * (seconds + preDelay));
   const buf = ctx.createBuffer(2, len, sr);

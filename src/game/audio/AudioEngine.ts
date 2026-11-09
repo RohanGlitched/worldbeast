@@ -11,6 +11,7 @@
 import type { Field, Kind } from "../../core/field";
 import { LOOP_PHRASES, Stage, TitanSpec } from "../../core/titan";
 import { AEv, BLOCK_STEPS, buildSong, degToMidi, Lead, PERC_VOICES, PHRASE_STEPS, Song, STEPS_PER_BEAT, volleyEvents } from "./score";
+import { commonItems, renderBank, titanItems } from "./bank";
 import { cathedralIR, ceilingCurve, mtof, Synth, SynthStats } from "./synth";
 
 export interface AudioEngineOptions {
@@ -150,6 +151,9 @@ export class AudioEngine {
   private muffleUntil = 0;
   private persistent = 0;
   private visHandler: (() => void) | null = null;
+  private chainLatency = 0; // the two compressors look ahead 256 frames each
+  private commonBank: Promise<Map<string, AudioBuffer>> | null = null;
+  private bankPromise: Promise<void> = Promise.resolve();
 
   /** [step, titanTime, contextTime, rawOffset] for the last scheduled beats (debug only) */
   trace: Array<[number, number, number, number]> = [];
@@ -208,7 +212,15 @@ export class AudioEngine {
     this.vmaps.clear();
     this.synced = false;
     this.graze.combo = 0;
-    if (this.g) this.buildDrone();
+    if (this.g) {
+      this.buildDrone();
+      this.loadBank();
+    }
+  }
+
+  /** Resolves when the titan's instruments are rendered into the bank (live synthesis until then). */
+  ready(): Promise<void> {
+    return this.bankPromise;
   }
 
   /**
@@ -260,7 +272,7 @@ export class AudioEngine {
         // climb the tonic's arpeggio: 1 3 5 8 10 12 15 17 19, then shimmer at the top
         const ladder = [0, 2, 4, 7, 9, 11, 14, 16, 18];
         const deg = c <= ladder.length ? ladder[c - 1] : ladder[7 + (c % 2)];
-        sy.tick(out, now, m(deg, 2), 0.5 + 0.05 * Math.min(c, 9), pan);
+        sy.tick(out, now, m(deg, 2), 0.5 + 0.05 * Math.min(c, 9), { pan });
         if (c % 10 === 0) sy.bell(out, now + 0.06, m(deg + 7, 2), 0.35, { partials: 4, decay: 1.2, pan, group: "sfx" });
         return;
       }
@@ -340,7 +352,7 @@ export class AudioEngine {
         sy.pluck(out, now, m(4, 2), 0.55, { decay: 0.6, bright: 0.5, group: "sfx", prio: 1 });
         return;
       case "ui-hover":
-        sy.tick(out, now, m(7, 2), 0.22, 0);
+        sy.tick(out, now, m(7, 2), 0.22);
         return;
       case "beat":
         return; // the Canticle already keeps the beat
@@ -370,7 +382,7 @@ export class AudioEngine {
   }
 
   stats(): AudioStats {
-    const s = this.synth?.stats ?? { created: 0, live: 0, voices: 0, peakVoices: 0, dropped: 0, stolen: 0, notes: 0 };
+    const s = this.synth?.stats ?? { created: 0, live: 0, voices: 0, peakVoices: 0, dropped: 0, stolen: 0, notes: 0, sampled: 0, panBuses: 0 };
     return {
       ...s,
       offset: this.offset,
@@ -420,6 +432,7 @@ export class AudioEngine {
     const off = new OfflineAudioContext(2, Math.ceil(sr * o.seconds), sr);
     const eng = new AudioEngine({ context: off, quiet: o.quiet });
     eng.setTitan(spec, field);
+    await eng.ready();
     if (o.solo) for (const [k, n] of Object.entries(eng.g!.ch)) if (!o.solo.includes(k)) (n as GainNode).gain.value = 0;
     if (o.dry) eng.g!.verbOut.gain.value = 0;
     const a = performance.now();
@@ -442,7 +455,7 @@ export class AudioEngine {
     this.playing = playing;
     this.applyStage(0, true);
     this.applyPlaying(0, true);
-    this.offset = -t0;
+    this.offset = -t0 - this.chainLatency;
     this.synced = true;
     this.lastT = t0;
     const stepDur = this.spec.beat / STEPS_PER_BEAT;
@@ -473,7 +486,7 @@ export class AudioEngine {
     glue.ratio.value = 2.6;
     glue.attack.value = 0.012;
     glue.release.value = 0.28;
-    const makeup = G(1.5);
+    const makeup = G(1.2);
     const limiter = ctx.createDynamicsCompressor();
     limiter.threshold.value = -5;
     limiter.knee.value = 0;
@@ -529,22 +542,45 @@ export class AudioEngine {
       return c;
     };
     const ch: Channels = {
-      perc: chan(0.95, musicSum, 0.2, verbMusic),
-      bass: chan(0.9, musicSum, 0.06, verbMusic),
-      mel: chan(1, musicSum, 0.42, verbMusic),
-      bell: chan(0.85, musicSum, 0.6, verbMusic),
-      choir: chan(1, musicSum, 0.7, verbMusic),
+      perc: chan(0.27, musicSum, 0.2, verbMusic),
+      bass: chan(0.5, musicSum, 0.06, verbMusic),
+      mel: chan(0.5, musicSum, 0.42, verbMusic),
+      bell: chan(0.8, musicSum, 0.6, verbMusic),
+      choir: chan(0.7, musicSum, 0.7, verbMusic),
       bourdon: chan(1, musicSum, 0.3, verbMusic),
-      cue: chan(1, titanSfx, 0.3, verbSfx),
-      impact: chan(1, titanSfx, 0.32, verbSfx),
-      sfx: chan(1, sfxVol, 0.3, verbSfx),
+      cue: chan(0.6, titanSfx, 0.3, verbSfx),
+      impact: chan(0.55, titanSfx, 0.32, verbSfx),
+      sfx: chan(0.7, sfxVol, 0.3, verbSfx),
     };
     this.persistent = nodes.length;
+    this.chainLatency = 512 / ctx.sampleRate;
     this.g = { ch, musicSum, lobby, duck, danger, musicVol, titanSfx, sfxVol, verbMusic, verbSfx, verbOut, glue, limiter, trim, master, nodes };
     this.synth = new Synth(ctx);
     this.synth.quiet = this.quiet;
     this.applyVolumes();
-    if (this.spec) this.buildDrone();
+    if (this.spec) {
+      this.buildDrone();
+      this.loadBank();
+    }
+  }
+
+  private loadBank() {
+    const ctx = this.ctx;
+    const synth = this.synth;
+    const spec = this.spec;
+    const song = this.song;
+    if (!ctx || !synth || !spec || !song || typeof OfflineAudioContext === "undefined") return;
+    const sr = ctx.sampleRate;
+    if (!this.commonBank) this.commonBank = renderBank(sr, commonItems());
+    const tm = song.timbre;
+    this.bankPromise = Promise.all([this.commonBank, renderBank(sr, titanItems(tm))])
+      .then(([c, t]) => {
+        if (this.spec !== spec || this.synth !== synth) return;
+        synth.bank = { buffers: new Map([...c, ...t]), low: tm.low, frame: tm.frame };
+      })
+      .catch(() => {
+        /* the live voices keep playing */
+      });
   }
 
   /** The long-lived voices: choir, bourdon and hurdy-gurdy buzz. Rebuilt per titan with a crossfade. */
@@ -741,7 +777,7 @@ export class AudioEngine {
 
   private choirLevel() {
     const tm = this.song!.timbre;
-    return [0.55, 0.72, 0.9][this.stage] * tm.choir * (0.9 + 0.2 * (1 - this.hpFrac));
+    return [0.5, 0.52, 0.56][this.stage] * tm.choir * (0.9 + 0.2 * (1 - this.hpFrac));
   }
 
   private changeStage(stage: Stage) {
@@ -780,8 +816,8 @@ export class AudioEngine {
     d.choirVoices.forEach((v, i) => set(v.g.gain, vg[i][s] * 0.05));
     set(d.choirOut.gain, this.choirLevel());
     set(d.choirLP.frequency, [1500, 2300, 3600][s], 1);
-    set(d.bourdonOut.gain, [0.11, 0.13, 0.15][s] * tm.bourdon);
-    set(d.buzzOut.gain, [0, 0.05, 0.075][s] * tm.buzz);
+    set(d.bourdonOut.gain, [0.022, 0.026, 0.03][s] * tm.bourdon);
+    set(d.buzzOut.gain, [0, 0.018, 0.026][s] * tm.buzz);
   }
 
   // =========================================================================== timing
@@ -795,11 +831,11 @@ export class AudioEngine {
       const pt = ts.performanceTime ?? 0;
       if (ct > 0 && pt > 0) {
         const out = ct + (performance.now() - pt) / 1000;
-        if (out <= ctx.currentTime + 0.05 && out > ctx.currentTime - 0.5) return out - t + this.syncTrim;
+        if (out <= ctx.currentTime + 0.05 && out > ctx.currentTime - 0.5) return out - t + this.syncTrim - this.chainLatency;
       }
     }
     const lat = this.realtime ? (ctx.outputLatency || 0) + (ctx.baseLatency || 0) : 0;
-    return ctx.currentTime - lat - t + this.syncTrim;
+    return ctx.currentTime - lat - t + this.syncTrim - this.chainLatency;
   }
 
   private resync(t: number, raw: number) {
@@ -831,8 +867,8 @@ export class AudioEngine {
       const s = this.nextStep++;
       const ts = s * stepDur;
       let when = ts + this.offset;
-      if (this.realtime && when < ctx.currentTime) {
-        if (when < ctx.currentTime - 0.012) {
+      if (when < ctx.currentTime) {
+        if (this.realtime && when < ctx.currentTime - 0.012) {
           this.counters.late++;
           continue;
         }
@@ -964,7 +1000,7 @@ export class AudioEngine {
       let midi = degToMidi(song, chord, 0);
       if (midi > 50) midi -= 12;
       if (stage === 2 && sib % 4 === 2) midi += 12;
-      sy.bass(ch.bass, when, midi, durSteps * stepDur * 0.92, bp[sib] * (0.75 + 0.25 * drive), { sub: stage === 2 && sib % 8 === 0, bright: 0.2 + 0.25 * stage });
+      sy.bass(ch.bass, when, midi, durSteps * stepDur * 0.92, bp[sib] * (0.75 + 0.25 * drive) * (0.65 + 0.2 * stage), { sub: stage === 2 && sib % 8 === 0, bright: stage === 2 });
     }
 
     // --- melody

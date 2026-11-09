@@ -92,6 +92,8 @@ export class Hunt {
   events: HitEvent[] = []; // drained by the caller
   hurtEvents = 0; // incremented when hit (caller reads deltas)
   mirrorReflects = 0;
+  lastHitKind = "";
+  hitLog: string[] = [];
   private dashId = 0;
   private mirroredDash = -1;
   private grazed = new Set<number>();
@@ -159,6 +161,8 @@ export class Hunt {
       } else if (this.invuln <= 0) {
         this.hits++;
         this.hurtEvents++;
+        this.lastHitKind = tc.hitKind ?? "?";
+        this.hitLog.push(this.lastHitKind);
         this.invuln = INVULN_AFTER_HIT;
         this.combo = 0;
         this.resonance *= 0.5;

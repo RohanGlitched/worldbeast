@@ -66,6 +66,7 @@ export interface RunSummary {
   path: number[]; // quantised x,y at 10 Hz for the echo
   startT: number; // titan time when the run began
   stage: Stage;
+  felled?: boolean; // the run ended because the world felled the titan
 }
 
 export class Game {
@@ -158,10 +159,16 @@ export class Game {
     this.fallT = 0;
     this.shake = 1.2;
     this.events.onSfx?.("felled");
-    if (this.hunt && this.phase === "playing") {
+    const h = this.hunt;
+    if (h && this.phase === "playing" && h.alive) {
       // your run ends with the titan: a victory, not a death
-      this.hunt.alive = false;
+      h.alive = false;
+      this.phase = "down";
+      this.events.onDown?.(this.summaryOf(h, this.stage, true));
     }
+  }
+  private summaryOf(h: Hunt, stage: Stage, felled: boolean): RunSummary {
+    return { damage: h.damage, time: h.time, grazes: h.grazeCount, bestCombo: h.bestCombo, surges: h.surges, aspect: h.aspect.id, path: this.path.slice(), startT: this.runStart, stage, felled };
   }
   get falling() {
     return this.fallT >= 0;
@@ -345,7 +352,7 @@ export class Game {
         this.fx.burst(h.x, h.y, 40, { type: P.Fleck, size: 0.14, speed: 9, life: 1.2, g: -4 });
         this.events.onSfx?.("down", h.x);
         if (navigator.vibrate) navigator.vibrate([80, 60, 140]);
-        this.events.onDown?.({ damage: h.damage, time: h.time, grazes: h.grazeCount, bestCombo: h.bestCombo, surges: h.surges, aspect: h.aspect.id, path: this.path.slice(), startT: this.runStart, stage });
+        this.events.onDown?.(this.summaryOf(h, stage, false));
       }
     } else {
       this.field.sample(t, stage, this.lobbyFrame);

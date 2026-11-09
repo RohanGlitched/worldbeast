@@ -386,6 +386,12 @@ export class Hunt {
     this.darts.push({ x: this.x, y: this.y, tx: c.x, ty: c.y, core: c.id, dmg: 55 * reach, t: Math.hypot(c.x - this.x, c.y - this.y) / DART_SPEED, surge: true });
   }
 
+  /** Place the light now (instead of on its first step), e.g. so a caller can aim a touch drag from it. */
+  place(t: number, stage: Stage) {
+    this.autoSpawn = false;
+    this.pickSpawn(t, stage);
+  }
+
   /**
    * Choose where this light enters: on the spawn row, the point whose clearance from the shared
    * field stays largest through the end of the grace and two beats past it (a hunter who has not

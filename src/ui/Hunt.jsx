@@ -555,6 +555,9 @@ export default function Hunt() {
       worldRef.current?.identify?.(profile);
       runMark.current = worldRef.current?.runMark?.() ?? null;
       setSummary(null);
+      // the last fall's stamp goes with its plate: never over the new fight
+      clearTimeout(felledTimer.current);
+      setFelled(null);
       // a first hunt starts half-charged, so the first Surge comes early
       // (the world may soften the run: a rehearsal is forgiving, a hit costs Resonance instead of a light)
       g.start(profile.aspect, { resonance: (profile.runs || 0) === 0 ? 55 : 0, gentle: (profile.runs || 0) < 2, ...(worldRef.current?.state?.huntOpts || {}) });

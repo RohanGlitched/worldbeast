@@ -32,8 +32,8 @@ export function shareWords({ spec, summary, kind = "live" }) {
       // (the link opens a rehearsal of the reader's own, not a ghost of this one: a ghost would replay a titan
       // that never falls, since a rehearsal titan wakes near death on this page only)
       text: summary.felled
-        ? `I felled ${spec.name} with ${blows} blows: a rehearsal against a titan of my own. See one fall yourself in a short rehearsal, then join the live titan that everyone online fights at once:`
-        : `I struck ${blows} blows against ${spec.name}: a rehearsal against a titan of my own. Try a short rehearsal yourself, then join the live titan that everyone online fights at once:`,
+        ? `I felled ${spec.name} with ${blows} blows: a rehearsal against a titan of my own. See one fall yourself in a 15-second rehearsal, then join the live titan that everyone online fights at once:`
+        : `I struck ${blows} blows against ${spec.name}: a rehearsal against a titan of my own. Try a 15-second rehearsal yourself, then join the live titan that everyone online fights at once:`,
     };
   if (kind === "own")
     return {

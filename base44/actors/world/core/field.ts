@@ -41,6 +41,20 @@ export interface Volley {
 export interface Thin {
   until: number;
   heavyUntil: number;
+  /**
+   * Where this hunter's light entered the page (set once the spawn is chosen). Rain that leaves the titan
+   * before `until` keeps only every other column, and none within RAIN_SPARE units of this x (R6: the first
+   * hits of a first hunt, 4.6-7.8 s in, were rain on the spawn).
+   */
+  x?: number;
+}
+
+/** a first hunt's rain keeps this far (in x) from where the light entered the page */
+export const RAIN_SPARE = 2;
+
+/** Is rain column `c` (at x) hidden from this hunter's grace field? (only for rain leaving before thin.until) */
+export function rainSpared(c: number, x: number, thin: Thin): boolean {
+  return c % 2 === 1 || (thin.x !== undefined && Math.abs(x - thin.x) < RAIN_SPARE);
 }
 
 export function thinned(v: Volley, spawnSec: number, thin: Thin | null | undefined): boolean {
@@ -332,7 +346,7 @@ export class Field {
         const age = beatNow - vb; // in beats; negative = still telegraphing
         if (age < -v.tele || age > MAX_LIFE_BEATS) continue;
         if (thin && thinned(v, vb * beatLen, thin)) continue;
-        emit(v, age, beatLen, f, pa);
+        emit(v, age, beatLen, f, pa, thin && v.kind === "rain" && vb * beatLen < thin.until ? thin : null);
       }
     }
   }
@@ -540,7 +554,17 @@ export function beamEndSight(ox: number, oy: number, a: number): { x: number; y:
  */
 export const INK_FLOOR = 1;
 export const INK_FADE = 1.8;
-const fadeAt = (y: number) => (y >= INK_FADE ? 1 : 0.35 + (0.65 * (y - INK_FLOOR)) / (INK_FADE - INK_FLOOR));
+export const fadeAt = (y: number) => (y >= INK_FADE ? 1 : 0.35 + (0.65 * (y - INK_FLOOR)) / (INK_FADE - INK_FLOOR));
+/**
+ * Ink drawn fainter than this is spent: it can still be grazed, but it never strikes (R6: 10 of 63 hits came
+ * from wall and rain drops drawn at 44-87% near the foot, and every reader takes fading ink as harmless).
+ */
+export const SPENT_ALPHA = 0.95;
+/**
+ * Rain leaves the titan this high, above the page: the fastest drop is seen falling for 0.3 s before it can
+ * reach a light on the top row (R6: 7 hits at y 18.6-18.8 were drops that appeared on the light).
+ */
+export const RAIN_TOP = ARENA.TOP + 2.5;
 
 /** A slam's tread: where the titan's foot comes down at the top of the page (top corners, under its body). */
 export function slamTread(p: Record<string, number>) {
@@ -550,7 +574,7 @@ export function slamTread(p: Record<string, number>) {
 /** id space: (phraseAbs, volley index within loop, bullet index) folded into 32 bits */
 const bid = (pa: number, vid: number, i: number) => (((pa & 0x3ff) << 22) | ((vid % 1000 & 0x3ff) << 12) | (i & 0xfff)) >>> 0;
 
-function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number) {
+function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number, rainThin: Thin | null = null) {
   const p = v.p;
   const tSec = age * beatLen; // seconds since spawn (negative while telegraphing)
   const tele = age < 0 ? 1 + age / v.tele : 1; // 0..1 telegraph progress
@@ -648,19 +672,22 @@ function emit(v: Volley, age: number, beatLen: number, f: FieldFrame, pa: number
       return;
     }
     case "rain": {
-      const cols = rainColumns(p);
+      // (a first hunt's grace field spares some columns, whole, for their whole life: rainSpared)
+      const cols = rainColumns(p).map((x, c) => (rainThin && rainSpared(c, x, rainThin) ? NaN : x));
       const fallBeats = (p.drops - 1) * p.every + 0.5; // the last drop leaves the top this many beats in
       if (age < 0) {
-        for (const x of cols) pushZone(f, x, ARENA.H * 0.5, 0.35, tele * 0.999, v.ink + COLUMN); // column telegraph
+        for (const x of cols) if (x === x) pushZone(f, x, ARENA.H * 0.5, 0.35, tele * 0.999, v.ink + COLUMN); // column telegraph
         return;
       }
       // the guide stays (faintly) while its column is still raining
-      if (age < fallBeats) for (const x of cols) pushZone(f, x, ARENA.H * 0.5, 0.35, 1 + (age / fallBeats) * 0.999, v.ink + COLUMN);
+      if (age < fallBeats) for (const x of cols) if (x === x) pushZone(f, x, ARENA.H * 0.5, 0.35, 1 + (age / fallBeats) * 0.999, v.ink + COLUMN);
       cols.forEach((x, c) => {
+        if (x !== x) return;
         for (let d = 0; d < p.drops; d++) {
           const te = tSec - (d * p.every + (c % 2) * 0.5) * beatLen;
           if (te < 0) continue;
-          const y = ARENA.TOP + 0.5 - p.speed * te;
+          // every drop leaves from above the page (over the titan) and is seen falling before it reaches the top row
+          const y = RAIN_TOP - p.speed * te;
           if (y < INK_FLOOR) continue; // spent above the foot of the page
           pushBullet(f, x, y, p.rad, v.ink, fadeAt(y), bid(pa, vid, c * 16 + d), 0, -p.speed);
         }
@@ -837,8 +864,10 @@ export function touch(f: FieldFrame, x: number, y: number, out: Touch): Touch {
     const dx = f.bullets[o] - x;
     const dy = f.bullets[o + 1] - y;
     const d = Math.sqrt(dx * dx + dy * dy) - f.bullets[o + 2] - PLAYER_R;
-    if (d < nearest) nearest = d;
-    if (d < 0) {
+    // spent ink (fading out near the foot of the page) only grazes: brushing through it still feeds Resonance
+    const live = f.bullets[o + 4] >= SPENT_ALPHA;
+    if (live && d < nearest) nearest = d;
+    if (d < 0 && live) {
       out.hit = true;
       out.hitKind = f.bullets[o + 5] >= KIND_LIST.length ? "hound" : (KIND_LIST[f.bullets[o + 5]] ?? "ring");
     } else if (d < GRAZE_R) out.grazes.push(f.bulletIds[i]);

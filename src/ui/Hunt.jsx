@@ -358,6 +358,8 @@ export default function Hunt() {
   const runMark = useRef(null); // the world's accepted blows when this run began (for "your blows moved the world")
   /** a rehearsal whose near-death titan has fallen: what follows is the live titan, or another rehearsal */
   const spentRef = useRef(false);
+  // "Rehearse another fall" was pressed: a fresh near-death titan is on its way (until it falls in its turn)
+  const [again, setAgain] = useState(false);
 
   useEffect(() => {
     const g = new Game(canvasRef.current);
@@ -391,6 +393,8 @@ export default function Hunt() {
         // tearing away: Game FALL), then of the next, engraved in during the interlude
         setFelledSpec(g.spec ?? null);
         setFelled(end);
+        // (a rehearsal asked for again has now had its fall: what follows is the live titan, or another rehearsal)
+        setAgain(false);
         clearTimeout(felledTimer.current);
         felledTimer.current = setTimeout(() => setFelled(null), FALL.GONE * 1000);
         // the next titan's geometry is built in an idle moment after the stamp, not when the world wakes it
@@ -612,6 +616,11 @@ export default function Hunt() {
     if (hud.time > 14) showTip("dash", touch ? "Tap <b>dash</b> or double-tap to pass clean through an attack." : "<b>Space</b> dashes you clean through an attack.");
     if (hud.time > 24) showTip("song", "Every attack lands on the beat. Read what comes next in <b>the Canticle</b>.");
     if (hud.hits >= 1) showTip("relight", "A lost light <b>returns</b> after 15 s unstruck, or on a Surge: up to twice a run.");
+    const hunt = gameRef.current?.hunt;
+    // a first hunt's grace field ends (core/hunt.ts graceEnding: its last 2 s; graceEndedAt once it has)
+    if (hunt && (hunt.graceEnding || (hunt.graceEndedAt >= 0 && hud.time - hunt.graceEndedAt < 4))) showTip("grace-end", "<b>The titan stops holding back.</b> From here it fights you as it fights every hunter.", 4600);
+    // a still light strikes at 40% (core/hunt.ts still)
+    if (hunt?.still) showTip("still", "A <b>still light</b> strikes weakly: keep flying, nearer the titan.");
   };
 
   const update = (patch) =>
@@ -652,26 +661,32 @@ export default function Hunt() {
   );
   const interlude = world?.interlude ?? 0;
   const runs = profile.runs || 0;
-  // alone in the live world (or out of its reach): offer a short rehearsal, where a judge can see a fall
+  // alone in the live world (or out of its reach): offer a 15-second rehearsal, where a judge can see a fall
   const offerRehearse = !recorded && !rehearsal && !pinned && ((live && world.hunters.length === 0) || offline);
-  // the rehearsal's near-death titan has fallen (its body is still on the page, or the whole titan after it woke)
-  const spent = rehearsal && (!world?.nearDeath || !!heldSpec);
+  // the rehearsal's near-death titan has fallen (its body is still on the page, or the whole titan after it woke),
+  // and another rehearsal has not been asked for since
+  const spent = rehearsal && !again && (!world?.nearDeath || !!heldSpec);
   spentRef.current = spent;
   const rehearseAgain = () => {
     const w = worldRef.current;
     clearTimeout(cardTimer.current);
     setCardHold(false);
-    // the world wakes another near-death titan of your own in place (localWorld), or the page opens a new rehearsal
-    if (typeof w?.rehearseAgain === "function") {
+    // the world wakes another near-death titan of your own in place (localWorld.rehearseAgain: at once, or as the
+    // fallen plate lifts away), and the run joins it the moment it can be hunted (begin queues until then)
+    if (typeof w?.rehearseAgain === "function" && w.rehearseAgain() !== false) {
+      setAgain(true);
+      spentRef.current = false;
       setSummary(null);
       gameRef.current?.releaseFelled();
-      w.rehearseAgain();
+      begin();
       return;
     }
     const q = new URLSearchParams(location.search);
     location.assign("/?rehearse=1" + (q.get("debug") === "1" ? "&debug=1" : ""));
   };
-  const presenceLine = rehearsal ? "Only you · a rehearsal" : pinned ? "Only you · a titan pinned to this page" : offline ? "Out of reach of the world · only you" : who?.header;
+  // (out of reach after being online, the page still shows the world's last live titan: liveWorld holdingLive)
+  const holding = offline && !!world?.holdingLive;
+  const presenceLine = rehearsal ? "Only you · a rehearsal" : pinned ? "Only you · a titan pinned to this page" : holding ? "Out of reach for a moment · the live titan is held here" : offline ? "Out of reach of the world · only you" : who?.header;
 
   // the chronicle: the world's real lines, newest first; when a live world has written fewer than three, the
   // titan's own true record fills in (when it woke, its Canticle, how much of it is struck), never invented hunters
@@ -822,7 +837,9 @@ export default function Hunt() {
     : interlude || !ready
     ? "Press to join the moment it can be hunted"
     : offline
-    ? "The world is out of reach: you hunt this titan alone for now"
+    ? holding
+      ? "Out of reach: the live titan is held here until the connection returns"
+      : "The world is out of reach: you hunt this titan alone for now"
     : rehearsal
     ? "A rehearsal against a titan of your own: nothing here is written in the Hall"
     : pinned
@@ -904,7 +921,7 @@ export default function Hunt() {
             <small>Everyone online fights it, on the same beat</small>
           </a>
           <button className="join-alt" onClick={rehearseAgain}>
-            Rehearse another fall <small>a titan of your own, near death</small>
+            Rehearse another fall <small>a 15-second rehearsal</small>
           </button>
         </>
       ) : (
@@ -913,10 +930,10 @@ export default function Hunt() {
           <small>{joinSub}</small>
         </button>
       )}
-      {/* nobody else in the world this minute: the one place a newcomer can see a titan fall, in a short rehearsal */}
+      {/* nobody else in the world this minute: the one place a newcomer can see a titan fall, in a 15-second rehearsal */}
       {offerRehearse && (
         <a className="join-alt" href="/?rehearse=1">
-          See a titan fall <small>· a short rehearsal</small>
+          See a titan fall <small>· a 15-second rehearsal</small>
         </a>
       )}
     </section>

@@ -19,8 +19,8 @@ describe("share words are honest about which titan", () => {
     expect(w.folio).toBe("A rehearsal titan");
     // its link opens a rehearsal (Hunt.jsx), not a ghost: the words never promise a replay of this run
     expect(w.text).not.toMatch(/Watch my run/);
-    expect(w.text).toContain("See one fall yourself in a short rehearsal");
-    // (no promise of a length it may not keep)
+    expect(w.text).toContain("See one fall yourself in a 15-second rehearsal");
+    // (the length a played rehearsal takes now: never R6's "30 seconds")
     expect(w.text).not.toMatch(/30 sec|30-second/);
   });
   it("a titan on your own page says so", () => {

@@ -229,6 +229,66 @@ describe("World client: one socket at a time", () => {
     expect(conns.length).toBe(before);
   });
 
+  it("a network blip keeps the last live titan (seed, number, wounds, wake time) until the world answers again; the bell titan only on a cold offline start", () => {
+    const { client, conns } = multiClient();
+    const w = new World({ client: client as any });
+    const titans: Array<[number, number]> = [];
+    const modes: string[] = [];
+    w.events.onTitan = (t) => titans.push([t.number, t.seed]);
+    w.events.onStatus = (m) => modes.push(m);
+    w.connect();
+    w.setIdentity({ name: "Ana", sigil: 3, aspect: "ember" });
+    const [A] = conns;
+    const n0 = performance.now();
+    const live = { ...titan, wokeAt: n0 - 600_000 }; // awake ten minutes
+    A.push(welcome(n0, { titan: live, hp: 140_000, stageAt: [12.5] }));
+    pongs(A, 60, 1000);
+    expect(titans).toEqual([[7, 4242]]);
+    const clock = w.titanTime();
+    const stage = w.stage;
+    // the network drops: nothing arrives for a while (the lobby, not a run)
+    vi.advanceTimersByTime(6000);
+    expect(w.mode).toBe("offline");
+    expect(w.isLocal).toBe(true);
+    expect(w.holdingLive).toBe(true);
+    expect(titans).toEqual([[7, 4242]]); // never swapped for a titan of the 3-hour block
+    expect(w.titan).toMatchObject({ number: 7, seed: 4242, wokeAt: live.wokeAt, hpMax: 200_000 });
+    expect(w.hp).toBe(140_000);
+    expect(w.stage).toBe(stage);
+    expect(Math.abs(w.titanTime() - (clock + 6))).toBeLessThan(0.3); // the same clock, running on
+    // blows in the meantime show on its wounds, but the world's titan cannot be felled from here
+    w.addHit(0, 500, 1);
+    expect(w.hp).toBe(139_500);
+    w.addHit(0, 1e9, 1);
+    expect(w.hp).toBe(1);
+    expect(titans).toHaveLength(1);
+    // the world answers again on a fresh socket: the same titan, so nothing is rebuilt
+    vi.advanceTimersByTime(3000);
+    const B = conns.at(-1)!;
+    expect(B).not.toBe(A);
+    B.push(welcome(performance.now(), { titan: live, hp: 139_000, stageAt: [12.5] }));
+    expect(w.mode).toBe("online");
+    expect(w.holdingLive).toBe(false);
+    expect(titans).toEqual([[7, 4242]]);
+    expect(w.hp).toBe(139_000);
+    expect(modes).toContain("offline");
+    expect(B.sent.find((m) => m.t === "hello")).toMatchObject({ name: "Ana" });
+    w.close();
+
+    // a page that never reached the world: the titan of the 3-hour block
+    const cold = multiClient();
+    const c = new World({ client: cold.client as any });
+    const coldTitans: number[] = [];
+    c.events.onTitan = (t) => coldTitans.push(t.number);
+    c.connect();
+    vi.advanceTimersByTime(4100);
+    expect(c.mode).toBe("offline");
+    expect(c.holdingLive).toBe(false);
+    expect(coldTitans).toEqual([0]);
+    expect(c.titanSeed).toBe(hash32("local", Math.floor(Date.now() / (3 * 3600_000))));
+    c.close();
+  });
+
   it("sends a hit batch again, once, when the actor refused it for a missing hello (a redialled socket)", () => {
     const { client, conns } = multiClient();
     const w = new World({ client: client as any });

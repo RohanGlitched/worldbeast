@@ -89,7 +89,8 @@ export type ToServer =
   | { t: "bye" };
 
 /** Hit rejection reasons, for acks and the live check. */
-export type HitWhy = "noHello" | "asleep" | "bad" | "beat" | "closed" | "rate" | "down";
+/** "hour": this hunter key has been credited its HOUR_CAP of blows this hour (base44/actors/world/logic.ts) */
+export type HitWhy = "noHello" | "asleep" | "bad" | "beat" | "closed" | "rate" | "down" | "hour";
 
 export type ToClient =
   | {

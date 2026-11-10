@@ -22,6 +22,12 @@ Built for the Base44 × Nitro Web Game Contest, 2026.
 | **Drawn as an engraving** | three.js shaders turn light into families of engraved lines that follow each part's surface, with a hand-coloured wash beneath, gold leaf, and gold kintsugi seams that open as the world wounds the titan. On first load the titan is cut onto the page line by line. |
 | **Sung, not looped** | A Web Audio engine composes each titan's score from its seed (drone, choir, frame drums, psaltery, bells), voices every attack a beat before it lands so you can dodge by ear, and keeps every note within a couple of milliseconds of the shared clock. |
 
+## Authorship and rights
+
+WORLDBEAST is an original game by **Rohan Borade**. Every line of code, every titan, the key art and logo, and all of the music and sound effects (synthesised live in the browser, no samples) were made for this contest between 9 and 10 November 2026. The commit history in this repository is the full record of that work, from the first commit on 9 November.
+
+It was built on Base44 from the start: the app was created on Base44 with the official Base44 CLI (`base44 create --template backend-and-client`), its world runs as a Base44 realtime actor, its records are Base44 entities, its epitaphs come from Base44's AI integration, and it is hosted and deployed by Base44 (`base44 deploy`). This repository is linked to the Base44 app, so the source lives with it. See [LICENSE](LICENSE): all rights reserved; third-party libraries and fonts are credited there under their own licences.
+
 ## Playing
 
 - Move with **WASD** / arrows, or drag anywhere (touch). **Space** (or double-tap / the dash button) dashes through an attack.

@@ -24,8 +24,10 @@ interface TitanState extends TitanInfo {
   stageAt: number[]; // titan seconds when stage 1 and 2 began
   recordId?: string;
   endedAt?: number;
-  /** when the world first wounded it: the escape clock starts here, not at waking (a sleeper never escapes) */
+  /** when the world first wounded it (kept for the record) */
   firstWoundAt?: number;
+  /** when it was last wounded: it escapes only after ESCAPE_MS with no new wound (a sleeper never escapes) */
+  lastWoundAt?: number;
 }
 
 interface Hunter {
@@ -493,10 +495,15 @@ export default class World extends Actor<ToServer, ToClient> {
       raw += c.dmg;
       if (c.flags & HIT_SURGE) surge = true;
       this.titan.hp -= dmg;
-      if (dmg > 0 && !this.titan.firstWoundAt) {
-        this.titan.firstWoundAt = now;
-        void this.saveTitan();
-        this.schedule("escape", now + ESCAPE_MS).catch((e) => this.log("schedule escape", e));
+      if (dmg > 0) {
+        const t = this.titan;
+        if (!t.firstWoundAt) t.firstWoundAt = now;
+        // the escape clock restarts with every wound; persist and reschedule at most once a minute
+        if (!t.lastWoundAt || now - t.lastWoundAt > 60_000) {
+          t.lastWoundAt = now;
+          void this.saveTitan();
+          this.schedule("escape", now + ESCAPE_MS).catch((e) => this.log("schedule escape", e));
+        } else t.lastWoundAt = now;
       }
       this.trackCore(h, c.core, c.beat, dmg, now);
       if (this.titan.hp <= 0) break;
@@ -608,8 +615,9 @@ export default class World extends Actor<ToServer, ToClient> {
     // a titan escapes eight hours after the world first wounded it if the world could not finish it;
     // one nobody has struck sleeps on (a titan wounded before this rule counts from now)
     if (t.status === "awake" && t.hp < t.hpMax - 0.5) {
-      if (!t.firstWoundAt) t.firstWoundAt = now;
-      else if (now >= t.firstWoundAt + ESCAPE_MS) await this.endTitan("escaped", now, null);
+      // a titan wounded before this rule counts its quiet from now
+      if (!t.lastWoundAt) t.lastWoundAt = now;
+      else if (now >= t.lastWoundAt + ESCAPE_MS) await this.endTitan("escaped", now, null);
     }
     if (now >= this.titan.wokeAt && this.announcedWake !== this.titan.number) {
       this.announcedWake = this.titan.number;

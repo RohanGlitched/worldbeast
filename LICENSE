@@ -1,0 +1,16 @@
+Copyright (c) 2026 Rohan Borade. All rights reserved.
+
+WORLDBEAST, its source code, engraved titan art, key art, logo, music and sound
+were written and made by Rohan Borade between 9 and 10 November 2026 for the
+Base44 x Nitro Web Game Contest, using the Base44 platform and its official CLI.
+No code, art, music or sound was taken from another game or project.
+
+The source is published so that anyone can read it and verify how it was built.
+You may not copy, redistribute or reuse it, in whole or in part, without written
+permission from the author.
+
+Third-party software used, under its own licence:
+- three.js (MIT), React and React DOM (MIT), Vite (MIT), Tailwind CSS (MIT),
+  the Base44 SDK and CLI (Base44's terms).
+- Fonts loaded from Google Fonts under the SIL Open Font License 1.1:
+  EB Garamond, IM Fell English, UnifrakturCook.

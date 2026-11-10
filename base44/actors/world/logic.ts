@@ -222,6 +222,32 @@ export class AspectRate {
   }
 }
 
+/**
+ * Anti-farm: the most blows one hunter key is credited in an hour (a bucket that refills HOUR_CAP an hour).
+ * Real play never meets it: a skilled hunter strikes ~60 blows a second while flying (R6: 8,940 in 147 s), so
+ * an hour of nonstop top play with lobby pauses comes to ~150-180k; a tireless script at the aspect's sustained
+ * rate (AspectRate) could strike ~620k. 180,000 is eighteen floor titans an hour from one browser.
+ */
+export const HOUR_CAP = 180_000;
+export class HourCap {
+  private left: number;
+  private at = 0;
+  constructor(readonly cap = HOUR_CAP) {
+    this.left = cap;
+  }
+  /** blows still allowed now */
+  room(nowMs: number): number {
+    if (this.at) this.left = Math.min(this.cap, this.left + ((nowMs - this.at) * this.cap) / HOUR_MS);
+    this.at = nowMs;
+    return this.left;
+  }
+  take(nowMs: number, dmg: number): boolean {
+    if (this.room(nowMs) < dmg) return false;
+    this.left -= dmg;
+    return true;
+  }
+}
+
 /** token bucket for per-connection message rate limits */
 export class Bucket {
   private tokens: number;

@@ -49,6 +49,17 @@ export const SPAWN_Y = 5;
 export const GENTLE_S = 20;
 export const GENTLE_HEAVY_S = 12;
 export const GENTLE_GRACE = 4;
+/** a first hunt's last seconds of grace field: `graceEnding` is true this long before the titan stops holding back */
+export const GRACE_WARN_S = 2;
+/**
+ * A still light (moving slower than STILL_SPEED for more than STILL_AFTER seconds) strikes at STILL_MUL
+ * (R6: with no input a hunter lived 26-30 s and struck ~1,900 blows, as much as one who played).
+ */
+export const STILL_AFTER = 3;
+export const STILL_MUL = 0.4;
+export const STILL_SPEED = 1.2;
+/** hounds hunt a light that has been still this long even while a first hunt's grace field holds them back */
+export const STILL_HOUNDS_AFTER = 6;
 /** the most a grace may be held open while an attack is passing over you, seconds */
 const GRACE_HOLD = 1.5;
 const RESONANCE_PER_GRAZE = 9;
@@ -149,9 +160,10 @@ export class Hunt {
   /** seconds into a run before hounds begin (first hunts are gentler) */
   houndsAfter = 0;
   private houndId = 0;
-  private stillT = 0;
-  private lastX = 0;
-  private lastY = SPAWN_Y;
+  /** seconds this light has been still (slower than STILL_SPEED, not dashing) */
+  stillFor = 0;
+  /** run seconds when a first hunt's grace field ended (the titan stops holding back), else -1 */
+  graceEndedAt = -1;
   /** seconds spent hugging a side rail or the top edge (hounds come oftener for a camper) */
   private edgeT = 0;
   private lastBeat = 0;
@@ -182,6 +194,15 @@ export class Hunt {
   get gentleLeft(): number {
     return this.thin ? Math.max(0, this.thin.until - this.lastT) : 0;
   }
+  /** a first hunt's grace field is about to end (its last GRACE_WARN_S seconds): cue "the titan stops holding back" */
+  get graceEnding(): boolean {
+    const left = this.gentleLeft;
+    return left > 0 && left <= GRACE_WARN_S;
+  }
+  /** this light has been still long enough that its blows are weak (STILL_MUL) */
+  get still(): boolean {
+    return this.stillFor > STILL_AFTER;
+  }
 
   /** Advance one frame. `t` = seconds since the titan woke (synced), `dt` = frame seconds. */
   step(t: number, dt: number, input: Input, stage: Stage, coreBroken: (id: number) => boolean = () => false) {
@@ -196,6 +217,9 @@ export class Hunt {
     if (!this.alive) return;
     this.time += dt;
     this.lastBeat = beat;
+    if (this.thin && this.graceEndedAt < 0 && t >= this.thin.until) this.graceEndedAt = this.time;
+    const px = this.x,
+      py = this.y;
 
     // --- movement
     const a = this.aspect;
@@ -233,6 +257,8 @@ export class Hunt {
     }
     this.x = Math.max(-ARENA.W / 2 + 0.3, Math.min(ARENA.W / 2 - 0.3, this.x + this.vx * dt));
     this.y = Math.max(0.4, Math.min(ARENA.H - 1.2, this.y + this.vy * dt));
+    // (pressing into a rail or the foot moves nothing: that is still too)
+    this.stillFor = this.dashT <= 0 && Math.hypot(this.x - px, this.y - py) < dt * STILL_SPEED ? this.stillFor + dt : 0;
 
     // --- hounds (personal, local-only volleys)
     this.houndsStep(t, beat, stage, dt);
@@ -293,7 +319,8 @@ export class Hunt {
 
     // --- surge
     const openCores = t < 0 ? [] : this.spec.cores.filter((c) => !coreBroken(c.id) && coreOpen(c, beat, stage));
-    if (this.resonance >= 100 && openCores.length && this.surgeT <= 0) {
+    // (never inside the spawn grace: a light that enters full, as a rehearsal's does, Surges once it is in the fight)
+    if (this.resonance >= 100 && openCores.length && this.surgeT <= 0 && !this.inGrace) {
       this.surgeT = SURGE_TIME;
       this.surges++;
       this.resonance = 0;
@@ -319,7 +346,8 @@ export class Hunt {
       // closer to the titan strikes harder, but the graze chain matters more: weaving through the
       // ink is the reward, so a hunter parked in a quiet corner under the titan cannot farm it
       // and from the margins darts strike the titan's flank at a glancing angle (see marginMul)
-      const reach = reachAt(this.y) * marginMul(this.x);
+      // and a light that has sat still for a while strikes weakly (STILL_MUL): the titan is felled by hunting it
+      const reach = reachAt(this.y) * marginMul(this.x) * (this.still ? STILL_MUL : 1);
       const comboMul = chainMul(this.combo);
       for (let s = 0; s < a.spread; s++) {
         const spreadMul = a.id === "bloom" ? 0.75 + 0.7 * (this.y / ARENA.H) : 1;
@@ -349,25 +377,22 @@ export class Hunt {
 
   private houndsStep(t: number, beat: number, stage: Stage, dt: number) {
     if (t < 0) return;
-    if (this.time < this.houndsAfter) {
-      this.nextHound = -1;
-      return;
-    }
-    const moved = Math.hypot(this.x - this.lastX, this.y - this.lastY);
-    this.lastX = this.x;
-    this.lastY = this.y;
-    this.stillT = moved < dt * 1.2 ? this.stillT + dt : 0;
     // (the foot counts too: walls and rain spend themselves above it, so it must not become a hiding place)
     const hugging = Math.abs(this.x) > ARENA.W / 2 - MARGIN || this.y > ARENA.H - 3 || this.y < INK_FLOOR + 0.2;
     this.edgeT = hugging ? this.edgeT + dt : Math.max(0, this.edgeT - dt * 2);
+    // a first hunt's grace field holds the hounds back, except from a light that sits still (after its spawn
+    // grace) for STILL_HOUNDS_AFTER seconds: they come for it, slowly, and stop coming the moment it moves
+    const held = this.time < this.houndsAfter;
+    const hunt = !held || (this.gentle && this.stillFor > STILL_HOUNDS_AFTER && !this.inGrace);
+    if (!hunt) this.nextHound = -1;
     // interval in beats: shorter as the run goes on, in harder stages, and much shorter for a hunter who sits still
     const runRamp = Math.min(1, this.time / 90);
     let every = (stage === 0 ? 6 : stage === 1 ? 5 : 4) - runRamp * 2.5;
     if (this.edgeT > 3) every = Math.min(every, 2.5);
-    if (this.stillT > 1.6) every = 1.5;
+    if (this.stillFor > 1.6) every = held ? 3 : 1.5;
     // the first hound winds up only once the spawn grace is over
-    if (this.nextHound < 0) this.nextHound = Math.ceil(beat + Math.max(0, this.invuln) / this.spec.beat) + 1;
-    if (beat >= this.nextHound) {
+    if (hunt && this.nextHound < 0) this.nextHound = Math.ceil(beat + Math.max(0, this.invuln) / this.spec.beat) + 1;
+    if (hunt && beat >= this.nextHound) {
       const r = rngFor("hound", this.spec.seed, this.houndId);
       const o = this.spec.origins[this.houndId % this.spec.origins.length];
       const lead = 1; // a beat of warning
@@ -481,8 +506,8 @@ export class Hunt {
       }
     this.x = xs[best % xs.length];
     this.y = ys[Math.floor(best / xs.length)];
-    this.lastX = this.x;
-    this.lastY = this.y;
+    // the grace field's rain now spares this spot (only hides more: the spawn chosen above stays as clear)
+    if (this.thin) this.thin.x = this.x;
   }
 
   get dashing() {

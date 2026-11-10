@@ -113,10 +113,11 @@ describe("a local titan falls", () => {
     const w = createLocalWorld(g, { rehearsal: true, search: "?rehearse=1" });
     w.start();
     expect(w.state).toMatchObject({ rehearsal: true, nearDeath: true, local: true, hpMax: REHEARSAL_HP, hp: Math.round(REHEARSAL_HP * REHEARSAL_LEFT), counts: false, huntOpts: { forgiving: true, resonance: REHEARSAL_RESONANCE, gentle: false } });
-    // 600-800 blows from falling (a 10-15 s fight with one Surge), and it fights in Wrath (its wounds alone would say Ruin)
-    expect(w.state.hp).toBeGreaterThanOrEqual(600);
-    expect(w.state.hp).toBeLessThanOrEqual(800);
-    expect(REHEARSAL_RESONANCE).toBeGreaterThanOrEqual(65);
+    // ~1,200 blows from falling (a 10-15 s fight with one early Surge: core/final.test.ts), in Wrath (its wounds
+    // alone would say Ruin)
+    expect(w.state.hp).toBeGreaterThanOrEqual(1_000);
+    expect(w.state.hp).toBeLessThanOrEqual(1_400);
+    expect(REHEARSAL_RESONANCE).toBe(100);
     expect(g.stageFn()).toBe(1);
     w.stop();
     expect(g.stageFn).toBeNull();
@@ -129,11 +130,61 @@ describe("a local titan falls", () => {
     w2.addHit(0, 10_000, 0); // no name given: the fall still happens, credited to no one
     vi.advanceTimersByTime(1);
     expect(felled[0]).toMatchObject({ rehearsal: true, blow: null, top: [] });
-    // the titan after a rehearsal's fall is a whole one: not "woken near death", and its light starts plain
+    // the titan after a rehearsal's fall is a whole one: not "woken near death", fought by the ordinary rules
+    // (never forgiving: R6's "Hunt again" opened a 10,000-blow titan that could not be lost), its light plain
     vi.advanceTimersByTime(LIFT_MS + 10);
-    expect(w2.state).toMatchObject({ rehearsal: true, nearDeath: false, hp: REHEARSAL_HP, huntOpts: { forgiving: true } });
-    expect(w2.state.huntOpts.resonance).toBeUndefined();
+    expect(w2.state).toMatchObject({ rehearsal: true, nearDeath: false, hp: REHEARSAL_HP });
+    expect(w2.state.huntOpts).toEqual({});
     w.stop();
     w2.stop();
+  });
+
+  it("rehearseAgain after the lift: a fresh near-death titan, awake at once, forgiving, in Wrath", () => {
+    const g = fakeGame();
+    const w = createLocalWorld(g, { rehearsal: true, search: "?rehearse=1" });
+    w.start();
+    const first = g.spec;
+    w.addHit(0, 10_000, 0);
+    vi.advanceTimersByTime(LIFT_MS + 10);
+    const whole = g.spec;
+    expect(whole.seed).not.toBe(first.seed);
+    expect(w.state).toMatchObject({ nearDeath: false, hp: REHEARSAL_HP, huntOpts: {} });
+    expect(g.stageFn()).toBe(0); // a whole titan follows its wounds (Calm)
+    expect(w.rehearseAgain()).toBe(true);
+    expect(g.spec.seed).not.toBe(whole.seed);
+    expect(g.spec.archetype).not.toBe(whole.archetype);
+    expect(w.state).toMatchObject({ nearDeath: true, hp: Math.round(REHEARSAL_HP * REHEARSAL_LEFT), interlude: 0, huntOpts: { forgiving: true, resonance: REHEARSAL_RESONANCE, gentle: false } });
+    expect(g.clock()).toBeGreaterThan(30); // awake and singing now: no interlude to wait through
+    expect(g.stageFn()).toBe(1);
+    expect(w.state.feed.at(-1).html).toMatch(/^Another rehearsal: .*woke near death/);
+    // a second call while that near-death titan is still up changes nothing
+    const again = g.spec;
+    w.rehearseAgain();
+    expect(g.spec).toBe(again);
+    w.stop();
+    const pinned = createLocalWorld(fakeGame(), { search: "?seed=5" });
+    expect(pinned.rehearseAgain()).toBe(false); // not a rehearsal: never
+    expect(pinned.state.huntOpts).toEqual({});
+  });
+
+  it("rehearseAgain during the lift: the felled plate lifts away, then a near-death titan (not a whole one) is engraved", () => {
+    const g = fakeGame();
+    const w = createLocalWorld(g, { rehearsal: true, search: "?rehearse=1" });
+    w.start();
+    const first = g.spec;
+    w.addHit(0, 10_000, 0);
+    vi.advanceTimersByTime(1);
+    expect(w.rehearseAgain()).toBe(true);
+    expect(g.spec).toBe(first); // still lifting
+    vi.advanceTimersByTime(LIFT_MS + 10);
+    expect(g.spec.seed).not.toBe(first.seed);
+    expect(w.state).toMatchObject({ nearDeath: true, hp: Math.round(REHEARSAL_HP * REHEARSAL_LEFT), interlude: 0, huntOpts: { forgiving: true } });
+    expect(g.stageFn()).toBe(1);
+    // and it falls in turn, with the ceremony
+    const n = g.falls;
+    w.addHit(0, 10_000, 0);
+    vi.advanceTimersByTime(1);
+    expect(g.falls).toBe(n + 1);
+    w.stop();
   });
 });

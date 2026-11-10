@@ -29,6 +29,8 @@ export function createLiveWorld(game, audio, hooks = {}) {
     counts: true,
     /** blows of yours this titan shrugged off (one hunter is credited in full only up to 40% of a life) */
     shrugged: 0,
+    /** out of reach, still showing the world's last live titan (world.ts startLocal) */
+    holdingLive: false,
   };
   let history = [];
   const rebuildFeed = () => {
@@ -51,6 +53,9 @@ export function createLiveWorld(game, audio, hooks = {}) {
         st.mode = m;
         st.local = m === "offline";
         st.counts = m !== "offline";
+        // out of reach after being online: the titan on the page is still the world's last live one (its fall
+        // belongs to the world), not a titan of the 3-hour block
+        st.holdingLive = m === "offline" && world.holdingLive;
         w.emit();
       };
       world.events.onTitan = (t, spec) => {

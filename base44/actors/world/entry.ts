@@ -2,7 +2,7 @@ import { Actor } from "base44:runtime/actors";
 import { hash32 } from "./core/rng.ts";
 import { makeTitan, PHRASE_BEATS, Stage, stageFor, TitanSpec } from "./core/titan.ts";
 import {
-  addDamage, breakThreshold, Bucket, checkHit, checkRun, clampPos, creditBlow, DmgBuckets, echoEviction, ESCAPE_MS, hashKey, hpMaxFor,
+  addDamage, breakThreshold, Bucket, checkHit, checkRun, clampPos, creditBlow, DmgBuckets, echoEviction, ESCAPE_MS, hashKey, HourCap, hpMaxFor,
   INTERLUDE_MS, HP_RULE, LIMITS, loopKey, MAX_HITS_PER_MSG, othersStriking, prepareEcho, AspectRate, RESUME_MS, REVIVE_R,
   sanitizeAspect, sanitizeName, resizeTitan, sanitizeSigil, segDist, SHARED_MS, shareId, SPARK_MS, titanSeed, titanT, topHunters,
   validKey,
@@ -103,6 +103,8 @@ export default class World extends Actor<ToServer, ToClient> {
   /** connections that said "bye" (abandoned for a better route): out of the world even while their socket lingers */
   private gone = new Set<string>();
   private rates = new Map<string, AspectRate>();
+  /** blows credited per hunter key this hour (logic.ts HOUR_CAP, anti-farm) */
+  private hourly = new Map<string, HourCap>();
   private sparks = new Map<string, { x: number; y: number; until: number }>();
   private hunterCache = new Map<string, { id: string; damageTotal: number; runs: number; bestRun: number; titansFelled: number }>();
   private nextNum = 1;
@@ -327,6 +329,8 @@ export default class World extends Actor<ToServer, ToClient> {
    * hunter in the roster, and nothing more is read from it.
    */
   private onBye(conn: Conn, now: number) {
+    // a stale socket saying goodbye while its id has already redialled on a fresh socket: the hunter stays
+    if ((this.getConnections() as Conn[]).some((c) => c !== conn && c.id === conn.id)) return;
     if (this.gone.size > 5000) this.gone.clear();
     this.gone.add(conn.id);
     const h = this.hunters.get(conn.id);
@@ -337,11 +341,15 @@ export default class World extends Actor<ToServer, ToClient> {
     this.dirty = true;
   }
 
-  /** connected browsers, without the ones that said bye */
+  /**
+   * connected browsers, without the ones that said bye. Counted by connection id: a browser whose socket dropped
+   * redials on the same id, and the gateway can hold the dead socket half-open for a minute (R6: one watcher
+   * read as "2 watching" for ~60 s after a network blip)
+   */
   private onlineCount(): number {
-    let n = 0;
-    for (const c of this.getConnections() as Conn[]) if (!this.gone.has(c.id)) n++;
-    return n;
+    const ids = new Set<string>();
+    for (const c of this.getConnections() as Conn[]) if (!this.gone.has(c.id)) ids.add(c.id);
+    return ids.size;
   }
 
   private addHunter(id: string, now: number): Hunter {
@@ -462,6 +470,10 @@ export default class World extends Actor<ToServer, ToClient> {
     if (!rate) rate = new AspectRate(h.aspect);
     // (an existing window is never replaced: switching light cannot reset it)
     this.rates.set(key, rate);
+    // (kept per key across reconnects and titans; dropped wholesale only if the map grows huge, like rates)
+    if (this.hourly.size > 20_000) this.hourly.clear();
+    const hourly = this.hourly.get(key) ?? new HourCap();
+    this.hourly.set(key, hourly);
     const stage = this.stage();
     const ctx = { spec: this.spec, stage, nowMs: now, wokeAt: this.titan.wokeAt };
     const accBefore = h.acc;
@@ -488,8 +500,14 @@ export default class World extends Actor<ToServer, ToClient> {
         continue;
       }
       const wound = creditBlow(c.dmg, credited, this.titan.hpMax, shared);
-      resisted += c.dmg - wound;
       const dmg = Math.min(wound, this.titan.hp);
+      // anti-farm: past HOUR_CAP credited blows in an hour, one key's blows wound nothing (real play never gets here)
+      if (dmg > 0 && !hourly.take(now, dmg)) {
+        bad++;
+        why = "hour";
+        continue;
+      }
+      resisted += c.dmg - wound;
       credited += dmg;
       ok += dmg;
       raw += c.dmg;

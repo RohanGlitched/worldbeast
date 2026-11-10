@@ -172,7 +172,7 @@ describe("R6: beams, the foot of the page, first hunts", () => {
     expect(h.invuln).toBe(GENTLE_GRACE);
     expect(h.houndsAfter).toBe(GENTLE_S);
     h.place(t0, 0);
-    expect(h.thin).toEqual({ until: t0 + GENTLE_S, heavyUntil: t0 + GENTLE_HEAVY_S });
+    expect(h.thin).toEqual({ until: t0 + GENTLE_S, heavyUntil: t0 + GENTLE_HEAVY_S, x: h.x });
     let hidden = 0, kept = 0;
     each(0, (v) => {
       for (const s of [t0 - 5, t0 + 5, t0 + 15, t0 + 25]) {

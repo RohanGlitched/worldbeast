@@ -394,7 +394,10 @@ export class World {
     return this.titan ? Math.max(0, Math.min(1, this.hp / this.titan.hpMax)) : 1;
   }
   get stage(): Stage {
-    return this.local ? stageFor(this.hpFrac) : (Math.min(2, this.stageAt.length) as Stage);
+    const told = Math.min(2, this.stageAt.length) as Stage;
+    if (!this.local) return told;
+    // (the last live titan, held while out of reach, keeps the stage the world gave it)
+    return this.local.live ? (Math.max(told, stageFor(this.hpFrac)) as Stage) : stageFor(this.hpFrac);
   }
   get titanNumber() {
     return this.titan?.number ?? 0;
@@ -508,8 +511,10 @@ export class World {
   private onWelcome(m: Extract<ToClient, { t: "welcome" }>) {
     if (this.offlineTimer) clearTimeout(this.offlineTimer);
     this.backoff = 1000;
-    const wasLocal = !!this.local;
+    // (a held live titan is the same titan: only a titan of the 3-hour block is swapped out)
+    const wasLocal = !!this.local && !this.local.live;
     this.local = null;
+    this.everOnline = true;
     if (!this.hadClock) this.clockOffset = m.n - performance.now(); // refined by pings below
     this.pings = []; // samples belong to one socket's route
     this.you = m.you;
@@ -721,25 +726,51 @@ export class World {
 
   // ------------------------------------------------------------ local fallback
 
-  private local: { hp: number } | null = null;
+  private local: { hp: number; live: boolean } | null = null;
+  /** this page has been welcomed by the world at least once */
+  private everOnline = false;
 
-  /** the actor is out of reach: a titan from the current 3-hour UTC block, so offline friends still match */
+  /**
+   * The actor is out of reach. A page that has been online keeps the last live titan (its seed, number, wounds
+   * and wake time, on the last server clock) until the world answers again: R6, a network blip swapped the
+   * world's titan for a different local one 5 s in, and back on reconnect. Only a page that has never reached the
+   * world wakes a titan of the current 3-hour UTC block (so offline friends still match).
+   */
   private startLocal() {
     if (this.local) return;
-    const block = Math.floor(Date.now() / LOCAL_BLOCK_MS);
-    this.local = { hp: LOCAL_HP };
-    this.clockOffset = Date.now() - performance.now();
-    this.smoothOffset = this.clockOffset;
     this.remote.clear();
     this.roster.clear();
     this.sparks.clear();
+    const t = this.titan;
+    if (this.everOnline && t && t.number > 0) {
+      // (the last live titan cannot be felled from here: its fall belongs to the world)
+      this.local = { hp: Math.max(1, this.hp), live: true };
+      this.hp = this.local.hp;
+      this.setMode("offline");
+      return;
+    }
+    const block = Math.floor(Date.now() / LOCAL_BLOCK_MS);
+    this.local = { hp: LOCAL_HP, live: false };
+    this.clockOffset = Date.now() - performance.now();
+    this.smoothOffset = this.clockOffset;
     this.setTitan({ number: 0, seed: hash32("local", block), wokeAt: block * LOCAL_BLOCK_MS, hpMax: LOCAL_HP, status: "awake" }, LOCAL_HP, []);
     this.setMode("offline");
+  }
+
+  /** the titan on the page while out of reach is the last live one (not a titan of the 3-hour block) */
+  get holdingLive(): boolean {
+    return !!this.local?.live;
   }
 
   private localHit(dmg: number) {
     const L = this.local!;
     if (!this.titan || this.serverNow() < this.titan.wokeAt || L.hp <= 0) return;
+    if (L.live) {
+      // blows against the last live titan show on its wounds, but only the world can fell it
+      L.hp = Math.max(1, L.hp - dmg);
+      this.hp = L.hp;
+      return;
+    }
     L.hp = Math.max(0, L.hp - dmg);
     this.hp = L.hp;
     if (L.hp > 0) return;

@@ -3,6 +3,7 @@ import World from "../../base44/actors/world/entry";
 import { MockConn } from "./__mocks__/actor-runtime";
 import { coreOpen, makeTitan, TitanSpec } from "@/core/titan";
 import { encodePath } from "./pathcodec";
+import { HOUR_CAP } from "../../base44/actors/world/logic";
 
 // Drives the real actor class in-process against the mock runtime (see vitest.config.ts alias).
 
@@ -377,6 +378,59 @@ describe("world actor (in-process)", () => {
     t.dirty = true;
     await t.handleTick();
     expect(B1.last("s").c).toBe(2);
+  });
+
+  it("a browser that redialled on the same id counts once while its dead socket lingers, and that socket's bye does not take it away", async () => {
+    const t: W = new (World as any)();
+    await t.handleStart();
+    await settle(t);
+    const [old, B1] = [new MockConn("re"), new MockConn("b1")];
+    for (const c of [old, B1]) {
+      t.conns.push(c);
+      await t.handleConnect(c);
+    }
+    await send(t, old, { t: "hello", key: key("e"), name: "Eo", sigil: 5, aspect: "ember" });
+    // the network drops; the browser redials on the same id while the gateway still holds the old socket
+    const fresh = new MockConn("re");
+    t.conns.push(fresh);
+    await t.handleConnect(fresh);
+    expect(fresh.last("welcome").online).toBe(2);
+    t.dirty = true;
+    await t.handleTick();
+    expect(B1.last("s").c).toBe(2);
+    // a goodbye on the stale socket leaves the hunter on the fresh one
+    await send(t, old, { t: "bye" });
+    expect(t.hunters.get("re")?.key).toBeTruthy();
+    await send(t, fresh, { t: "ping", c: 1 });
+    expect(fresh.last("pong")).toBeTruthy();
+  });
+
+  it("caps the blows one hunter key is credited in an hour (anti-farm), far above what real play strikes", async () => {
+    const t: W = new (World as any)();
+    await t.handleStart();
+    await settle(t);
+    const s = makeTitan(t.titan.seed, 1);
+    const C = new MockConn("farm");
+    t.conns.push(C);
+    await t.handleConnect(C);
+    await send(t, C, { t: "hello", key: key("f"), name: "Fa", sigil: 1, aspect: "ember" });
+    const hk = t.hunters.get("farm").key;
+    const [core, beat] = openBeat(s, 4);
+    vi.setSystemTime(t.titan.wokeAt + beat * s.beat * 1000);
+    await send(t, C, { t: "pos", x: 0, y: 4, alive: true, flags: 0 });
+    await send(t, C, { t: "hit", hits: [[core, 40, beat]] });
+    expect(C.last("ack")).toMatchObject({ ok: 40 });
+    // this key has already been credited all but 30 of its hour's blows
+    t.hourly.get(hk).take(Date.now(), HOUR_CAP - 70);
+    const hp0 = t.titan.hp;
+    await send(t, C, { t: "hit", hits: [[core, 20, beat], [core, 20, beat], [core, 20, beat]], q: 9 });
+    expect(C.last("ack")).toMatchObject({ ok: 20, bad: 2, why: "hour", q: 9 });
+    expect(hp0 - t.titan.hp).toBe(20);
+    // the bucket refills through the hour: ten minutes on, a sixth of the cap is back
+    vi.setSystemTime(Date.now() + 10 * 60_000);
+    expect(t.hourly.get(hk).room(Date.now())).toBeGreaterThan(HOUR_CAP / 6 - 100);
+    // real play: ~60 blows a second in flight, an hour of nonstop runs with short pauses, stays under the cap
+    expect(60 * 3600 * 0.8).toBeLessThan(HOUR_CAP);
   });
 
   it("the next titan never has the body of the one just felled", async () => {

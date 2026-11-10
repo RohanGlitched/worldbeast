@@ -35,7 +35,10 @@ export default function Footer() {
           </ul>
         </div>
       </div>
-      <div className="colophon">Engraved in real time with three.js; sung with the Web Audio API; hosted and kept by Base44. Made for the Base44 × Nitro Web Game Contest, 2026.</div>
+      <div className="colophon">
+        An original game by Rohan Borade: code, titans, art, music and sound made for the Base44 × Nitro Web Game Contest, 9–10 November 2026, on Base44 with the Base44 CLI. Engraved in real time with three.js; sung with the Web Audio API; hosted and kept by Base44. Source and full history:{" "}
+        <a href="https://github.com/RohanGlitched/worldbeast" target="_blank" rel="noopener">github.com/RohanGlitched/worldbeast</a>. © 2026 Rohan Borade.
+      </div>
     </footer>
   );
 }

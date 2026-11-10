@@ -1,6 +1,8 @@
 import { Link } from "./router";
 
 export const CHANGELOG = [
+  ["Nov 10", "A weightier fall: the camera holds on the killing blow, the gold burst and the FELLED stamp before the book opens. Rehearsals: see a titan of your own fall, then hunt the live one."],
+  ["Nov 10", "A quiet world counts every blow in full, a first hunt is gentler while you learn, and the Hall shows the first plate being written."],
   ["Nov 9", "Launch. The test world is wiped and Orthargek, the first titan, wakes. The daily omen begins."],
   ["Nov 9", "Ghost links: share a run and anyone can watch it against the very attacks you faced. Hounds, epitaphs, seals."],
   ["Nov 9", "The first titans wake: five anatomies, twelve attack forms, the Canticle, echoes, the open codex."],

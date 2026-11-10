@@ -44,13 +44,16 @@ const KILLERS = {
 };
 const killerOf = (k) => KILLERS[k] ?? ["the titan's ink", "Every attack is warned a beat early: watch the marks on its body and the guides on the page."];
 
-/** "12.3" of the titan's life struck: rounded down, so never "100.0" while a wound remains, never "0.0" after a blow */
+/**
+ * "12.3" of the titan's life struck: rounded down, so never "100.0" while a wound remains, never "0.0" after a
+ * blow; with an epsilon, so an exact tenth reads exactly (1,000 of 10,000 blows is "10.0", not "9.9")
+ */
 function struckText(hpFrac) {
   const p = (1 - hpFrac) * 100;
   if (hpFrac <= 0) return "100";
   if (p <= 0) return "0.0";
   if (p < 0.1) return "<0.1";
-  return (Math.floor(p * 10) / 10).toFixed(1);
+  return Math.min(99.9, Math.floor(p * 10 + 1e-6) / 10).toFixed(1);
 }
 
 // The run's numbers change ten times a second. They live in a small store that only the few leaves showing
@@ -103,6 +106,8 @@ function useHudText(store, write) {
 
 const Phrase = memo(function Phrase({ store, prefix = "" }) {
   const p = useHudValue(store, (h) => h?.phrase ?? 0);
+  // (a titan still asleep, between a fall and its waking, sings no phrase yet: its clock is before zero)
+  if (!(p >= 0)) return null;
   return (
     <span style={{ color: "var(--ink-3)", fontStyle: "italic" }}>
       {prefix}
@@ -343,10 +348,16 @@ export default function Hunt() {
   };
   const [felled, setFelled] = useState(null);
   const felledTimer = useRef(0);
+  // a run that ended with the titan's fall: its card waits for the death beat, the stamp and the book opening
+  // (Game FALL.CARD), so the climax plays first and the card never lands over it
+  const [cardHold, setCardHold] = useState(false);
+  const cardTimer = useRef(0);
   // the felled titan, while its body is still on the page (null once its plate has torn away)
   const [felledSpec, setFelledSpec] = useState(null);
   const [revived, setRevived] = useState(null);
   const runMark = useRef(null); // the world's accepted blows when this run began (for "your blows moved the world")
+  /** a rehearsal whose near-death titan has fallen: what follows is the live titan, or another rehearsal */
+  const spentRef = useRef(false);
 
   useEffect(() => {
     const g = new Game(canvasRef.current);
@@ -435,6 +446,9 @@ export default function Hunt() {
     g.events.onHits = (dmg, core, beat, surge) => w.addHit(core, dmg, beat, surge);
     g.events.onDown = (s) => {
       lastRun.current = s;
+      clearTimeout(cardTimer.current);
+      setCardHold(!!s.felled);
+      if (s.felled) cardTimer.current = setTimeout(() => setCardHold(false), FALL.CARD * 1000);
       const h = g.hunt;
       if (!s.felled && h && w.down) w.down(h.x, h.y);
       // a passing hunter may still rekindle this light: report the run once the spark has gone out
@@ -484,12 +498,24 @@ export default function Hunt() {
     return () => {
       document.removeEventListener("visibilitychange", onHide);
       clearTimeout(runTimer.current);
+      clearTimeout(cardTimer.current);
       clearTimeout(worldTimer);
       w.stop();
       g.stop();
       audio?.dispose();
     };
   }, []);
+
+  // with the run's card on the open leaf, the chronicle above it shows whole lines or none: its lines wrap into a
+  // column off the leaf when they don't fit, but a first line taller than the room left would be cut in half
+  useLayoutEffect(() => {
+    const sec = layerRef.current?.querySelector(".leaf.open .leaf-chronicle");
+    if (!sec) return;
+    const ul = sec.querySelector(".chronicle");
+    const li = ul?.firstElementChild;
+    const cut = !!(sec.closest(".with-card") && li && li.getBoundingClientRect().bottom > ul.getBoundingClientRect().bottom + 1);
+    if (sec.classList.contains("none-fit") !== cut) sec.classList.toggle("none-fit", cut);
+  });
 
   // the new layout is in the DOM: drop the lean-in's interim transform in the same paint
   useLayoutEffect(() => {
@@ -503,6 +529,12 @@ export default function Hunt() {
     (fromQueue = false) => {
       const g = gameRef.current;
       if (!g || g.phase === "playing") return;
+      // a rehearsal whose titan has fallen: the hunt from here is the live titan's (never a forgiving fight
+      // against a whole titan of your own); "Rehearse another fall" is the other way on
+      if (spentRef.current) {
+        location.assign("/");
+        return;
+      }
       // a rehearsal's felled titan leaves the page now, and the next one is engraved in
       g.releaseFelled();
       audioRef.current?.unlock().catch(() => {});
@@ -605,12 +637,40 @@ export default function Hunt() {
   const stage = g0?.stage ?? stageFor(hpFrac);
   const u = layout ? layout.pxPerUnit : 26;
   const styleU = { "--u": u + "px" };
-  const struckPct = (1 - hpFrac) * 100;
   const struckTxt = struckText(hpFrac);
+  // one convention on every bar (leaf, strip, a phone's top bar, a sideways phone's HUD): red is the life it has
+  // left, draining as it is struck; how much is struck is said in words beside it. The marks are where it turns
+  // to Wrath (66% left) and to Ruin (33% left).
+  const lifeBar = (
+    <div className="bar" role="img" aria-label={`${struckTxt}% struck`}>
+      <div className="fill" style={{ width: hpFrac * 100 + "%" }} />
+      <div className="stagemarks">
+        <i style={{ left: "33%" }} />
+        <i style={{ left: "66%" }} />
+      </div>
+    </div>
+  );
   const interlude = world?.interlude ?? 0;
   const runs = profile.runs || 0;
-  // alone in the live world (or out of its reach): offer the 30-second rehearsal, where a judge can see a fall
+  // alone in the live world (or out of its reach): offer a short rehearsal, where a judge can see a fall
   const offerRehearse = !recorded && !rehearsal && !pinned && ((live && world.hunters.length === 0) || offline);
+  // the rehearsal's near-death titan has fallen (its body is still on the page, or the whole titan after it woke)
+  const spent = rehearsal && (!world?.nearDeath || !!heldSpec);
+  spentRef.current = spent;
+  const rehearseAgain = () => {
+    const w = worldRef.current;
+    clearTimeout(cardTimer.current);
+    setCardHold(false);
+    // the world wakes another near-death titan of your own in place (localWorld), or the page opens a new rehearsal
+    if (typeof w?.rehearseAgain === "function") {
+      setSummary(null);
+      gameRef.current?.releaseFelled();
+      w.rehearseAgain();
+      return;
+    }
+    const q = new URLSearchParams(location.search);
+    location.assign("/?rehearse=1" + (q.get("debug") === "1" ? "&debug=1" : ""));
+  };
   const presenceLine = rehearsal ? "Only you · a rehearsal" : pinned ? "Only you · a titan pinned to this page" : offline ? "Out of reach of the world · only you" : who?.header;
 
   // the chronicle: the world's real lines, newest first; when a live world has written fewer than three, the
@@ -678,13 +738,7 @@ export default function Hunt() {
       ) : (
         <section className="wounds" aria-label="The titan's wounds">
           <div className="rubric">{rehearsal ? "Its wounds · a rehearsal" : "Its wounds"}</div>
-          <div className="bar">
-            <div className="fill" style={{ width: struckPct + "%" }} />
-            <div className="stagemarks">
-              <i style={{ left: "34%" }} />
-              <i style={{ left: "67%" }} />
-            </div>
-          </div>
+          {lifeBar}
           <div className="caption">
             <span>
               {heldSpec ? interlude ? `Felled · the next titan wakes in ${interlude} s` : "Felled · the next titan stirs" : interlude ? `Wakes in ${interlude} s · ${fmt(world.hpMax)} to strike` : `${struckTxt}% struck · ${fmt(world.hp)} of ${fmt(world.hpMax)} left`}
@@ -842,14 +896,27 @@ export default function Hunt() {
           </ul>
         )}
       </div>
-      <button className={"join" + (queued ? " queued" : "") + (!ready || interlude ? " waiting" : "")} onClick={() => begin()} aria-busy={!ready || interlude > 0}>
-        {joinLabel}
-        <small>{joinSub}</small>
-      </button>
-      {/* nobody else in the world this minute: the one place a newcomer can see a titan fall, in 30 seconds */}
+      {spent ? (
+        // the rehearsal has shown its fall: the way on is the live titan, everyone's; another rehearsal is second
+        <>
+          <a className="join" href="/">
+            Hunt the live titan
+            <small>Everyone online fights it, on the same beat</small>
+          </a>
+          <button className="join-alt" onClick={rehearseAgain}>
+            Rehearse another fall <small>a titan of your own, near death</small>
+          </button>
+        </>
+      ) : (
+        <button className={"join" + (queued ? " queued" : "") + (!ready || interlude ? " waiting" : "")} onClick={() => begin()} aria-busy={!ready || interlude > 0}>
+          {joinLabel}
+          <small>{joinSub}</small>
+        </button>
+      )}
+      {/* nobody else in the world this minute: the one place a newcomer can see a titan fall, in a short rehearsal */}
       {offerRehearse && (
         <a className="join-alt" href="/?rehearse=1">
-          See a titan fall <small>a 30 s rehearsal of your own</small>
+          See a titan fall <small>· a short rehearsal</small>
         </a>
       )}
     </section>
@@ -874,18 +941,28 @@ export default function Hunt() {
       </div>
       <h1 className="strip-name">{spec.name}</h1>
       <section className="wounds" aria-label="The titan's wounds">
-        <div className="bar">
-          <div className="fill" style={{ width: struckPct + "%" }} />
-          <div className="stagemarks">
-            <i style={{ left: "34%" }} />
-            <i style={{ left: "67%" }} />
-          </div>
-        </div>
+        {lifeBar}
         <div className="caption">
-          <span>{struckTxt}% struck</span>
+          <span>{heldSpec ? "Felled" : `${struckTxt}% struck`}</span>
           <span>{recorded ? "a recorded run" : rehearsal ? "a rehearsal" : pinned ? "only you" : who?.topbar}</span>
         </div>
       </section>
+      {/* the killing blow: the camera holds on the fight through the death beat and the stamp (Game FALL.HOLD);
+          the leaf says so, rather than going blank while the book opens */}
+      {heldSpec && felled && (
+        <div className="strip-felled" role="status">
+          <div className="strip-felled-word">Felled</div>
+          <div className="strip-felled-line">
+            {felled.blow ? (
+              <>
+                The final blow: <Sigil id={felled.blow.sigil} size={u * 0.55} /> <b>{felled.blow.name}</b>
+              </>
+            ) : (
+              "The world brought it down together."
+            )}
+          </div>
+        </div>
+      )}
       <section aria-label="The Canticle">
         <div className="rubric" style={{ display: "flex", justifyContent: "space-between" }}>
           <span>The Canticle</span>
@@ -909,7 +986,7 @@ export default function Hunt() {
       </section>
       {counts && !recorded && <OmenProgress store={hudStore} omen={omen} done={omenDone} aspect={profile.aspect} />}
       {gauges}
-      {ledger}
+      {playing || heldSpec ? <Ledger store={hudStore} aspectName={ASPECTS[profile.aspect].name} hpMax={world?.hpMax ?? 0} /> : null}
     </>
   );
 
@@ -943,11 +1020,6 @@ export default function Hunt() {
         );
       })()}
       {live && world.shrugged > 0 && <div className="wb-shrug">Others are fighting this titan too: past two fifths of its life, your blows land at a quarter.</div>}
-      {rehearsal && summary.felled && (
-        <a className="wb-rehearse-live" href="/">
-          Now hunt the live titan, with everyone
-        </a>
-      )}
       <dl className="facts" style={{ marginTop: "0.7em" }}>
         <dt>Grazes</dt>
         <dd>{summary.grazes}</dd>
@@ -991,12 +1063,25 @@ export default function Hunt() {
           {shareMsg}
         </div>
       )}
+      {spent && (
+        // a rehearsal's fall: the way on is the live titan (never a forgiving fight against a whole titan of your own)
+        <div className="row">
+          <a className="join" href="/" style={{ flex: 1, fontSize: "1.3em" }} autoFocus>
+            Hunt the live titan
+            <small>everyone online, the same titan, the same beat</small>
+          </a>
+        </div>
+      )}
       <div className="row">
-        {/* after a fall the next titan sleeps for a while: the button says so, and joins it as it wakes */}
-        <button className="join" style={{ flex: 2, fontSize: "1.3em" }} onClick={() => begin()} autoFocus>
-          Hunt again
-          {interlude > 0 && <small>the next titan wakes in {interlude} s: you join as it does</small>}
-        </button>
+        {spent ? (
+          <button className="ghost" style={{ flex: 2 }} onClick={rehearseAgain}>
+            Rehearse another fall
+          </button>
+        ) : (
+          <button className="join" style={{ flex: 2, fontSize: "1.3em" }} onClick={() => begin()} autoFocus>
+            Hunt again
+          </button>
+        )}
         <button
           className="ghost"
           style={{ flex: 1 }}
@@ -1017,6 +1102,8 @@ export default function Hunt() {
           Rest
         </button>
       </div>
+      {/* after a fall the next titan sleeps for a while: said under the buttons (inside one it wrapped to three lines) */}
+      {!spent && interlude > 0 && <div className="row-note">The next titan wakes in {interlude} s: Hunt again joins it as it does.</div>}
     </div>
   );
 
@@ -1054,13 +1141,13 @@ export default function Hunt() {
       <div className="world-layer" ref={layerRef}>
         {/* the bestiary leaf (wide screens); during a run it is folded to a strip beside the fight */}
         {L?.spread && L.left && spec && (
-          <div className={"leaf" + (L.focus ? " strip" : " open")} key={L.focus ? "strip" : "open"} style={{ left: L.left.x, top: L.left.y, width: L.left.w, height: L.left.h }}>
+          <div className={"leaf" + (L.focus ? " strip" : " open") + (!L.focus && summary && !playing ? " with-card" : "")} key={L.focus ? "strip" : "open"} style={{ left: L.left.x, top: L.left.y, width: L.left.w, height: L.left.h }}>
             {L.focus ? (
               stripBody
             ) : (
               <>
                 {leafBody}
-                {playing ? ledger : summary ? summaryCard("in-leaf", null) : !replay && lobbyControls}
+                {playing ? ledger : summary ? (cardHold ? null : summaryCard("in-leaf", null)) : !replay && lobbyControls}
               </>
             )}
           </div>
@@ -1092,8 +1179,8 @@ export default function Hunt() {
         )}
 
         {/* run summary */}
-        {summary && arena && mode === "single" && summaryCard("", { left: arena.x + arena.w * 0.06, width: arena.w * 0.88, top: arena.y + arena.h * (summary.felled ? 0.42 : 0.14) })}
-        {summary && sideBox && !L.focus && summaryCard("in-side", sideBox)}
+        {summary && !cardHold && arena && mode === "single" && summaryCard("", { left: arena.x + arena.w * 0.06, width: arena.w * 0.88, top: arena.y + arena.h * (summary.felled ? 0.42 : 0.14) })}
+        {summary && !cardHold && sideBox && !L.focus && summaryCard("in-side", sideBox)}
 
         {/* a tall screen's notes sit in the titan's band, above the arena: never over the attack lanes */}
         {tip && arena && page && playing && mode === "single" && tipNote("band-note", { left: arena.x + arena.w * 0.04, width: arena.w * 0.92, top: Math.max(page.y, 0) + 46 })}
@@ -1110,7 +1197,7 @@ export default function Hunt() {
           </div>
         )}
         {felled && arena && page && (
-          <div className="felled-stamp" style={{ left: page.x, top: g0 ? g0.screenOf(0, 25.2).y : arena.y, width: page.w }} role="status">
+          <div className="felled-stamp" style={{ left: page.x, top: g0 ? g0.screenOf(0, 25.2 - (L.focus ? g0.view.drop[1] : 0)).y : arena.y, width: page.w }} role="status">
             <div className="felled-word">Felled</div>
             <div className="felled-line">
               {felled.blow ? (

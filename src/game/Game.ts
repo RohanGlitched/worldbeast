@@ -18,11 +18,13 @@ export type Phase = "lobby" | "playing" | "down" | "replay";
 
 /**
  * A titan's fall, in seconds from the killing blow: its death beat (it sags and shudders on the beat while ink
- * bleeds down the page), the FELLED stamp slamming onto the body (SLAM, on the felled peal's chord), its colour
- * draining to bare lines, the plate held under the stamp, then torn away (RELEASE..GONE) before the next titan
- * is engraved in. The stamp in the DOM (Hunt.jsx, index.css .felled-stamp) keeps the same clock.
+ * bleeds down the page), the FELLED stamp slamming onto the body (SLAM: the gold burst, on the felled peal's
+ * chord), its colour draining to bare lines, the plate held under the stamp, then torn away (RELEASE..GONE)
+ * before the next titan is engraved in. A run's camera stays on the fight through the death beat and the stamp
+ * (HOLD), then the book opens; the run's card comes once it has (CARD). The stamp in the DOM (Hunt.jsx,
+ * index.css .felled-stamp) keeps the same clock.
  */
-export const FALL = { SLAM: 1.6, DRAIN: 1.1, RELEASE: 5.6, LIFT: 1.2, GONE: 6.8 };
+export const FALL = { SLAM: 1.0, DRAIN: 1.1, HOLD: 1.45, CARD: 2.35, RELEASE: 5.6, LIFT: 1.2, GONE: 6.8 };
 const fallReveal = (f: number) => (f < FALL.SLAM ? 3 : f < FALL.SLAM + FALL.DRAIN ? 3 - (2 * (f - FALL.SLAM)) / FALL.DRAIN : f < FALL.RELEASE ? 1 : Math.max(0, 1 - (f - FALL.RELEASE) / FALL.LIFT));
 /** after a frame gap this long during a run (a hitch: GC, a busy GPU, a notification) the light is spared a moment */
 const HITCH_S = 0.3;
@@ -385,13 +387,22 @@ export class Game {
       this.prebuilt = new Titan(makeTitan(seed, number));
     };
     const ric = (window as unknown as { requestIdleCallback?: (f: () => void, o?: { timeout: number }) => number }).requestIdleCallback;
-    this.prebuildTimer = window.setTimeout(() => (ric ? ric(build, { timeout: 1200 }) : build()), (FALL.SLAM + 0.5) * 1000);
+    // (after the stamp and the camera's way back out to the book: never inside the fall's own frames)
+    this.prebuildTimer = window.setTimeout(() => (ric ? ric(build, { timeout: 1200 }) : build()), (FALL.HOLD + 1.1) * 1000);
+  }
+
+  /** the camera was on the fight when the titan fell: it stays there through the death beat and the stamp */
+  private holdFall = false;
+  /** the camera is gliding between the book and the fight (DOM canvases pause their drawing meanwhile) */
+  get gliding() {
+    return this.fz.t < 1;
   }
 
   /** the world felled the titan: it shudders, its seams flood with gold, then the engraving lifts away */
   fell() {
     if (this.fallT >= 0) return;
     this.fallT = 0;
+    this.holdFall = this.fz.to === 1;
     this.shake = 1.2;
     this.events.onSfx?.("felled");
     // the ink still in flight dissolves into flecks: the stamp never lands over falling drops
@@ -518,11 +529,19 @@ export class Game {
         this.fx.ring(h.x, h.y, 1.5, 4, HITCH_GRACE);
       }
       this.primeStep();
+      // under the closed cover nothing of the page is seen: draw it a few times a second (the paper baked, the
+      // clock kept, the programs warmed), not 60 (on a phone the full engraving every frame was ~13% of the CPU)
+      if (this.holdReveal && !this.coverDirty && now - this.coverAt < 250) return;
+      this.coverDirty = false;
+      this.coverAt = now;
       this.frame(dt);
       this.adaptQuality(raw);
     };
     this.raf = requestAnimationFrame(loop);
   }
+  /** (closed cover) the last frame drawn under it, and a resize that must be drawn at once */
+  private coverAt = 0;
+  private coverDirty = false;
 
   stop() {
     cancelAnimationFrame(this.raf);
@@ -566,6 +585,7 @@ export class Game {
     const dens = (i: number) => (v.dpr * w) / (v.cams[i].halfW * 2);
     this.paperSpec = { u, densA: dens(0), densB: dens(1), leaf: v.leftLeaf, strip: v.strip, needB: v.mode !== "single" };
     if (sized) this.quietUntil = performance.now() + 1200;
+    this.coverDirty = true;
     this.emitLayout();
   };
 
@@ -606,7 +626,9 @@ export class Game {
     this.focusPhase = this.phase;
     this.downHold = Math.max(0, this.downHold - dt);
     const live = this.phase === "playing" || this.phase === "replay" || (this.phase === "down" && this.downHold > 0);
-    const want = v.mode !== "single" && live && !this.falling ? 1 : 0;
+    // a titan felled under the run's camera: hold on the fight through its death beat and the stamp, then open the book
+    const held = this.falling && this.holdFall && this.fallT < FALL.HOLD;
+    const want = v.mode !== "single" && ((live && !this.falling) || held) ? 1 : 0;
     if (want !== this.fz.to) this.beginFocus(want);
     if (this.fz.t >= 1) return;
     this.fz.t = Math.min(1, this.fz.t + dt / this.fz.dur);
@@ -882,6 +904,9 @@ export class Game {
       // a first draw builds the GPU's variants for them, and in the run's first seconds that was a hitch
       draws.push({ x: 0, y: -60, kind: 0, hue: 0.12, inv: 0.5, dash: 1, surge: 1, seed: 0.3, grace: 0.5 });
       mine = { x: 0, y: -60, alive: true };
+      // ...and every kind of spark once (strike flecks, ink spatter, dart streaks, Surge and gold-seam rings,
+      // dust, the fall's drips), so the run's first strike, Surge and fall draw nothing for the first time
+      for (let type = P.Fleck; type <= P.Drip; type++) for (let col = 0; col < 5; col++) this.fx.add({ x: 0, y: -60, type, col, max: 0.05, size: 0.1, drag: 0 });
       this.warmed++;
     }
     this.hunters.update(draws, t, mine);
@@ -983,39 +1008,45 @@ export class Game {
   }
 
   /**
-   * Draw the scene. In the open book the titan is held to its own page: the paper first, then the titan with
-   * a scissor at the page's edges (its towers never rise over the page top, its legs never step onto the
-   * desk), then the ink, the hunters and the sparks over it, as before.
+   * Draw the scene: the paper and the page's guides (rain columns, a wall's safe lane) first, then the titan
+   * over them (a guide never slices its body into strips: it is lowered over the arena's top band in a run),
+   * then the attacks, the hunters and the sparks over it, as before. In the open book the titan is also held
+   * to its own page with a scissor at the page's edges (its towers never rise over the page top, its legs never
+   * step onto the desk).
    */
   private renderScene() {
     const v = this.view;
     const r = v.renderer;
     const tg = this.titan?.group;
-    if (!v.spread || !tg) {
+    if (!tg) {
       r.render(v.scene, v.camera);
       return;
     }
-    const a = this.screenOf(-PAGE.W / 2, PAGE.Y1),
-      b = this.screenOf(PAGE.W / 2, PAGE.Y0);
-    const x0 = Math.max(0, Math.floor(a.x)),
-      x1 = Math.min(this.cssW, Math.ceil(b.x));
-    const top = Math.max(0, Math.floor(a.y));
     const kids = v.scene.children;
     const vis = kids.map((o) => o.visible);
     const kept = this.kept?.group;
+    const guides = this.ink.guides;
     const isTitan = (o: THREE.Object3D) => o === tg || o === kept;
+    const under = (o: THREE.Object3D) => o === this.page.mesh || o === guides;
     const show = (f: (o: THREE.Object3D) => boolean) => kids.forEach((o, i) => (o.visible = vis[i] && f(o)));
     const auto = r.autoClear;
     try {
-      show((o) => o === this.page.mesh);
+      show(under);
       r.render(v.scene, v.camera);
       r.autoClear = false;
       show(isTitan);
-      r.setScissor(x0, 0, Math.max(0, x1 - x0), Math.max(0, this.cssH - top));
-      r.setScissorTest(true);
+      if (v.spread) {
+        const a = this.screenOf(-PAGE.W / 2, PAGE.Y1),
+          b = this.screenOf(PAGE.W / 2, PAGE.Y0);
+        const x0 = Math.max(0, Math.floor(a.x)),
+          x1 = Math.min(this.cssW, Math.ceil(b.x));
+        const top = Math.max(0, Math.floor(a.y));
+        r.setScissor(x0, 0, Math.max(0, x1 - x0), Math.max(0, this.cssH - top));
+        r.setScissorTest(true);
+      }
       r.render(v.scene, v.camera);
       r.setScissorTest(false);
-      show((o) => o !== this.page.mesh && !isTitan(o));
+      show((o) => !under(o) && !isTitan(o));
       r.render(v.scene, v.camera);
     } finally {
       r.setScissorTest(false);

@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { COLUMN, FieldFrame, GAP, LANE, RAIL, RING_FLOOR, STRIDE, TREAD } from "@/core/field";
-import { Plate } from "@/core/titan";
+import { ARENA, Plate } from "@/core/titan";
 import { NOISE } from "./glsl";
 
 // Attacks drawn in the plate's own engraving: hatched and outlined drops, pen-stroke shockwaves,
@@ -177,7 +177,8 @@ export class InkLayer {
           } else if (kind < 4.5) { // zone / mark / column: cx,cy, R
             c = sA.yz; h = vec2(sA.w * 1.25 + .5);
             if (kind > 2.5 && kind < 3.5) h = vec2(1.);
-            if (kind > 3.5) h = vec2(sA.w + .5, 30.);
+            // a rain column: from the foot of the page up to where its drops are born, never up the titan
+            if (kind > 3.5) { float bot = uPage.y, top = ${(ARENA.TOP + 0.65).toFixed(2)}; c = vec2(sA.y, (top + bot) * .5); h = vec2(sA.w + .5, (top - bot) * .5); }
           } else { // lane: x, top y, half width; it runs down to the foot of the page
             float bot = uPage.y; c = vec2(sA.y, (sA.z + bot) * .5); h = vec2(sA.w + .4, (sA.z - bot) * .5 + .2);
           }
@@ -392,7 +393,31 @@ export class InkLayer {
     this.shapes.frustumCulled = false;
     this.shapes.renderOrder = 15;
     scene.add(this.shapes);
+
+    // the page's guides (rain columns, a wall's safe lane): the same shapes in their own draw, laid under the
+    // titan (Game.renderScene), so a guide never slices its body into strips where it overhangs the arena
+    this.guideGeo = new THREE.InstancedBufferGeometry();
+    this.guideGeo.index = quad.index;
+    this.guideGeo.setAttribute("position", quad.getAttribute("position"));
+    const G = 96;
+    this.gA = new THREE.InstancedBufferAttribute(new Float32Array(G * 4), 4).setUsage(THREE.DynamicDrawUsage);
+    this.gB = new THREE.InstancedBufferAttribute(new Float32Array(G * 4), 4).setUsage(THREE.DynamicDrawUsage);
+    this.gC = new THREE.InstancedBufferAttribute(new Float32Array(G * 4), 4).setUsage(THREE.DynamicDrawUsage);
+    this.guideGeo.setAttribute("sA", this.gA);
+    this.guideGeo.setAttribute("sB", this.gB);
+    this.guideGeo.setAttribute("sC", this.gC);
+    this.guideGeo.instanceCount = 0;
+    this.guides = new THREE.Mesh(this.guideGeo, shapeMat);
+    this.guides.frustumCulled = false;
+    this.guides.renderOrder = 14;
+    scene.add(this.guides);
   }
+  /** the guides' draw (drawn under the titan: see Game.renderScene) */
+  readonly guides: THREE.Mesh;
+  private guideGeo: THREE.InstancedBufferGeometry;
+  private gA: THREE.InstancedBufferAttribute;
+  private gB: THREE.InstancedBufferAttribute;
+  private gC: THREE.InstancedBufferAttribute;
 
   private hushTo = 1;
   private hushAt = 0;
@@ -455,12 +480,30 @@ export class InkLayer {
       C[k * 4] = c0; C[k * 4 + 1] = c1; C[k * 4 + 2] = c2; C[k * 4 + 3] = c3;
       k++;
     };
-    // guides first (lanes, columns), so hazards always draw over them
-    for (let i = 0; i < f.zoneCount; i++) {
-      const o = i * ZN;
-      const ink = f.zones[o + 4];
-      if (ink >= LANE) put(5, f.zones[o], f.zones[o + 1], f.zones[o + 2], f.zones[o + 3], 0, 0, 0, 0, 0, ink - LANE, 0);
-      else if (ink >= COLUMN) put(4, f.zones[o], f.zones[o + 1], f.zones[o + 2], f.zones[o + 3], 0, 0, 0, 0, 0, ink - COLUMN, 0);
+    // the guides (lanes, columns) in their own draw, under the titan and every hazard
+    {
+      const GA = this.gA.array as Float32Array,
+        GB = this.gB.array as Float32Array,
+        GC = this.gC.array as Float32Array;
+      const gcap = GA.length / 4;
+      let g = 0;
+      for (let i = 0; i < f.zoneCount && g < gcap; i++) {
+        const o = i * ZN;
+        const ink = f.zones[o + 4];
+        if (ink < COLUMN) continue;
+        const lane = ink >= LANE;
+        GA[g * 4] = lane ? 5 : 4;
+        GA[g * 4 + 1] = f.zones[o];
+        GA[g * 4 + 2] = f.zones[o + 1];
+        GA[g * 4 + 3] = f.zones[o + 2];
+        GB[g * 4] = f.zones[o + 3];
+        GB[g * 4 + 1] = GB[g * 4 + 2] = GB[g * 4 + 3] = 0;
+        GC[g * 4] = GC[g * 4 + 1] = GC[g * 4 + 3] = 0;
+        GC[g * 4 + 2] = ink - (lane ? LANE : COLUMN);
+        g++;
+      }
+      this.gA.needsUpdate = this.gB.needsUpdate = this.gC.needsUpdate = true;
+      this.guideGeo.instanceCount = g;
     }
     for (let i = 0; i < f.zoneCount; i++) {
       const o = i * ZN;

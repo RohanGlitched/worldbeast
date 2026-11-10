@@ -55,15 +55,18 @@ export default function Cover({ rect, onOpen, meta, spec, replay }) {
           <path d="M60 60 q30 10 40 40 M340 60 q-30 10 -40 40 M60 500 q30 -10 40 -40 M340 500 q-30 -10 -40 -40" />
           <path d="M70 430 H330 M90 444 H310" />
         </svg>
+        {/* the blank compass is put away the moment the titan starts inking in (onLoad), not after it has: the two
+            were a double exposure for the length of the fade */}
         <span className={"medallion" + (shown && inked ? " inked" : "")} aria-hidden="true">
-          {shown ? <img key={img.seed} src={shown} alt="" onAnimationEnd={() => setInked(true)} /> : null}
+          {shown ? <img key={img.seed} src={shown} alt="" onLoad={() => setInked(true)} onError={() => setInked(false)} /> : null}
         </span>
+        {/* (the line is there from the first paint, blank until the world names its titan: nothing below it shifts) */}
         {replay ? (
           <span className="cover-awake">
             A ghost run: {replay.name}, {Math.round(replay.damage).toLocaleString("en-US")} blows{spec ? ` against ${spec.name}` : ""}
           </span>
         ) : (
-          spec && <span className="cover-awake">Awake now: {spec.name}, {spec.epithet}</span>
+          <span className={"cover-awake" + (spec ? "" : " pending")}>{spec ? `Awake now: ${spec.name}, ${spec.epithet}` : " "}</span>
         )}
         <span className="cover-title">Worldbeast</span>
         <span className="cover-sub">One titan · everyone online · the same moment</span>

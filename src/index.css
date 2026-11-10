@@ -734,8 +734,31 @@ button {
     radial-gradient(ellipse at 50% 0%, rgba(255, 220, 160, 0.08), transparent 60%),
     repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.04) 0 2px, transparent 2px 7px),
     var(--desk);
-  padding: 64px 16px 0;
+  /* (the foot clears the host's corner badge) */
+  padding: 64px 16px 72px;
   overflow-x: hidden;
+}
+/* a solid band behind the ribbons (scrolled, the plates' words showed between the tabs) */
+.doc::before {
+  content: "";
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 30px;
+  background: linear-gradient(180deg, #110c09, #1a1410);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5), inset 0 -1px 0 rgba(214, 165, 49, 0.35);
+  z-index: 19;
+  pointer-events: none;
+}
+@media (max-width: 760px) {
+  .doc::before {
+    height: calc(24px + env(safe-area-inset-top));
+  }
+  /* a phone: the first plate starts below the fold's corner badge, never with its heading under it */
+  .plates > .wb-first-plate {
+    margin-top: 64px;
+  }
 }
 .doc > header,
 .doc > section,
@@ -1277,8 +1300,8 @@ button {
   clip: rect(0 0 0 0);
 }
 
-/* the felled ceremony, on the clock of Game FALL: the titan's death beat (1.6 s), then the stamp slams onto its
-   body, holds over the drained plate, and goes as the plate is torn away (5.6 s .. 6.8 s) */
+/* the felled ceremony, on the clock of Game FALL: the titan's death beat (1 s), then the stamp slams onto its
+   body with the gold burst (SLAM), holds over the drained plate, and goes as the plate is torn away (5.6 .. 6.8 s) */
 .felled-stamp {
   position: absolute;
   pointer-events: none;
@@ -1298,11 +1321,11 @@ button {
   transform: rotate(-7deg);
   background: rgba(239, 228, 204, 0.82);
   box-shadow: 0 0 0 0.12em rgba(239, 228, 204, 0.5);
-  animation: stampSlam 0.36s cubic-bezier(0.55, 0, 0.6, 1.4) 1.42s both;
+  animation: stampSlam 0.36s cubic-bezier(0.55, 0, 0.6, 1.4) 0.82s both;
 }
 .felled-stamp .felled-line,
 .felled-stamp .felled-top {
-  animation: felledWords 0.5s ease-out 1.85s both;
+  animation: felledWords 0.5s ease-out 1.25s both;
 }
 @keyframes stampSlam {
   0% {

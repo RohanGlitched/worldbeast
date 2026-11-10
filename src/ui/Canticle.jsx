@@ -26,8 +26,11 @@ function Canticle({ game, height = 110 }) {
     const draw = (now) => {
       raf = requestAnimationFrame(draw);
       if (!seen || document.hidden || now - lastAt < 31) return;
-      lastAt = now;
       const g = game;
+      // nor under the closed cover, nor while the camera glides and its leaf fades (a 2D canvas drawn inside the
+      // moving, fading layer stalled the GPU for 0.1-0.65 s at every run's start, worst at 2560 px)
+      if (g?.holdReveal || g?.gliding) return;
+      lastAt = now;
       if (!g?.spec || !g.field) return;
       const dpr = Math.min(2, window.devicePixelRatio || 1);
       const W = cv.clientWidth,

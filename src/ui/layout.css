@@ -113,12 +113,14 @@
   font-size: 0.95em;
 }
 
-/* ------------------------------------------------------------------ the run's summary on the open leaf */
+/* ------------------------------------------------------------------ the run's summary on the open leaf
+   In the leaf's own flow, at its foot: the chronicle above takes only the room left over and shows whole lines
+   in it (a line that does not fit goes to a column off the leaf), so the card never cuts a line in half. */
 .summary.in-leaf {
-  position: absolute;
-  left: calc(var(--u) * 0.85);
-  right: calc(var(--u) * 0.85);
-  bottom: calc(var(--u) * 0.85);
+  position: relative;
+  flex: 0 1 auto;
+  min-height: 0;
+  margin: auto calc(var(--u) * -0.3) calc(var(--u) * -0.25);
   max-height: 74%;
   overflow-y: auto;
   font-size: calc(var(--u) * 0.6);
@@ -126,6 +128,80 @@
 }
 .summary.in-leaf .facts {
   font-size: 1em;
+}
+.leaf.open.with-card .leaf-chronicle,
+.leaf.open.with-card .leaf-chronicle.few {
+  flex: 1 1 0;
+  min-height: 0;
+}
+.leaf.open.with-card .leaf-chronicle .chronicle {
+  flex: 1 1 0;
+}
+/* (not even its first line fits above the card: no chronicle while the card is up, rather than half a line) */
+.leaf-chronicle.none-fit {
+  visibility: hidden;
+}
+/* the card's lesser buttons sit on one line, each as wide as its word */
+.summary .row .ghost {
+  flex: 1 1 auto !important;
+  white-space: nowrap;
+  padding: 0.3em 0.55em;
+}
+.summary .row .join {
+  flex: 2 1 auto !important;
+}
+/* the card's buttons: a second row (a rehearsal's way on), and the next titan's waking said under them */
+.summary .row + .row {
+  margin-top: 0.5em;
+}
+.summary .row-note {
+  margin-top: 0.45em;
+  font-style: italic;
+  font-size: 0.9em;
+  color: var(--ink-2);
+}
+.summary .row .join small {
+  font-size: max(11px, 0.5em);
+}
+/* a Join that is a link (a spent rehearsal's way to the live titan) */
+a.join {
+  display: block;
+  box-sizing: border-box;
+  text-align: center;
+  text-decoration: none;
+}
+button.join-alt {
+  appearance: none;
+  cursor: pointer;
+}
+
+/* ------------------------------------------------------------------ the killing blow, in the strip
+   The camera holds on the fight through the death beat and the stamp (Game FALL.HOLD): the strip says Felled,
+   and keeps saying it while the book opens (its other words fade with the fold) */
+.leaf.strip .strip-felled {
+  flex: none;
+  text-align: center;
+  padding: 0.35em 0 0.2em;
+}
+.strip-felled-word {
+  display: inline-block;
+  font-family: var(--display);
+  font-size: 3.1em;
+  line-height: 1;
+  color: var(--vermilion);
+  border: 0.08em double var(--vermilion);
+  padding: 0.05em 0.35em 0.12em;
+  background: rgba(239, 228, 204, 0.6);
+  animation: stampSlam 0.36s cubic-bezier(0.55, 0, 0.6, 1.4) 0.15s both;
+}
+.strip-felled-line {
+  margin-top: 0.55em;
+  font-family: var(--fell);
+  font-style: italic;
+  font-size: 1.05em;
+}
+.world-layer.unfolding .leaf.strip > .strip-felled {
+  opacity: 1;
 }
 
 /* ------------------------------------------------------------------ a phone on its side */
@@ -280,13 +356,54 @@
    ruled, until the titan awake now is drawn (by the game's renderer, once its programs are linked); then that
    titan inks in over it. Never another titan's art first: the caption beside it names the one awake. */
 .medallion {
-  background: url(/art/medallion-blank.svg) center / cover no-repeat, repeating-linear-gradient(-35deg, rgba(35, 28, 23, 0.06) 0 1px, transparent 1px 6px), radial-gradient(circle, #f3e9d3 56%, #e2d2ae);
+  background: repeating-linear-gradient(-35deg, rgba(35, 28, 23, 0.06) 0 1px, transparent 1px 6px), radial-gradient(circle, #f3e9d3 56%, #e2d2ae);
+}
+/* the blank compass: put away (faded) as soon as the titan starts inking in over it, never under it */
+.medallion::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: url(/art/medallion-blank.svg) center / cover no-repeat;
+  transition: opacity 0.3s ease;
 }
 .medallion img {
+  position: relative;
   background: transparent;
 }
 .medallion.inked {
   background: radial-gradient(circle, #f3e9d3 56%, #e2d2ae);
+}
+.medallion.inked::before {
+  opacity: 0;
+}
+/* the cover's "Awake now" line holds its height from the first paint (nothing below it shifts when it fills) */
+.cover-awake {
+  line-height: 1.36;
+  min-height: 1.36em;
+}
+/* "Open the codex" glows on a composited layer (its box-shadow pulse repainted the cover every frame) */
+.cover-open {
+  animation: none;
+}
+.cover-open::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  pointer-events: none;
+  box-shadow: 0 0 26px rgba(240, 207, 120, 0.55);
+  opacity: 0;
+  animation: coverGlow 2.2s ease-in-out infinite;
+  will-change: opacity;
+}
+@keyframes coverGlow {
+  50% {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cover-open::after {
+    animation: none;
+  }
 }
 
 /* ------------------------------------------------------------------ the open leaf in the lobby

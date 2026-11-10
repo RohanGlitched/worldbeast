@@ -19,3 +19,4 @@ dist
 .app.json*
 .types/
 .claude/
+base44/.app.jsonc

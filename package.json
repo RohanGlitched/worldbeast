@@ -15,7 +15,7 @@
     "live-check": "node scripts/live-check.mjs"
   },
   "dependencies": {
-    "@base44/sdk": "^0.8.59",
+    "@base44/sdk": "^0.8.60",
     "@base44/vite-plugin": "^1.0.52",
     "lucide-react": "^0.475.0",
     "react": "^18.2.0",
